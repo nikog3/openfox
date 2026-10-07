@@ -141,6 +141,10 @@ vi.mock('./hooks/useProjectLoader', () => ({
   useProjectLoader: () => {},
 }))
 
+vi.mock('./hooks/useMissingProjectRedirect', () => ({
+  useMissingProjectRedirect: () => {},
+}))
+
 vi.mock('./hooks/useSessionLoader', () => ({
   useSessionLoader: () => {},
 }))
