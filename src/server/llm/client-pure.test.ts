@@ -1211,4 +1211,104 @@ describe('llm client pure helpers', () => {
     expect(result.modelParams).not.toHaveProperty('maxTokens')
     expect(result.modelParams).toHaveProperty('topP', 0.9)
   })
+
+  describe('synthetic user message for tool-carrying requests with no user turn', () => {
+    const profile = {
+      temperature: 0.7,
+      defaultMaxTokens: 4096,
+      topP: 0.9,
+      supportsVision: false,
+    }
+    const capabilities = {
+      supportsTopK: false,
+      supportsChatTemplateKwargs: false,
+      supportsNumCtx: false,
+      routesEffortViaChatTemplateKwargs: false,
+      usesMaxCompletionTokens: false,
+    }
+    const tools = [
+      {
+        type: 'function' as const,
+        function: { name: 'read_file', description: 'Read a file', parameters: { type: 'object' } },
+      },
+    ]
+
+    it('appends a synthetic user message when tools are present but no user message exists', async () => {
+      const { params } = await buildNonStreamingCreateParams({
+        model: 'qwen3',
+        request: {
+          messages: [
+            { role: 'system', content: 'You are helpful' },
+            {
+              role: 'assistant',
+              content: '',
+              toolCalls: [{ id: 'call-1', name: 'read_file', arguments: { path: 'foo.ts' } }],
+            },
+            { role: 'tool', content: 'file contents', toolCallId: 'call-1' },
+          ],
+          tools,
+        },
+        profile,
+        capabilities,
+      })
+
+      expect(params.messages.map((m) => m.role)).toEqual(['system', 'assistant', 'tool', 'user'])
+      expect(params.messages[params.messages.length - 1]).toEqual({ role: 'user', content: 'Continue.' })
+    })
+
+    it('does not append a synthetic user message when a user message already exists', async () => {
+      const { params } = await buildNonStreamingCreateParams({
+        model: 'qwen3',
+        request: {
+          messages: [
+            { role: 'system', content: 'sys' },
+            { role: 'user', content: 'do a thing' },
+            {
+              role: 'assistant',
+              content: '',
+              toolCalls: [{ id: 'call-1', name: 'read_file', arguments: { path: 'foo.ts' } }],
+            },
+            { role: 'tool', content: 'ok', toolCallId: 'call-1' },
+          ],
+          tools,
+        },
+        profile,
+        capabilities,
+      })
+
+      expect(params.messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'tool'])
+    })
+
+    it('does not append a synthetic user message when there are no tools', async () => {
+      const { params } = await buildNonStreamingCreateParams({
+        model: 'qwen3',
+        request: {
+          messages: [
+            { role: 'system', content: 'sys' },
+            { role: 'assistant', content: 'hi' },
+          ],
+        },
+        profile,
+        capabilities,
+      })
+
+      expect(params.messages.map((m) => m.role)).toEqual(['system', 'assistant'])
+    })
+
+    it('appends a synthetic user message for the warmup shape (system + tools, no user)', async () => {
+      const { params } = await buildNonStreamingCreateParams({
+        model: 'qwen3',
+        request: {
+          messages: [{ role: 'system', content: 'You are helpful' }],
+          tools,
+          maxTokens: 1,
+        },
+        profile,
+        capabilities,
+      })
+
+      expect(params.messages.map((m) => m.role)).toEqual(['system', 'user'])
+      expect(params.messages[1]).toEqual({ role: 'user', content: 'Continue.' })
+    })
+  })
 })

@@ -37,6 +37,7 @@ export interface ToolBatchContext {
 
 export interface ToolBatchResult {
   toolMessages: RequestContextMessage[]
+  executedResults: ExecutedToolCall[]
   criteriaChanged: boolean
   returnValueContent?: string | undefined
   returnValueResult?: string | undefined
@@ -333,5 +334,12 @@ export async function executeTools(
     })
   }
 
-  return { toolMessages, criteriaChanged: false, returnValueContent, returnValueResult, stepDoneCalled }
+  return {
+    toolMessages,
+    executedResults: results,
+    criteriaChanged: false,
+    returnValueContent,
+    returnValueResult,
+    stepDoneCalled,
+  }
 }

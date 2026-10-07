@@ -94,7 +94,7 @@ export function SessionPane({ sessionId, focused, onFocus, onClose, className }:
                 label: 'Open project folder',
                 icon: <FolderIcon className="w-4 h-4" />,
                 onClick: () => {
-                  void authFetch(`/api/projects/${project.id}/open-folder`).catch(() => {})
+                  void authFetch(`/api/projects/${project.id}/open-folder?session=${sessionId}`).catch(() => {})
                 },
               },
               {

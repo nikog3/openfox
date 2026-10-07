@@ -1,5 +1,7 @@
 import os from 'node:os'
-import { statSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, statSync } from 'node:fs'
+import path from 'node:path'
 import { VERSION } from '../../constants.js'
 import { serverT } from '../i18n.js'
 
@@ -89,13 +91,37 @@ export function getDatabaseSize(databasePath: string): string {
   }
 }
 
+/**
+ * Best-effort build identifier for the startup banner: the git branch and
+ * short commit of the workdir, when it is a git checkout. Packaged releases
+ * have no `.git`, so this returns undefined and the banner shows no build line.
+ */
+export function getBuildInfo(workdir: string): { branch: string; commit: string } | undefined {
+  try {
+    if (!existsSync(path.join(workdir, '.git'))) return undefined
+    const branch = execFileSync('git', ['-C', workdir, 'rev-parse', '--abbrev-ref', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    const commit = execFileSync('git', ['-C', workdir, 'rev-parse', '--short', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    if (!branch || !commit) return undefined
+    return { branch, commit }
+  } catch {
+    return undefined
+  }
+}
+
 export function displayStartupBanner(config: {
   host: string
   port: number
   databasePath: string
   configPath: string
+  workdir?: string
 }): void {
-  const { host, port, databasePath, configPath } = config
+  const { host, port, databasePath, configPath, workdir } = config
   const isLocalhost = host === '127.0.0.1'
 
   // eslint-disable-next-line no-console
@@ -135,6 +161,13 @@ export function displayStartupBanner(config: {
   )
   // eslint-disable-next-line no-console
   console.log(`  ⚙️  ${serverT({ en: `Config:  ${configPath}`, fr: `Config :  ${configPath}` })}`)
+
+  const buildInfo = workdir ? getBuildInfo(workdir) : undefined
+  if (buildInfo) {
+    // eslint-disable-next-line no-console
+    console.log(`  🌿 ${buildInfo.branch} @ ${buildInfo.commit}`)
+  }
+
   // eslint-disable-next-line no-console
   console.log(
     `\n💡 ${serverT({ en: 'Tip: Press Ctrl+C to stop the server', fr: 'Astuce : appuyez sur Ctrl+C pour arrêter le serveur' })}\n`,

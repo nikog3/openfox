@@ -500,9 +500,15 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
     if (!project) {
       return res.status(404).json({ error: 'Project not found' })
     }
+    const sessionId = typeof req.query['session'] === 'string' ? req.query['session'] : null
+    let session: import('./utils/openFolder.js').OpenFolderSession | null = null
+    if (sessionId) {
+      const { getSession } = await import('./db/sessions.js')
+      session = getSession(sessionId)
+    }
     try {
-      const { openFolder } = await import('./utils/openFolder.js')
-      await openFolder(project.workdir)
+      const { openFolder, resolveOpenFolderWorkdir } = await import('./utils/openFolder.js')
+      await openFolder(resolveOpenFolderWorkdir(project.workdir, session, project.id))
       res.json({ success: true })
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to open folder' })

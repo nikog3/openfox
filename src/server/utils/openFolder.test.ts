@@ -7,7 +7,7 @@ vi.mock('node:child_process', () => ({ execFile: vi.fn() }))
 import { platform } from 'node:os'
 import { mkdir } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
-import { openFolder } from './openFolder.js'
+import { openFolder, resolveOpenFolderWorkdir } from './openFolder.js'
 
 type ExecFileCallback = (err: NodeJS.ErrnoException | null, stdout?: string, stderr?: string) => void
 
@@ -75,5 +75,27 @@ describe('openFolder', () => {
     mockExecFileFailure(1, 'xdg-open failed')
 
     await expect(openFolder('/tmp/dir')).rejects.toThrow('xdg-open failed')
+  })
+})
+
+describe('resolveOpenFolderWorkdir', () => {
+  it('returns the workspace path for a session of the project', () => {
+    expect(resolveOpenFolderWorkdir('/proj', { projectId: 'p1', workdir: '/proj', workspace: '/ws/p1' }, 'p1')).toBe(
+      '/ws/p1',
+    )
+  })
+
+  it('returns the project workdir for a session on the original repo', () => {
+    expect(resolveOpenFolderWorkdir('/proj', { projectId: 'p1', workdir: '/proj' }, 'p1')).toBe('/proj')
+  })
+
+  it('returns the project workdir when no session is given', () => {
+    expect(resolveOpenFolderWorkdir('/proj', null, 'p1')).toBe('/proj')
+  })
+
+  it('returns the project workdir for a session of another project', () => {
+    expect(resolveOpenFolderWorkdir('/proj', { projectId: 'p2', workdir: '/proj', workspace: '/ws/p2' }, 'p1')).toBe(
+      '/proj',
+    )
   })
 })

@@ -19,7 +19,10 @@ beforeAll(async () => {
   testDir = await mkdtemp(join(tmpdir(), 'openfox-plugin-danger-level-'))
   WORKDIR = join(testDir, 'project', 'workdir')
   await mkdir(WORKDIR, { recursive: true })
-  OUTSIDE_PATH = await realpath('/etc/passwd')
+  // Must be outside the workdir AND outside the temp allowed roots (tmpdir()
+  // is an allowed root). On Windows /etc/passwd doesn't exist; C:\var\lib is a
+  // nonexistent path that canonicalizes cleanly, like /var/lib on Unix.
+  OUTSIDE_PATH = process.platform === 'win32' ? 'C:\\var\\lib' : await realpath('/etc/passwd')
 })
 
 afterAll(async () => {

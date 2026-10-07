@@ -113,6 +113,7 @@ export async function runServe(options: ServeOptions): Promise<void> {
     port: merged.server.port,
     databasePath: merged.database.path,
     configPath: getGlobalConfigPath(mode),
+    workdir: merged.workdir,
   })
 
   if (merged.server.openBrowser) {

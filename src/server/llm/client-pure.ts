@@ -289,6 +289,10 @@ async function buildChatCompletionCreateParams(
     inlineThinking,
   )
 
+  if (request.tools?.length && !convertedMessages.some((m) => m.role === 'user')) {
+    convertedMessages.push({ role: 'user', content: 'Continue.' })
+  }
+
   const temperature = request.modelSettings?.temperature ?? request.temperature ?? profile.temperature
   const maxTokens = request.modelSettings?.maxTokens ?? request.maxTokens ?? profile.defaultMaxTokens
   const topP = request.modelSettings?.topP ?? profile.topP

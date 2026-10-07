@@ -178,7 +178,7 @@ describe('SessionPane', () => {
     render(<SessionPane {...props} />)
     fireEvent.click(screen.getByTitle('acme-app'))
     fireEvent.click(screen.getByText('Open project folder'))
-    expect(authFetchMock).toHaveBeenCalledWith('/api/projects/p1/open-folder')
+    expect(authFetchMock).toHaveBeenCalledWith('/api/projects/p1/open-folder?session=s1')
   })
 
   it('opens the project settings modal for the pane project from the dropdown', () => {

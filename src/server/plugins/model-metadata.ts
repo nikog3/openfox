@@ -11,17 +11,31 @@ export function listPluginModelMetadataProviders(): PluginModelMetadataProvider[
   return [...providers]
 }
 
+async function fetchMetadata(
+  call: () => PluginModelMetadata | undefined | Promise<PluginModelMetadata | undefined>,
+): Promise<PluginModelMetadata | undefined> {
+  try {
+    return await call()
+  } catch {
+    return undefined
+  }
+}
+
+function mergeCommonMetadata(
+  merged: PluginModelMetadata,
+  badges: NonNullable<PluginModelMetadata['badges']>,
+  metadata: PluginModelMetadata,
+): void {
+  if (metadata.extra !== undefined) merged.extra = { ...(merged.extra ?? {}), ...metadata.extra }
+  if (metadata.badges) badges.push(...metadata.badges)
+}
+
 export async function enrichModelWithPluginMetadata(providerId: string, model: ModelConfig): Promise<ModelConfig> {
   if (providers.length === 0) return model
   const merged: PluginModelMetadata = {}
   const badges: NonNullable<PluginModelMetadata['badges']> = []
   for (const provider of providers) {
-    let metadata: PluginModelMetadata | undefined
-    try {
-      metadata = await provider.getMetadata({ providerId, modelId: model.id, model })
-    } catch {
-      continue
-    }
+    const metadata = await fetchMetadata(() => provider.getMetadata({ providerId, modelId: model.id, model }))
     if (!metadata) continue
     if (metadata.contextWindow !== undefined) merged.contextWindow = metadata.contextWindow
     if (metadata.vision !== undefined) merged.vision = metadata.vision
@@ -30,8 +44,7 @@ export async function enrichModelWithPluginMetadata(providerId: string, model: M
     if (metadata.popover !== undefined) merged.popover = metadata.popover
     if (metadata.subline !== undefined) merged.subline = metadata.subline
     if (metadata.bottomSubline !== undefined) merged.bottomSubline = metadata.bottomSubline
-    if (metadata.extra !== undefined) merged.extra = { ...(merged.extra ?? {}), ...metadata.extra }
-    if (metadata.badges) badges.push(...metadata.badges)
+    mergeCommonMetadata(merged, badges, metadata)
   }
   if (badges.length > 0) merged.badges = badges
   if (Object.keys(merged).length === 0) return model
@@ -44,16 +57,11 @@ export async function enrichProviderWithPluginMetadata(provider: Provider): Prom
   const badges: NonNullable<PluginModelMetadata['badges']> = []
 
   for (const p of providers) {
-    if (typeof p.getProviderMetadata !== 'function') continue
-    let metadata: PluginModelMetadata | undefined
-    try {
-      metadata = await p.getProviderMetadata({ providerId: provider.id, provider })
-    } catch {
-      continue
-    }
+    const getProviderMetadata = p.getProviderMetadata
+    if (typeof getProviderMetadata !== 'function') continue
+    const metadata = await fetchMetadata(() => getProviderMetadata({ providerId: provider.id, provider }))
     if (!metadata) continue
-    if (metadata.extra !== undefined) merged.extra = { ...(merged.extra ?? {}), ...metadata.extra }
-    if (metadata.badges) badges.push(...metadata.badges)
+    mergeCommonMetadata(merged, badges, metadata)
   }
 
   if (badges.length > 0) merged.badges = badges

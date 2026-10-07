@@ -90,19 +90,30 @@ function coerce(field: PluginSettingsField, raw: string | undefined): PluginSett
   }
 }
 
+/** Returns a copy of `item` with `mutate` applied to each secret sub-value. */
+function mapSecretSubs(
+  field: PluginSettingsField,
+  item: Record<string, unknown>,
+  mutate: (sub: PluginSettingsField, next: Record<string, unknown>) => void,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...item }
+  for (const sub of field.itemFields ?? []) {
+    if (!isSecret(sub)) continue
+    mutate(sub, next)
+  }
+  return next
+}
+
 /** Replaces every configured secret sub-value of a list with the mask. */
 function maskListSecrets(field: PluginSettingsField, raw: string): string {
   const items = parseListValue(raw)
   if (!items) return raw
-  const masked = items.map((item) => {
-    const next: Record<string, unknown> = { ...item }
-    for (const sub of field.itemFields ?? []) {
-      if (!isSecret(sub)) continue
+  const masked = items.map((item) =>
+    mapSecretSubs(field, item, (sub, next) => {
       const value = next[sub.key]
       if (typeof value === 'string' && value !== '') next[sub.key] = MASKED_SECRET
-    }
-    return next
-  })
+    }),
+  )
   return JSON.stringify(masked)
 }
 
@@ -114,18 +125,15 @@ function mergeListSecrets(field: PluginSettingsField, incoming: string, stored: 
   const incomingItems = parseListValue(incoming)
   if (!incomingItems) return incoming
   const storedItems = stored === undefined ? [] : (parseListValue(stored) ?? [])
-  const merged = incomingItems.map((item, index) => {
-    const next: Record<string, unknown> = { ...item }
-    for (const sub of field.itemFields ?? []) {
-      if (!isSecret(sub)) continue
+  const merged = incomingItems.map((item, index) =>
+    mapSecretSubs(field, item, (sub, next) => {
       const value = next[sub.key]
-      if (typeof value === 'string' && value !== '' && !isMaskedValue(value)) continue
+      if (typeof value === 'string' && value !== '' && !isMaskedValue(value)) return
       const previous = storedItems[index]?.[sub.key]
       if (typeof previous === 'string' && previous !== '') next[sub.key] = previous
       else delete next[sub.key]
-    }
-    return next
-  })
+    }),
+  )
   return JSON.stringify(merged)
 }
 

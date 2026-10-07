@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { PluginContext, PluginDefinition, PluginManifest } from '../../plugin/index.js'
@@ -6,6 +6,7 @@ import { pluginManifestSchema } from '../../plugin/index.js'
 import type { PluginContributionSummary, PluginCapability } from '../../shared/plugin.js'
 import { EMPTY_PLUGIN_CONTRIBUTIONS } from '../../shared/plugin.js'
 import type { PluginRegistry } from './registry.js'
+import { isDirectoryEntry, scopedPackageDirs } from './plugin-dirs.js'
 
 export interface PluginDiagnostic {
   packageName: string
@@ -228,18 +229,9 @@ async function packageDirectories(root: string): Promise<string[]> {
   const directories: string[] = []
   for (const entry of entries) {
     const entryPath = join(root, entry.name)
-    const isDirectory =
-      entry.isDirectory() || (entry.isSymbolicLink() && (await stat(entryPath).catch(() => undefined))?.isDirectory())
-    if (!isDirectory) continue
+    if (!(await isDirectoryEntry(entry, entryPath))) continue
     if (entry.name.startsWith('@')) {
-      const scoped = await readdir(entryPath, { withFileTypes: true }).catch(() => [])
-      for (const child of scoped) {
-        const childPath = join(entryPath, child.name)
-        const childIsDirectory =
-          child.isDirectory() ||
-          (child.isSymbolicLink() && (await stat(childPath).catch(() => undefined))?.isDirectory())
-        if (childIsDirectory) directories.push(childPath)
-      }
+      directories.push(...(await scopedPackageDirs(entryPath)))
     } else {
       directories.push(entryPath)
     }

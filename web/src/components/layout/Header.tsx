@@ -168,7 +168,10 @@ export function Header({ onMenuClick, onCriteriaToggle }: HeaderProps) {
       mobileMenuItems.push({
         label: t({ en: 'Open Folder', fr: 'Ouvrir le dossier' }),
         icon: <FolderIcon className="w-4 h-4" />,
-        onClick: () => authFetch(`/api/projects/${project.id}/open-folder`).catch(() => {}),
+        onClick: () =>
+          authFetch(`/api/projects/${project.id}/open-folder${session ? `?session=${session.id}` : ''}`).catch(
+            () => {},
+          ),
       })
     }
   }
@@ -350,7 +353,11 @@ export function Header({ onMenuClick, onCriteriaToggle }: HeaderProps) {
 
             {isProjectPage && project && (
               <button
-                onClick={() => authFetch(`/api/projects/${project.id}/open-folder`).catch(() => {})}
+                onClick={() =>
+                  authFetch(`/api/projects/${project.id}/open-folder${session ? `?session=${session.id}` : ''}`).catch(
+                    () => {},
+                  )
+                }
                 className="p-2.5 rounded hover:bg-bg-tertiary text-text-muted hover:text-text-primary transition-colors"
                 title={t({ en: 'Open project folder', fr: 'Ouvrir le dossier du projet' })}
               >

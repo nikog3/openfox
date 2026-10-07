@@ -17,3 +17,20 @@ export async function openFolder(dir: string): Promise<void> {
     }
   }
 }
+
+export interface OpenFolderSession {
+  projectId: string
+  workdir: string
+  workspace?: string
+}
+
+export function resolveOpenFolderWorkdir(
+  projectWorkdir: string,
+  session: OpenFolderSession | null,
+  projectId: string,
+): string {
+  if (session && session.projectId === projectId) {
+    return session.workspace ?? session.workdir
+  }
+  return projectWorkdir
+}

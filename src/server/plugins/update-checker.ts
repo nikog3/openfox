@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { NotificationService } from './notifications.js'
 import type { HookLogger } from './hooks.js'
 import { getSetting } from '../db/settings.js'
+import { isDirectoryEntry, scopedPackageDirs } from './plugin-dirs.js'
 
 const execFileP = promisify(execFile)
 
@@ -157,20 +158,11 @@ export class PluginUpdateChecker {
       for (const entry of entries) {
         if (entry.name.startsWith('.') || (root === pluginsDir && entry.name === 'node_modules')) continue
         const entryPath = join(root, entry.name)
-        const isDirectory =
-          entry.isDirectory() ||
-          (entry.isSymbolicLink() && (await stat(entryPath).catch(() => undefined))?.isDirectory())
-        if (!isDirectory) continue
+        if (!(await isDirectoryEntry(entry, entryPath))) continue
 
         if (entry.name.startsWith('@')) {
-          const scoped = await readdir(entryPath, { withFileTypes: true }).catch(() => [])
-          for (const child of scoped) {
-            if (child.name.startsWith('.')) continue
-            const childPath = join(entryPath, child.name)
-            const childIsDirectory =
-              child.isDirectory() ||
-              (child.isSymbolicLink() && (await stat(childPath).catch(() => undefined))?.isDirectory())
-            if (childIsDirectory && !seen.has(childPath)) {
+          for (const childPath of await scopedPackageDirs(entryPath, true)) {
+            if (!seen.has(childPath)) {
               seen.add(childPath)
               directories.push(childPath)
             }

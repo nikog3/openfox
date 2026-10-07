@@ -5,6 +5,13 @@ import { promisify } from 'node:util'
 
 const execFileP = promisify(execFile)
 
+function runNpm(
+  args: string[],
+  options: { cwd?: string; timeout: number },
+): Promise<{ stdout: string; stderr: string }> {
+  return execFileP('npm', args, { ...options, shell: true })
+}
+
 export function parseGithubUrl(githubUrl: string): { owner: string; repo: string; cloneUrl: string } {
   const parsed = githubUrl.match(/github\.com\/([^/]+)\/([^/?#]+)/)
   if (!parsed) throw new Error('Invalid GitHub URL')
@@ -49,9 +56,7 @@ export async function installPluginFromGithub(githubUrl: string, pluginsDir: str
 
 export async function installPluginFromNpm(packageName: string, pluginsDir: string): Promise<string> {
   await mkdir(pluginsDir, { recursive: true })
-  await execFileP('npm', ['install', '--no-audit', '--no-fund', '--prefix', pluginsDir, packageName], {
-    timeout: 180000,
-  })
+  await runNpm(['install', '--no-audit', '--no-fund', '--prefix', pluginsDir, packageName], { timeout: 180000 })
   await removeNpmArtifacts(pluginsDir)
   return join(pluginsDir, 'node_modules', packageName)
 }
@@ -92,6 +97,6 @@ export async function buildIfNeeded(directory: string): Promise<void> {
     return
   }
   if (!manifest.scripts?.['build']) return
-  await execFileP('npm', ['install', '--no-audit', '--no-fund'], { cwd: directory, timeout: 180000 })
-  await execFileP('npm', ['run', 'build'], { cwd: directory, timeout: 180000 })
+  await runNpm(['install', '--no-audit', '--no-fund'], { cwd: directory, timeout: 180000 })
+  await runNpm(['run', 'build'], { cwd: directory, timeout: 180000 })
 }

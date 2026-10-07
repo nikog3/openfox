@@ -25,6 +25,7 @@ import {
   createMessageStartEvent,
   createMessageDoneEvent,
   createChatDoneEvent,
+  createToolResultEvent,
   evaluateLLMRetry,
   sleepThroughRetryBackoff,
   recordLLMFailure,
@@ -46,7 +47,12 @@ import {
   createChatStatsMessage,
 } from '../ws/protocol.js'
 import { executeTools, type ToolBatchContext } from './execute-tools.js'
-import { estimateToolResultTokens, isContextLengthError } from './token-budget.js'
+import {
+  estimateToolResultTokens,
+  isContextLengthError,
+  CHARS_PER_TOKEN,
+  TOOL_MESSAGE_OVERHEAD_TOKENS,
+} from './token-budget.js'
 import { loadAllAgentsDefault, getSubAgents } from '../agents/registry.js'
 import { createRetryLimiter, type RetryLimiter } from './retry-limiter.js'
 import { drainQueue } from './drain-queue.js'
@@ -793,6 +799,49 @@ ${COMPACTION_PROMPT}`,
         batchContext.allowParallelSubAgents = getSetting(SETTINGS_KEYS.AGENT_ALLOW_PARALLEL_SUB_AGENTS) === 'true'
         const batchResult = await executeTools(assistantMsgId, result.toolCalls, batchContext, append)
         pendingToolResultTokens = estimateToolResultTokens(batchResult.toolMessages)
+
+        const usedTokens = result.usage.promptTokens + result.usage.completionTokens
+        const ctxWindow = sessionManager.getCurrentModelContext(sessionId, config.mode)
+        const maxToolTokens = ctxWindow - usedTokens - OUTPUT_RESERVE_TOKENS
+        if (pendingToolResultTokens > maxToolTokens && maxToolTokens > 0) {
+          const n = batchResult.toolMessages.length
+          const availableContentChars = Math.max(
+            0,
+            (maxToolTokens - n * TOOL_MESSAGE_OVERHEAD_TOKENS) * CHARS_PER_TOKEN,
+          )
+          const totalContentChars = batchResult.toolMessages.reduce((sum, m) => sum + m.content.length, 0)
+          if (totalContentChars > availableContentChars) {
+            const sorted = batchResult.toolMessages
+              .map((m, i) => ({ i, len: m.content.length }))
+              .sort((a, b) => b.len - a.len)
+            let toCut = totalContentChars - availableContentChars
+            for (const { i, len } of sorted) {
+              if (toCut <= 0) break
+              const msg = batchResult.toolMessages[i]
+              if (!msg) continue
+              const newLen = Math.max(Math.floor(len * 0.1), len - toCut)
+              const cut = len - newLen
+              if (cut > 0) {
+                const estimatedTokens = Math.round(len / CHARS_PER_TOKEN)
+                msg.content = msg.content.slice(0, newLen)
+                toCut -= cut
+                const execResult = batchResult.executedResults.find((e) => e.toolCall.id === msg.toolCallId)
+                if (execResult) {
+                  execResult.toolResult.truncated = true
+                  execResult.toolResult.metadata = {
+                    ...execResult.toolResult.metadata,
+                    truncatedReason: 'context_limit',
+                    estimatedTokens,
+                    remainingContextTokens: maxToolTokens,
+                  }
+                  append(createToolResultEvent(assistantMsgId, execResult.toolCall.id, execResult.toolResult))
+                }
+              }
+            }
+            pendingToolResultTokens = estimateToolResultTokens(batchResult.toolMessages)
+          }
+        }
+
         if (batchResult.stepDoneCalled) {
           emitDoneAndBreak(
             assistantMsgId,

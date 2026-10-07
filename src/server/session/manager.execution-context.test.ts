@@ -691,6 +691,7 @@ describe('SessionManager.switchWorkspace – execution context integrity (issue 
                   toolCallId: workspaceToolCallId,
                 },
               ],
+              executedResults: [],
               criteriaChanged: false,
             }
           },

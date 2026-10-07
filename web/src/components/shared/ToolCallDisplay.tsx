@@ -24,6 +24,7 @@ import { buildEditorUrl } from '../../lib/editor-link'
 import { detectRemoteExecution } from '../../lib/remote-execution'
 import type { ToolStatus } from '../../lib/toolStatus'
 import { useT } from '../../hooks/useT'
+import { formatTokens } from '../../lib/format-stats'
 
 interface StreamingChunk {
   stream: 'stdout' | 'stderr'
@@ -431,6 +432,22 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               </>
             )}
 
+          {/* Context-limit truncation notice */}
+          {metadata?.truncatedReason === 'context_limit' && (
+            <div className="mt-2 rounded border border-warning/30 bg-warning/10 px-2 py-1.5 text-xs text-warning">
+              {t(
+                {
+                  en: 'Output truncated: {{estimated}} tokens > remaining context ({{remaining}} tokens). Only the first {{remaining}} tokens were kept.',
+                  fr: 'Sortie tronquée : {{estimated}} tokens > espace contexte restant ({{remaining}} tokens). Seuls les premiers {{remaining}} tokens ont été conservés.',
+                },
+                {
+                  estimated: formatTokens(Number(metadata.estimatedTokens) || 0),
+                  remaining: formatTokens(Number(metadata.remainingContextTokens) || 0),
+                },
+              )}
+            </div>
+          )}
+
           {/* Bottom metadata bar: duration + remote badge */}
           {(remoteProtocol ||
             (status === 'success' &&
@@ -450,6 +467,14 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   tool === 'describe_image') && (
                   <span>
                     {t({ en: 'Completed in {{s}}s', fr: 'Terminé en {{s}} s' }, { s: (durationMs / 1000).toFixed(2) })}
+                  </span>
+                )}
+              {status === 'success' &&
+                result &&
+                result.length > 0 &&
+                (tool === 'read_file' || tool === 'run_command') && (
+                  <span>
+                    {t({ en: '· ~{{n}} tok', fr: '· ~{{n}} tok' }, { n: formatTokens(Math.round(result.length / 4)) })}
                   </span>
                 )}
               <span className="flex-1" />
