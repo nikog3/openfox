@@ -1,6 +1,18 @@
 import { defineConfig } from 'vitest/config'
 import path from 'path'
 
+// Windows: heavy worker concurrency can exhaust ephemeral ports, making
+// app.listen(0) fail with "bad port". Override with OPENFOX_UNIT_MAX_WORKERS;
+// invalid values fall back to the default.
+function resolveMaxWorkers(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env['OPENFOX_UNIT_MAX_WORKERS']
+  if (raw) {
+    const parsed = Number(raw)
+    if (Number.isInteger(parsed) && parsed >= 1) return parsed
+  }
+  return 4
+}
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -31,6 +43,7 @@ export default defineConfig({
     // A few tests (init-llm, test-params) flake past the 5s default under
     // full-suite load on slower machines.
     testTimeout: 15_000,
+    maxWorkers: resolveMaxWorkers(),
     exclude: ['e2e/**', 'node_modules/**'],
     setupFiles: ['vitest-localstorage-mock', './web/src/test-setup.ts'],
     env: {

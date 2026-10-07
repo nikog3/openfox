@@ -484,6 +484,7 @@ export async function runTopLevelAgentLoop(
       })
 
       if (!attemptResult.error) {
+        ensureAssistantMessage()
         result = attemptResult
         const usage = attemptResult.usage
         emitPluginHook('llm.completed', {

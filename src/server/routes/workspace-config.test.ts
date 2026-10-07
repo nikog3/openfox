@@ -356,6 +356,8 @@ describe('POST /api/workspace/config/validate', () => {
       const dataDirEnv = IS_WIN32 ? 'LOCALAPPDATA' : 'XDG_DATA_HOME'
       const origXdg = process.env[dataDirEnv]
       process.env[dataDirEnv] = testDir
+      const origDev = process.env['OPENFOX_DEV']
+      delete process.env['OPENFOX_DEV']
       try {
         const defaultDir = join(testDir, 'openfox', 'workspaces', 'my-project')
         const ws1 = join(defaultDir, 'fix-bug')
@@ -382,6 +384,8 @@ describe('POST /api/workspace/config/validate', () => {
       } finally {
         if (origXdg !== undefined) process.env[dataDirEnv] = origXdg
         else delete process.env[dataDirEnv]
+        if (origDev !== undefined) process.env['OPENFOX_DEV'] = origDev
+        else delete process.env['OPENFOX_DEV']
       }
     })
 

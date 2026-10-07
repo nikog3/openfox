@@ -11,9 +11,15 @@ script_dir=$(dirname "$0")/..
 
 echo "  Running checks..."
 
+# e2e tests are Linux-only in CI (pr.yml: windows job runs test:unit only)
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) TEST_CMD="npm run test:unit" ;;
+  *)                    TEST_CMD="npm test" ;;
+esac
+
 parallel_exit_on_failure \
   "lint"      "npm run lint" \
   "typecheck" "npm run typecheck" \
   "format"    "npm run format" \
   "duplicate" "npm run duplicate" \
-  "test"      "npm test"
+  "test"      "$TEST_CMD"
