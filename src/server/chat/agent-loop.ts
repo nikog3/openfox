@@ -50,6 +50,7 @@ import { executeTools, type ToolBatchContext } from './execute-tools.js'
 import {
   estimateToolResultTokens,
   isContextLengthError,
+  parseContextLengthError,
   CHARS_PER_TOKEN,
   TOOL_MESSAGE_OVERHEAD_TOKENS,
 } from './token-budget.js'
@@ -222,6 +223,47 @@ export interface TopLevelLoopConfig {
 const MAX_TRUNCATION_RETRIES = 3
 const MAX_CONTEXT_LENGTH_RETRIES = 3
 const OUTPUT_RESERVE_TOKENS = 2048
+
+export interface ContextBreakdown {
+  ctxWindow: number
+  currentTokens: number
+  estimatedResultTokens: number
+  reserveTokens: number
+  availableTokens: number
+  estimatedRequestTokens: number
+  actualTokens?: number
+  serverLimit?: number
+  gapTokens?: number
+}
+
+function computeContextBreakdown(
+  sessionManager: SessionManager,
+  sessionId: string,
+  mode: string | undefined,
+  result: import('./stream-pure.js').PureStreamResult | undefined,
+  pendingToolResultTokens: number,
+  error: string | undefined,
+): ContextBreakdown {
+  const ctxWindow = sessionManager.getCurrentModelContext(sessionId, mode)
+  const currentTokens = result ? result.usage.promptTokens + result.usage.completionTokens : 0
+  const reserveTokens = OUTPUT_RESERVE_TOKENS
+  const availableTokens = ctxWindow - currentTokens - reserveTokens
+  const parsed = parseContextLengthError(error)
+  const estimatedRequestTokens = currentTokens + pendingToolResultTokens
+  return {
+    ctxWindow,
+    currentTokens,
+    estimatedResultTokens: pendingToolResultTokens,
+    reserveTokens,
+    availableTokens,
+    estimatedRequestTokens,
+    ...(parsed.actualTokens !== undefined && { actualTokens: parsed.actualTokens }),
+    ...(parsed.serverLimit !== undefined && { serverLimit: parsed.serverLimit }),
+    ...(parsed.actualTokens !== undefined && {
+      gapTokens: parsed.actualTokens - estimatedRequestTokens,
+    }),
+  }
+}
 
 export async function runTopLevelAgentLoop(
   config: TopLevelLoopConfig,
@@ -536,6 +578,17 @@ export async function runTopLevelAgentLoop(
       // retry immediately with a reduced maxTokens instead of waiting out backoff.
       if (isContextLengthError(attemptResult.error) && contextRetryCount < MAX_CONTEXT_LENGTH_RETRIES) {
         contextRetryCount += 1
+        logger.warn('Context length error: retrying with reduced maxTokens', {
+          ...computeContextBreakdown(
+            sessionManager,
+            sessionId,
+            config.mode,
+            result,
+            pendingToolResultTokens,
+            attemptResult.error,
+          ),
+          attempt: contextRetryCount,
+        })
         const currentMax = modelSettings?.maxTokens ?? currentMaxTokensOverride ?? profileDefaultMaxTokens
         currentMaxTokensOverride = Math.max(256, Math.floor(currentMax / 2))
         continue
@@ -555,7 +608,17 @@ export async function runTopLevelAgentLoop(
         return { failed: { error: attemptResult.error } }
       }
       if (!config.subAgentMetadata) {
-        config.onMessage?.(createChatLLMRetryMessage(decision.attempt, decision.delayMs, attemptResult.error))
+        const context = isContextLengthError(attemptResult.error)
+          ? computeContextBreakdown(
+              sessionManager,
+              sessionId,
+              config.mode,
+              result,
+              pendingToolResultTokens,
+              attemptResult.error,
+            )
+          : undefined
+        config.onMessage?.(createChatLLMRetryMessage(decision.attempt, decision.delayMs, attemptResult.error, context))
       }
       const waitResult = await sleepThroughRetryBackoff(decision.delayMs, sessionId, signal)
       if (waitResult === 'aborted') throw new Error('Aborted')
@@ -812,6 +875,15 @@ ${COMPACTION_PROMPT}`,
           )
           const totalContentChars = batchResult.toolMessages.reduce((sum, m) => sum + m.content.length, 0)
           if (totalContentChars > availableContentChars) {
+            logger.warn('Tool result truncated to fit context window', {
+              sessionId,
+              ctxWindow,
+              currentTokens: usedTokens,
+              estimatedResultTokens: pendingToolResultTokens,
+              estimatedResultChars: totalContentChars,
+              reserveTokens: OUTPUT_RESERVE_TOKENS,
+              availableTokens: maxToolTokens,
+            })
             const sorted = batchResult.toolMessages
               .map((m, i) => ({ i, len: m.content.length }))
               .sort((a, b) => b.len - a.len)
@@ -834,6 +906,10 @@ ${COMPACTION_PROMPT}`,
                     truncatedReason: 'context_limit',
                     estimatedTokens,
                     remainingContextTokens: maxToolTokens,
+                    ctxWindow,
+                    currentTokens: usedTokens,
+                    estimatedResultTokens: pendingToolResultTokens,
+                    reserveTokens: OUTPUT_RESERVE_TOKENS,
                   }
                   append(createToolResultEvent(assistantMsgId, execResult.toolCall.id, execResult.toolResult))
                 }

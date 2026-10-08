@@ -315,8 +315,9 @@ export function createChatLLMRetryMessage(
   attempt: number,
   retryInMs: number,
   error: string,
+  context?: Partial<ChatLLMRetryPayload>,
 ): ServerMessage<ChatLLMRetryPayload> {
-  return createServerMessage('chat.llm_retry', { attempt, retryInMs, error })
+  return createServerMessage('chat.llm_retry', { attempt, retryInMs, error, ...context })
 }
 
 export function createChatLLMRetryFailedMessage(

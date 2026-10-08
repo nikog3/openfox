@@ -867,6 +867,13 @@ export function handleServerMessage(
           attempt: payload.attempt,
           retryInMs: payload.retryInMs,
           error: payload.error,
+          ...(payload.ctxWindow !== undefined && { ctxWindow: payload.ctxWindow }),
+          ...(payload.currentTokens !== undefined && { currentTokens: payload.currentTokens }),
+          ...(payload.estimatedResultTokens !== undefined && { estimatedResultTokens: payload.estimatedResultTokens }),
+          ...(payload.reserveTokens !== undefined && { reserveTokens: payload.reserveTokens }),
+          ...(payload.availableTokens !== undefined && { availableTokens: payload.availableTokens }),
+          ...(payload.actualTokens !== undefined && { actualTokens: payload.actualTokens }),
+          ...(payload.serverLimit !== undefined && { serverLimit: payload.serverLimit }),
         },
       }))
       break

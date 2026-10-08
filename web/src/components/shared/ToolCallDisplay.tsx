@@ -25,6 +25,7 @@ import { detectRemoteExecution } from '../../lib/remote-execution'
 import type { ToolStatus } from '../../lib/toolStatus'
 import { useT } from '../../hooks/useT'
 import { formatTokens } from '../../lib/format-stats'
+import { ContextBreakdown, buildContextBreakdownItems, numOrNull } from './ContextBreakdown'
 
 interface StreamingChunk {
   stream: 'stdout' | 'stderr'
@@ -450,6 +451,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   remaining: formatTokens(Number(metadata.remainingContextTokens) || 0),
                 },
               )}
+              <ContextBreakdown
+                className="block mt-1"
+                items={buildContextBreakdownItems({
+                  ctxWindow: numOrNull(metadata.ctxWindow),
+                  currentTokens: numOrNull(metadata.currentTokens),
+                  estimatedResultTokens: numOrNull(metadata.estimatedResultTokens),
+                  reserveTokens: numOrNull(metadata.reserveTokens),
+                  availableTokens: numOrNull(metadata.remainingContextTokens),
+                })}
+              />
             </div>
           )}
 

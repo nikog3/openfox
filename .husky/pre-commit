@@ -17,9 +17,15 @@ case "$(uname -s)" in
   *)                    TEST_CMD="npm test" ;;
 esac
 
+# Static checks run in parallel; the test suite runs on its own afterwards.
+# Running tests alongside the other checks starves CPU on Windows and makes
+# slow tests (e.g. init-llm) time out under load.
 parallel_exit_on_failure \
   "lint"      "npm run lint" \
   "typecheck" "npm run typecheck" \
   "format"    "npm run format" \
   "duplicate" "npm run duplicate" \
-  "test"      "$TEST_CMD"
+  || exit 1
+
+echo "  Running tests..."
+sh -c "$TEST_CMD" || exit 1

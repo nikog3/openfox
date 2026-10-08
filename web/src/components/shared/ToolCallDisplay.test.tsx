@@ -6,6 +6,7 @@ import { SETTINGS_KEYS, settingResource } from '../../lib/resources'
 import { clearCache } from '../../lib/resourceCache'
 import { SessionScopeProvider } from '../../stores/session/session-scope'
 import { ToolCallDisplay } from './ToolCallDisplay'
+import { ContextBreakdown, buildContextBreakdownItems } from './ContextBreakdown'
 
 vi.mock('../../lib/api', () => ({ authFetch: vi.fn() }))
 
@@ -559,5 +560,110 @@ describe('ToolCallDisplay — truncated path tooltip', () => {
     await new Promise((resolve) => setTimeout(resolve, 250))
 
     expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+})
+
+describe('ToolCallDisplay — context-limit truncation breakdown', () => {
+  beforeEach(() => {
+    useSessionStore.setState({ pendingPathConfirmations: [] })
+    clearCache()
+  })
+
+  afterEach(cleanup)
+
+  it('renders the token breakdown when metadata contains context fields', () => {
+    const { container } = render(
+      <ToolCallDisplay
+        tool="run_command"
+        args={{ command: 'make build' }}
+        status="success"
+        result="output"
+        variant="expandable"
+        metadata={{
+          truncatedReason: 'context_limit',
+          estimatedTokens: 150000,
+          remainingContextTokens: 124752,
+          ctxWindow: 128000,
+          currentTokens: 5000,
+          estimatedResultTokens: 150000,
+          reserveTokens: 2048,
+        }}
+      />,
+    )
+
+    const text = container.textContent ?? ''
+    expect(text).toContain('Output truncated')
+    expect(text).toContain('Window')
+    expect(text).toContain('128 000')
+    expect(text).toContain('Used')
+    expect(text).toContain('5 000')
+    expect(text).toContain('Tool (est.)')
+    expect(text).toContain('150 000')
+    expect(text).toContain('Output reserve')
+    expect(text).toContain('2 048')
+    expect(text).toContain('Available')
+    expect(text).toContain('124 752')
+  })
+
+  it('renders only the fields present in metadata', () => {
+    const { container } = render(
+      <ToolCallDisplay
+        tool="run_command"
+        args={{ command: 'make build' }}
+        status="success"
+        result="output"
+        variant="expandable"
+        metadata={{
+          truncatedReason: 'context_limit',
+          estimatedTokens: 150000,
+          remainingContextTokens: 124752,
+        }}
+      />,
+    )
+
+    const text = container.textContent ?? ''
+    expect(text).toContain('Output truncated')
+    expect(text).not.toContain('Window')
+    expect(text).not.toContain('Used')
+    expect(text).not.toContain('Tool (est.)')
+  })
+})
+
+describe('ContextBreakdown — shared component', () => {
+  afterEach(cleanup)
+
+  it('renders all provided fields', () => {
+    const items = buildContextBreakdownItems({
+      ctxWindow: 128000,
+      currentTokens: 55094,
+      estimatedResultTokens: 100000,
+      reserveTokens: 2048,
+      availableTokens: 70858,
+      actualTokens: 154020,
+      serverLimit: 150016,
+    })
+
+    const { container } = render(<ContextBreakdown items={items} />)
+    const text = container.textContent ?? ''
+
+    expect(text).toContain('Window')
+    expect(text).toContain('128 000')
+    expect(text).toContain('Used')
+    expect(text).toContain('55 094')
+    expect(text).toContain('Tool (est.)')
+    expect(text).toContain('100 000')
+    expect(text).toContain('Output reserve')
+    expect(text).toContain('2 048')
+    expect(text).toContain('Available')
+    expect(text).toContain('70 858')
+    expect(text).toContain('Actual request')
+    expect(text).toContain('154 020')
+    expect(text).toContain('Server limit')
+    expect(text).toContain('150 016')
+  })
+
+  it('returns null for empty items', () => {
+    const { container } = render(<ContextBreakdown items={[]} />)
+    expect(container.textContent).toBe('')
   })
 })

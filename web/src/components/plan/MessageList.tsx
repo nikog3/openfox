@@ -18,6 +18,7 @@ import { useSessionScope, useScopedPaneState } from '../../stores/session/sessio
 import type { DisplayItem } from './groupMessages.js'
 import type { MetadataEntry, WorkflowScope } from '@shared/types.js'
 import type { LLMRetryState } from '../../stores/session/types'
+import { ContextBreakdown, buildContextBreakdownItems } from '../shared/ContextBreakdown'
 import { prettyPrintError } from '../../lib/prettyPrintError'
 
 const EMPTY_CRITERIA: MetadataEntry[] = []
@@ -61,6 +62,15 @@ function LLMRetryIndicator({
     remainingSec > 0
       ? t({ en: ' — next try in {{count}}s', fr: ' — prochain essai dans {{count}}s' }, { count: remainingSec })
       : ''
+  const breakdownItems = buildContextBreakdownItems({
+    ctxWindow: retry.ctxWindow,
+    currentTokens: retry.currentTokens,
+    estimatedResultTokens: retry.estimatedResultTokens,
+    reserveTokens: retry.reserveTokens,
+    availableTokens: retry.availableTokens,
+    actualTokens: retry.actualTokens,
+    serverLimit: retry.serverLimit,
+  })
 
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-bg-tertiary/60 border border-border text-xs text-text-secondary">
@@ -75,6 +85,7 @@ function LLMRetryIndicator({
         )}
         {suffix}
       </span>
+      <ContextBreakdown items={breakdownItems} />
       <ErrorInfoButton onClick={onShowError} />
       <button
         onClick={onRetryNow}

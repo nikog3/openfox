@@ -358,6 +358,20 @@ export interface ChatLLMRetryPayload {
   retryInMs: number
   /** The error that triggered this retry. */
   error: string
+  /** Context window (max tokens) for the model. */
+  ctxWindow?: number
+  /** Tokens currently used (prompt + completion of the last successful call). */
+  currentTokens?: number
+  /** Estimated tokens of the pending tool results. */
+  estimatedResultTokens?: number
+  /** Output reserve tokens. */
+  reserveTokens?: number
+  /** Available context space (ctxWindow - currentTokens - reserveTokens). */
+  availableTokens?: number
+  /** Actual request size reported by the server (when parsable). */
+  actualTokens?: number
+  /** Server-side context limit (when parsable). */
+  serverLimit?: number
 }
 
 export interface ChatLLMRetryFailedPayload {

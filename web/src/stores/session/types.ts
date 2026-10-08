@@ -34,7 +34,20 @@ export interface PendingQuestion {
 
 /** Live status of an LLM failure: backing off before a retry, or the window exhausted. */
 export type LLMRetryState =
-  { status: 'retrying'; attempt: number; retryInMs: number; error: string } | { status: 'failed'; error: string }
+  | {
+      status: 'retrying'
+      attempt: number
+      retryInMs: number
+      error: string
+      ctxWindow?: number
+      currentTokens?: number
+      estimatedResultTokens?: number
+      reserveTokens?: number
+      availableTokens?: number
+      actualTokens?: number
+      serverLimit?: number
+    }
+  | { status: 'failed'; error: string }
 
 export interface StreamingBuffer {
   messageId: string | null
