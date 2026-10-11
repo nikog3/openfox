@@ -20,6 +20,10 @@ vi.mock('./stream-pure.js', () => ({
     type: 'chat.done',
     data: { messageId, reason },
   })),
+  createToolResultEvent: vi.fn((messageId: string, toolCallId: string, result: any) => ({
+    type: 'tool.result',
+    data: { messageId, toolCallId, result },
+  })),
   evaluateLLMRetry: vi.fn(() => ({ retry: true, delayMs: 0, attempt: 2 })),
   sleepThroughRetryBackoff: vi.fn(async () => 'waited' as const),
   recordLLMFailure: vi.fn(),
@@ -94,6 +98,8 @@ vi.mock('../events/index.js', () => ({
 import { runTopLevelAgentLoop } from './agent-loop.js'
 import { consumeStreamGenerator, streamLLMPure } from './stream-pure.js'
 import { executeTools } from './execute-tools.js'
+import { buildContextMessagesFromEventHistory } from '../events/fold-messages.js'
+import { minimalMessagesToRequestContextMessages } from './request-context.js'
 
 function createMockSessionManager(overrides?: Record<string, any>): SessionManager {
   return {
@@ -618,5 +624,93 @@ describe('agentLoop integration', () => {
     const startIndex = events.indexOf(messageStart)
     const doneIndex = events.indexOf(messageDone)
     expect(startIndex).toBeLessThan(doneIndex)
+  })
+
+  it('sends each truncated tool result exactly once in the next LLM request', async () => {
+    const append = vi.fn()
+    const toolCalls: ToolCall[] = [
+      { id: 'call-1', name: 'web_fetch', arguments: { url: 'http://a' } },
+      { id: 'call-2', name: 'web_fetch', arguments: { url: 'http://b' } },
+    ]
+    const fullOutput = 'x'.repeat(60000)
+
+    // 20k window → maxToolTokens = 20000 - 150 (usage) - 2048 (reserve) = 17802
+    // → availableContentChars = (17802 - 2 * 16) * 4 = 71080
+    const sessionManager = createMockSessionManager({
+      getCurrentModelContext: vi.fn().mockReturnValue(20000),
+    })
+
+    const assembleRequestMock = vi.fn().mockReturnValue({
+      systemPrompt: 'test-prompt',
+      messages: [],
+      tools: [],
+    })
+
+    // Fold the real appended events through the real fold pipeline, exactly
+    // like conversation-history does for the live request.
+    const getConversationMessagesMock = vi.fn(async () =>
+      minimalMessagesToRequestContextMessages(
+        buildContextMessagesFromEventHistory(append.mock.calls.map((c: unknown[]) => c[0] as any)),
+      ),
+    )
+
+    ;(consumeStreamGenerator as any)
+      .mockResolvedValueOnce(makeStreamResult({ toolCalls, finishReason: 'tool_calls' }))
+      .mockResolvedValueOnce(makeStreamResult({ content: 'Done', finishReason: 'stop' }))
+    ;(executeTools as any).mockImplementation(
+      async (assistantMsgId: string, calls: ToolCall[], _batch: any, appendEvent: (e: any) => void) => {
+        for (const tc of calls) {
+          appendEvent({ type: 'tool.call', data: { messageId: assistantMsgId, toolCall: tc } })
+        }
+        for (const tc of calls) {
+          appendEvent({
+            type: 'tool.result',
+            data: {
+              messageId: assistantMsgId,
+              toolCallId: tc.id,
+              result: { success: true, output: fullOutput, durationMs: 1, truncated: false },
+            },
+          })
+        }
+        return {
+          toolMessages: calls.map((tc) => ({
+            role: 'tool',
+            content: fullOutput,
+            source: 'history',
+            toolCallId: tc.id,
+          })),
+          executedResults: calls.map((tc, i) => ({
+            toolCall: tc,
+            toolResult: { success: true, output: fullOutput, durationMs: 1, truncated: false },
+            content: fullOutput,
+            index: i,
+          })),
+          stepDoneCalled: false,
+        }
+      },
+    )
+
+    await runTopLevelAgentLoop(
+      makeConfig({
+        append,
+        sessionManager,
+        assembleRequest: assembleRequestMock,
+        getConversationMessages: getConversationMessagesMock,
+      }),
+      turnMetrics,
+    )
+
+    expect(consumeStreamGenerator).toHaveBeenCalledTimes(2)
+    expect(assembleRequestMock).toHaveBeenCalledTimes(2)
+
+    const secondCallArgs = assembleRequestMock.mock.calls[1]![0] as { messages: any[] }
+    const toolMsgs = secondCallArgs.messages.filter((m: any) => m.role === 'tool')
+    // Each tool call appears exactly once — no full + truncated duplicate
+    expect(toolMsgs.map((m: any) => m.toolCallId)).toEqual(['call-1', 'call-2'])
+    // The re-emitted tool.result carries the truncated content (last event wins)
+    expect(toolMsgs[0]!.content.length).toBe(11080)
+    // Total tool content fits the truncated budget
+    const totalChars = toolMsgs.reduce((sum: number, m: any) => sum + m.content.length, 0)
+    expect(totalChars).toBeLessThanOrEqual(71080)
   })
 })

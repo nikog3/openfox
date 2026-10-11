@@ -900,6 +900,13 @@ ${COMPACTION_PROMPT}`,
                 toCut -= cut
                 const execResult = batchResult.executedResults.find((e) => e.toolCall.id === msg.toolCallId)
                 if (execResult) {
+                  // The re-appended tool.result must render the truncated
+                  // content byte-identically to the message sent to the LLM —
+                  // the fold replaces the original result with it (last event
+                  // wins), so the next request carries one truncated message
+                  // per call, never the full output.
+                  execResult.toolResult.output = msg.content
+                  delete execResult.toolResult.error
                   execResult.toolResult.truncated = true
                   execResult.toolResult.metadata = {
                     ...execResult.toolResult.metadata,

@@ -98,11 +98,15 @@ OPENFOX_TEST_VERBOSE=true npx vitest run
 
 ### Git Commands
 
-Precommit hooks take >40s, so always use a 120s timeout when committing:
+Precommit hooks run lint + duplicate + format + typecheck + the FULL unit test
+suite (~7-8 min in a loaded environment). NEVER use a 120s timeout — it kills
+the commit mid-hook and forces a full re-run. Use one of:
 
 ```bash
-git commit -m "message"   # timeout: 120000ms
+git commit -m "message"   # timeout: 600000ms
 ```
+
+or launch it as a background process and poll its logs until it finishes.
 
 Never skip the hooks unless the user explicitly asks.
 

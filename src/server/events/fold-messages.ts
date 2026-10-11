@@ -350,6 +350,34 @@ export function handleToolCall(
   }
 }
 
+function applyToolResult(
+  msg: MessageWithId,
+  result: {
+    success: boolean
+    output?: string
+    error?: string
+    metadata?: { mimeType?: string; dataUrl?: string; path?: string; size?: number }
+  },
+): void {
+  msg.content = renderToolResultContent(result)
+  const imageMeta = result.metadata
+  if (imageMeta?.dataUrl && imageMeta?.mimeType?.startsWith('image/')) {
+    const description = (imageMeta as Record<string, unknown>)['description']
+    msg.attachments = [
+      {
+        id: crypto.randomUUID(),
+        filename: imageMeta.path ?? 'image',
+        mimeType: imageMeta.mimeType as Attachment['mimeType'],
+        size: imageMeta.size ?? 0,
+        data: imageMeta.dataUrl,
+        ...(typeof description === 'string' ? { description } : {}),
+      },
+    ]
+  } else {
+    delete msg.attachments
+  }
+}
+
 export function handleToolResult(
   messages: MessageWithId[],
   messageMap: Map<string, MessageWithId>,
@@ -366,41 +394,36 @@ export function handleToolResult(
   },
 ): void {
   fulfilled.add(data.toolCallId)
-  if (messageMap.has(data.messageId)) {
-    const imageMeta = data.result.metadata
-    const toolMsg: MessageWithId = {
-      id: `tool-${data.toolCallId}`,
-      role: 'tool',
-      content: renderToolResultContent(data.result),
-      toolCallId: data.toolCallId,
+  if (!messageMap.has(data.messageId)) return
+  // A later tool.result for the same toolCallId (e.g. the truncated
+  // re-emit after context-limit truncation) replaces the earlier one in
+  // place. Last event wins: content and attachments are updated while the
+  // message keeps its id and position, so the KV cache prefix stays stable.
+  const existing = messages.find((m) => m.role === 'tool' && m.toolCallId === data.toolCallId)
+  if (existing) {
+    applyToolResult(existing, data.result)
+    return
+  }
+  const toolMsg: MessageWithId = {
+    id: `tool-${data.toolCallId}`,
+    role: 'tool',
+    content: '',
+    toolCallId: data.toolCallId,
+  }
+  applyToolResult(toolMsg, data.result)
+  // Insert tool message right after its parent assistant message,
+  // before any interleaved user messages (e.g. system-reminder injected
+  // during tool execution). This ensures stable ordering regardless of
+  // whether the context is assembled from raw events or a snapshot.
+  const parentIdx = messages.findIndex((m) => m.id === data.messageId)
+  if (parentIdx >= 0) {
+    let insertIdx = parentIdx + 1
+    while (insertIdx < messages.length && messages[insertIdx]!.role === 'tool' && messages[insertIdx]!.toolCallId) {
+      insertIdx++
     }
-    if (imageMeta?.dataUrl && imageMeta?.mimeType?.startsWith('image/')) {
-      const description = (imageMeta as Record<string, unknown>)['description']
-      toolMsg.attachments = [
-        {
-          id: crypto.randomUUID(),
-          filename: imageMeta.path ?? 'image',
-          mimeType: imageMeta.mimeType as Attachment['mimeType'],
-          size: imageMeta.size ?? 0,
-          data: imageMeta.dataUrl,
-          ...(typeof description === 'string' ? { description } : {}),
-        },
-      ]
-    }
-    // Insert tool message right after its parent assistant message,
-    // before any interleaved user messages (e.g. system-reminder injected
-    // during tool execution). This ensures stable ordering regardless of
-    // whether the context is assembled from raw events or a snapshot.
-    const parentIdx = messages.findIndex((m) => m.id === data.messageId)
-    if (parentIdx >= 0) {
-      let insertIdx = parentIdx + 1
-      while (insertIdx < messages.length && messages[insertIdx]!.role === 'tool' && messages[insertIdx]!.toolCallId) {
-        insertIdx++
-      }
-      messages.splice(insertIdx, 0, toolMsg)
-    } else {
-      messages.push(toolMsg)
-    }
+    messages.splice(insertIdx, 0, toolMsg)
+  } else {
+    messages.push(toolMsg)
   }
 }
 
@@ -492,20 +515,24 @@ export function buildContextMessagesFromEventHistory(
   // message entirely — silently losing the sub-agent's return value from the
   // parent's context.
   const snapshotMessageIds = new Set(snapshot.messages.map((message) => message.id))
-  const unresolvedToolCallIds = new Set<string>()
+  const knownToolCallIds = new Set<string>()
   for (const message of snapshot.messages) {
     for (const toolCall of message.toolCalls ?? []) {
-      if (toolCall.result === undefined) unresolvedToolCallIds.add(toolCall.id)
+      knownToolCallIds.add(toolCall.id)
     }
   }
   const laterEvents = events.filter((event) => {
     if (event.seq <= snapshotEvent.seq) return false
     if (!('messageId' in event.data)) return true
     if (!snapshotMessageIds.has((event.data as { messageId: string }).messageId)) return true
-    // The snapshot already holds this message. Keep only what completes it.
+    // The snapshot already holds this message. Keep only what completes it
+    // (an unfulfilled tool call) or replaces it (a late tool.result for an
+    // already-resolved call — e.g. the truncated re-emit after
+    // context-limit truncation). The fold is idempotent per toolCallId: a
+    // later tool.result replaces the snapshot's content in place.
     if (event.type !== 'tool.result') return false
     const toolCallId = (event.data as { toolCallId?: string }).toolCallId
-    return toolCallId !== undefined && unresolvedToolCallIds.has(toolCallId)
+    return toolCallId !== undefined && knownToolCallIds.has(toolCallId)
   })
 
   return buildContextMessagesFromStoredEvents(

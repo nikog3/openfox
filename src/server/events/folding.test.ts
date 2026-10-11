@@ -2154,6 +2154,156 @@ describe('event folding', () => {
       })
     })
 
+    describe('tool.result replacement (truncation re-emit)', () => {
+      it('folds two tool.result events for the same toolCallId into ONE tool message with the last event content', () => {
+        const events: StoredEvent[] = [
+          { ...baseEvent, type: 'message.start', data: { messageId: 'm1', role: 'assistant' } },
+          {
+            ...baseEvent,
+            type: 'tool.call',
+            data: { messageId: 'm1', toolCall: { id: 'call-1', name: 'web_fetch', arguments: { url: 'http://a' } } },
+          },
+          {
+            ...baseEvent,
+            type: 'tool.result',
+            data: {
+              messageId: 'm1',
+              toolCallId: 'call-1',
+              result: { success: true, output: 'full output A', durationMs: 1, truncated: false },
+            },
+          },
+          {
+            ...baseEvent,
+            type: 'tool.result',
+            data: {
+              messageId: 'm1',
+              toolCallId: 'call-1',
+              result: { success: true, output: 'tr', durationMs: 1, truncated: true },
+            },
+          },
+          { ...baseEvent, type: 'message.done', data: { messageId: 'm1' } },
+        ]
+
+        const messages = buildContextMessagesFromStoredEvents(events)
+
+        const toolMessages = messages.filter((m) => m.role === 'tool')
+        expect(toolMessages).toHaveLength(1)
+        expect(toolMessages[0]!.toolCallId).toBe('call-1')
+        expect(toolMessages[0]!.content).toBe('tr')
+      })
+
+      it('replaces tool message content in place, preserving parallel call order', () => {
+        const events: StoredEvent[] = [
+          { ...baseEvent, type: 'message.start', data: { messageId: 'm1', role: 'assistant' } },
+          {
+            ...baseEvent,
+            type: 'tool.call',
+            data: { messageId: 'm1', toolCall: { id: 'call-1', name: 'read_file', arguments: { path: 'a' } } },
+          },
+          {
+            ...baseEvent,
+            type: 'tool.call',
+            data: { messageId: 'm1', toolCall: { id: 'call-2', name: 'read_file', arguments: { path: 'b' } } },
+          },
+          {
+            ...baseEvent,
+            type: 'tool.result',
+            data: {
+              messageId: 'm1',
+              toolCallId: 'call-1',
+              result: { success: true, output: 'full one', durationMs: 1, truncated: false },
+            },
+          },
+          {
+            ...baseEvent,
+            type: 'tool.result',
+            data: {
+              messageId: 'm1',
+              toolCallId: 'call-2',
+              result: { success: true, output: 'two', durationMs: 1, truncated: false },
+            },
+          },
+          {
+            ...baseEvent,
+            type: 'tool.result',
+            data: {
+              messageId: 'm1',
+              toolCallId: 'call-1',
+              result: { success: true, output: 'f', durationMs: 1, truncated: true },
+            },
+          },
+          { ...baseEvent, type: 'message.done', data: { messageId: 'm1' } },
+        ]
+
+        const messages = buildContextMessagesFromStoredEvents(events)
+
+        const toolMessages = messages.filter((m) => m.role === 'tool')
+        expect(toolMessages.map((m) => m.toolCallId)).toEqual(['call-1', 'call-2'])
+        expect(toolMessages[0]!.content).toBe('f')
+        expect(toolMessages[1]!.content).toBe('two')
+      })
+
+      it('keeps a late tool.result that replaces an already-resolved snapshot tool call', () => {
+        const snapshotEvent: StoredEvent = {
+          ...baseEvent,
+          seq: 10,
+          type: 'turn.snapshot',
+          data: {
+            mode: 'builder',
+            phase: 'build',
+            isRunning: false,
+            messages: [
+              {
+                id: 'm1',
+                role: 'assistant',
+                content: '',
+                timestamp: baseEvent.timestamp,
+                toolCalls: [
+                  {
+                    id: 'call-1',
+                    name: 'read_file',
+                    arguments: { path: 'a' },
+                    result: { success: true, output: 'full one', durationMs: 1, truncated: false },
+                  },
+                ],
+              },
+            ],
+            criteria: [],
+            metadataEntries: {},
+            contextState: {
+              currentTokens: 0,
+              maxTokens: 200000,
+              compactionCount: 0,
+              dangerZone: false,
+              canCompact: false,
+              dynamicContextChanged: false,
+            },
+            currentContextWindowId: '',
+            todos: [],
+            snapshotSeq: 9,
+            snapshotAt: baseEvent.timestamp,
+          },
+        }
+        const replacingResult: StoredEvent = {
+          ...baseEvent,
+          seq: 20,
+          type: 'tool.result',
+          data: {
+            messageId: 'm1',
+            toolCallId: 'call-1',
+            result: { success: true, output: 'f', durationMs: 1, truncated: true },
+          },
+        }
+
+        const messages = buildContextMessagesFromEventHistory([snapshotEvent, replacingResult])
+
+        const toolMessages = messages.filter((m) => m.role === 'tool')
+        expect(toolMessages).toHaveLength(1)
+        expect(toolMessages[0]!.toolCallId).toBe('call-1')
+        expect(toolMessages[0]!.content).toBe('f')
+      })
+    })
+
     it('strips orphaned toolCalls from snapshot messages via buildContextMessagesFromEventHistory', () => {
       const events: StoredEvent[] = [
         {
