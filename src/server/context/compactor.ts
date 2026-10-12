@@ -45,6 +45,17 @@ export const COMPACTION_HEADROOM_TOKENS = 5_000
 export const COMPACTION_MAX_RATIO = 0.95
 
 /**
+ * Guaranteed minimum output budget for the compaction summary call.
+ * Compaction only fires between LLM calls, so a large tool result can push the
+ * context past the window before it triggers — at which point the normal output
+ * clamp (availableForOutput) goes negative and floors at 256 tokens. That 256
+ * tokens, mostly consumed by thinking, yields a truncated summary that wipes the
+ * whole context. The summary call must never be subject to that floor: it always
+ * gets at least this many tokens.
+ */
+export const COMPACTION_SUMMARY_BUDGET_TOKENS = 4_096
+
+/**
  * Check if automatic compaction should be triggered.
  * Applies a hard ceiling to guarantee headroom before the context fills up.
  */

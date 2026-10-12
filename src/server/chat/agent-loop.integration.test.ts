@@ -34,23 +34,27 @@ vi.mock('./execute-tools.js', () => ({
   executeTools: vi.fn(),
 }))
 
-vi.mock('../context/compactor.js', () => ({
-  shouldCompact: vi.fn().mockReturnValue(false),
-  appendCompactionPrompt: vi.fn((_sessionId: string, append: (event: any) => void) => {
-    append({
-      type: 'message.start',
-      data: {
-        messageId: 'compact-prompt',
-        role: 'user',
-        content: 'You are a helpful AI assistant tasked with summarizing conversations for continuation.',
-        isSystemGenerated: true,
-        messageKind: 'auto-prompt',
-        metadata: { type: 'compaction', name: 'Compaction', color: '#64748b' },
-      },
-    })
-    append({ type: 'message.done', data: { messageId: 'compact-prompt' } })
-  }),
-}))
+vi.mock('../context/compactor.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../context/compactor.js')>()
+  return {
+    COMPACTION_SUMMARY_BUDGET_TOKENS: actual.COMPACTION_SUMMARY_BUDGET_TOKENS,
+    shouldCompact: vi.fn().mockReturnValue(false),
+    appendCompactionPrompt: vi.fn((_sessionId: string, append: (event: any) => void) => {
+      append({
+        type: 'message.start',
+        data: {
+          messageId: 'compact-prompt',
+          role: 'user',
+          content: 'You are a helpful AI assistant tasked with summarizing conversations for continuation.',
+          isSystemGenerated: true,
+          messageKind: 'auto-prompt',
+          metadata: { type: 'compaction', name: 'Compaction', color: '#64748b' },
+        },
+      })
+      append({ type: 'message.done', data: { messageId: 'compact-prompt' } })
+    }),
+  }
+})
 
 vi.mock('./conversation-history.js', () => ({
   getConversationMessages: vi.fn().mockReturnValue([]),

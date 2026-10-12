@@ -58,6 +58,7 @@ import { loadAllAgentsDefault, getSubAgents } from '../agents/registry.js'
 import { createRetryLimiter, type RetryLimiter } from './retry-limiter.js'
 import { drainQueue } from './drain-queue.js'
 import { COMPACTION_PROMPT, CONTINUE_PROMPT, CONTINUE_AFTER_STREAM_ERROR_PROMPT } from './prompts.js'
+import { COMPACTION_SUMMARY_BUDGET_TOKENS } from '../context/compactor.js'
 import { logger } from '../utils/logger.js'
 import { emitPluginHook } from '../plugins/hook-emitter.js'
 import { applyPluginMessageTransforms } from '../plugins/message-transforms.js'
@@ -453,7 +454,13 @@ export async function runTopLevelAgentLoop(
 
       if (modelSettings) {
         const requestedMaxTokens = modelSettings.maxTokens ?? profileDefaultMaxTokens
-        modelSettings = { ...modelSettings, maxTokens: Math.min(requestedMaxTokens, availableForOutput) }
+        // Compaction summary must have a guaranteed output budget — never clamp
+        // it to the (possibly-negative) availableForOutput floor, which truncates
+        // the summary to a fragment and wipes the whole context.
+        const resolvedMaxTokens = compacting
+          ? Math.max(requestedMaxTokens, COMPACTION_SUMMARY_BUDGET_TOKENS)
+          : Math.min(requestedMaxTokens, availableForOutput)
+        modelSettings = { ...modelSettings, maxTokens: resolvedMaxTokens }
       }
 
       // Build set of sub-agent IDs so streamLLMPure can show the correct
@@ -490,6 +497,9 @@ export async function runTopLevelAgentLoop(
         toolChoice: 'auto',
         signal,
         subAgentAliases,
+        // The summary call must not burn its output budget on thinking — 'none'
+        // is the universal "thinking off" switch (→ enable_thinking:false for Qwen).
+        ...(compacting ? { reasoningEffort: 'none' } : {}),
         ...(roundRetryPatterns ? { retryPatterns: roundRetryPatterns } : {}),
         ...(modelSettings && { modelSettings }),
         preflight: (path) =>
@@ -996,6 +1006,26 @@ ${COMPACTION_PROMPT}`,
           },
         })
         logger.warn('Compaction produced empty summary, continuing', { sessionId })
+        compacting = false
+        if (config.initialCompacting) break
+        continue
+      }
+
+      // A truncated summary (the model hit its output limit) would replace the
+      // whole context with a fragment — detect it and keep the full context
+      // instead. Mirrors the empty-summary path above.
+      if (result.finishReason === 'length') {
+        append({
+          type: 'chat.error',
+          data: {
+            error: serverT({
+              en: 'Compaction summary was truncated, continuing with full context',
+              fr: 'Le résumé de compaction a été tronqué, poursuite avec le contexte complet',
+            }),
+            recoverable: true,
+          },
+        })
+        logger.warn('Compaction summary was truncated, continuing', { sessionId })
         compacting = false
         if (config.initialCompacting) break
         continue

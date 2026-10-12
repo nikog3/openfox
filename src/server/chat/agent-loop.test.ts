@@ -66,6 +66,7 @@ import { executeTools } from './execute-tools.js'
 import { getEventStore } from '../events/store.js'
 import { getAllInstructions } from '../context/instructions.js'
 import { getEnabledSkillMetadata } from '../skills/registry.js'
+import { COMPACTION_SUMMARY_BUDGET_TOKENS } from '../context/compactor.js'
 
 describe('executeTools', () => {
   let mockSessionManager: SessionManager
@@ -1983,6 +1984,189 @@ describe('maxTokens clamping', () => {
     expect(calls[1]?.[0].modelSettings?.maxTokens).toBe(24576)
     // After iteration 2 succeeded, the override is reset → user maxTokens (clamped).
     expect(calls[2]?.[0].modelSettings?.maxTokens).toBe(16384)
+  })
+})
+
+// ============================================================================
+// Compaction under context overflow — guaranteed summary budget, no reasoning,
+// and truncation detection (the root cause of "compaction forgets everything")
+// ============================================================================
+
+describe('compaction under context overflow', () => {
+  let mockEventStore: EventStore
+  let mockSessionManager: SessionManager
+  let mockLLMClient: any
+  let mockTurnMetrics: TurnMetrics
+  let assembleRequestMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+
+    mockEventStore = {
+      append: vi.fn(),
+      getEvents: vi.fn().mockReturnValue([]),
+      getContextWindowEvents: vi.fn().mockReturnValue([]),
+      getLatestSeq: vi.fn().mockReturnValue(0),
+      cleanupOldEvents: vi.fn().mockReturnValue(0),
+    } as unknown as EventStore
+    ;(getEventStore as any).mockReturnValue(mockEventStore)
+
+    mockLLMClient = { getModel: vi.fn().mockReturnValue('test-model') }
+
+    mockTurnMetrics = {
+      addToolTime: vi.fn(),
+      addLLMCall: vi.fn(),
+      addThinkingTime: vi.fn(),
+      buildStats: vi.fn().mockReturnValue({}),
+    } as unknown as TurnMetrics
+
+    assembleRequestMock = vi.fn().mockReturnValue({
+      systemPrompt: 'test-system-prompt',
+      messages: [],
+    })
+    ;(getAllInstructions as any).mockResolvedValue({ content: 'test instructions', files: [] })
+    ;(getEnabledSkillMetadata as any).mockResolvedValue([])
+
+    // Default: a complete summary, no truncation.
+    ;(consumeStreamGenerator as any).mockResolvedValue({
+      content: 'compaction summary',
+      toolCalls: [],
+      segments: [{ type: 'text', content: 'compaction summary' }],
+      usage: { promptTokens: 10, completionTokens: 5 },
+      timing: { ttft: 0.1, completionTime: 0.5, tps: 10, prefillTps: 100 },
+      aborted: false,
+      finishReason: 'stop',
+      modelParams: {},
+    })
+  })
+
+  function makeConfig(overrides?: Partial<TopLevelLoopConfig>): TopLevelLoopConfig {
+    return {
+      mode: 'planner',
+      append: vi.fn(),
+      sessionManager: mockSessionManager,
+      sessionId: 'test-session',
+      llmClient: mockLLMClient,
+      statsIdentity: { providerId: 'test', providerName: 'Test', backend: 'unknown' as const, model: 'test-model' },
+      assembleRequest: assembleRequestMock as any,
+      getToolRegistry: () => ({ tools: [], definitions: [], execute: vi.fn() }) as any,
+      getConversationMessages: vi.fn().mockResolvedValue([]),
+      ...overrides,
+    }
+  }
+
+  // Context overflows the window (currentTokens > contextWindow) — the scenario
+  // where the normal output clamp (availableForOutput) goes negative and floors
+  // at 256 tokens.
+  function makeOverflowingSessionManager(): any {
+    return {
+      enterPauseGate: vi.fn().mockResolvedValue('released'),
+      requireSession: vi.fn().mockReturnValue({
+        workdir: '/test',
+        projectId: 'test-project',
+        executionState: null,
+        criteria: [],
+        isRunning: false,
+      }),
+      getEffectiveWorkdir: vi.fn().mockReturnValue('/test'),
+      getProjectWorkdir: vi.fn().mockReturnValue('/test'),
+      getContextState: vi.fn().mockReturnValue({
+        currentTokens: 250_000,
+        maxTokens: 200_000,
+        compactionCount: 0,
+        dangerZone: false,
+        canCompact: false,
+        dynamicContextChanged: false,
+      }),
+      getCurrentModelContext: vi.fn().mockReturnValue(200_000),
+      getCurrentModelSettings: vi.fn().mockReturnValue({ maxTokens: 1_000 }),
+      setCurrentContextSize: vi.fn(),
+      getDynamicContextChanged: vi.fn().mockReturnValue(false),
+      setDynamicContextChanged: vi.fn(),
+      getCachedPrompt: vi.fn().mockReturnValue(undefined),
+      setCachedPrompt: vi.fn(),
+      getLspManager: vi.fn(),
+      drainAsapMessages: vi.fn().mockReturnValue([]),
+      getCurrentWindowMessages: vi.fn().mockReturnValue([]),
+      updateMessage: vi.fn(),
+    }
+  }
+
+  function emittedEvents(config: TopLevelLoopConfig): any[] {
+    return (config.append as any).mock.calls.map((c: any[]) => c[0])
+  }
+
+  it('gives the compaction summary a guaranteed output budget, not the 256-token floor', async () => {
+    mockSessionManager = makeOverflowingSessionManager()
+
+    await runTopLevelAgentLoop(makeConfig({ initialCompacting: true }), mockTurnMetrics).catch(() => {})
+
+    const callArgs = (streamLLMPure as any).mock.calls[0]?.[0]
+    expect(callArgs).toBeDefined()
+    // Overflowing context → availableForOutput would floor at 256. The summary
+    // call must instead get at least the guaranteed budget.
+    expect(callArgs.modelSettings?.maxTokens).toBe(COMPACTION_SUMMARY_BUDGET_TOKENS)
+  })
+
+  it('keeps the 256-token floor for a NON-compacting call under overflow (control)', async () => {
+    mockSessionManager = makeOverflowingSessionManager()
+
+    await runTopLevelAgentLoop(makeConfig(), mockTurnMetrics).catch(() => {})
+
+    const callArgs = (streamLLMPure as any).mock.calls[0]?.[0]
+    expect(callArgs).toBeDefined()
+    // Same overflow, but not compacting → the normal clamp floors at 256.
+    expect(callArgs.modelSettings?.maxTokens).toBe(256)
+  })
+
+  it('disables reasoning on the compaction call so the budget goes to the summary', async () => {
+    mockSessionManager = makeOverflowingSessionManager()
+
+    await runTopLevelAgentLoop(makeConfig({ initialCompacting: true }), mockTurnMetrics).catch(() => {})
+
+    const callArgs = (streamLLMPure as any).mock.calls[0]?.[0]
+    expect(callArgs.reasoningEffort).toBe('none')
+  })
+
+  it('leaves reasoningEffort unset on a non-compacting call (control)', async () => {
+    mockSessionManager = makeOverflowingSessionManager()
+
+    await runTopLevelAgentLoop(makeConfig(), mockTurnMetrics).catch(() => {})
+
+    const callArgs = (streamLLMPure as any).mock.calls[0]?.[0]
+    expect(callArgs.reasoningEffort).toBeUndefined()
+  })
+
+  it('cancels compaction (no context.compacted) when the summary is truncated (finishReason=length)', async () => {
+    mockSessionManager = makeOverflowingSessionManager()
+    ;(consumeStreamGenerator as any).mockResolvedValue({
+      content: 'partial summary fragment',
+      toolCalls: [],
+      segments: [{ type: 'text', content: 'partial summary fragment' }],
+      usage: { promptTokens: 10, completionTokens: 5 },
+      timing: { ttft: 0.1, completionTime: 0.5, tps: 10, prefillTps: 100 },
+      aborted: false,
+      finishReason: 'length',
+      modelParams: {},
+    })
+
+    const config = makeConfig({ initialCompacting: true })
+    await runTopLevelAgentLoop(config, mockTurnMetrics).catch(() => {})
+
+    const events = emittedEvents(config)
+    expect(events.some((e) => e?.type === 'context.compacted')).toBe(false)
+    // The full context is preserved: a recoverable error is surfaced instead.
+    expect(events.some((e) => e?.type === 'chat.error' && e.data?.recoverable)).toBe(true)
+  })
+
+  it('installs the summary (context.compacted) when it is NOT truncated (control)', async () => {
+    mockSessionManager = makeOverflowingSessionManager()
+
+    const config = makeConfig({ initialCompacting: true })
+    await runTopLevelAgentLoop(config, mockTurnMetrics).catch(() => {})
+
+    const events = emittedEvents(config)
+    expect(events.some((e) => e?.type === 'context.compacted')).toBe(true)
   })
 })
 
