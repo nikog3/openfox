@@ -47,6 +47,12 @@ describe('isContextLengthError', () => {
     expect(isContextLengthError('Prompt is too long (12345 tokens > 8192 tokens)')).toBe(true)
   })
 
+  it('detects llama.cpp context size errors', () => {
+    expect(isContextLengthError('request (218037 tokens) exceeds the available context size (150016 tokens)')).toBe(
+      true,
+    )
+  })
+
   it('does not match generic token errors without context framing', () => {
     expect(isContextLengthError('too many tokens')).toBe(false)
     expect(isContextLengthError('maximum output tokens exceeded')).toBe(false)

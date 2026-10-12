@@ -582,6 +582,7 @@ describe('ToolCallDisplay — context-limit truncation breakdown', () => {
         metadata={{
           truncatedReason: 'context_limit',
           estimatedTokens: 150000,
+          keptTokens: 60000,
           remainingContextTokens: 124752,
           ctxWindow: 128000,
           currentTokens: 5000,
@@ -593,6 +594,8 @@ describe('ToolCallDisplay — context-limit truncation breakdown', () => {
 
     const text = container.textContent ?? ''
     expect(text).toContain('Output truncated')
+    expect(text).toContain('150 000 tokens → 60 000 tokens')
+    expect(text).toContain('(budget: 124 752 tokens)')
     expect(text).toContain('Window')
     expect(text).toContain('128 000')
     expect(text).toContain('Used')
@@ -623,6 +626,7 @@ describe('ToolCallDisplay — context-limit truncation breakdown', () => {
 
     const text = container.textContent ?? ''
     expect(text).toContain('Output truncated')
+    expect(text).toContain('150 000 tokens → 150 000 tokens')
     expect(text).not.toContain('Window')
     expect(text).not.toContain('Used')
     expect(text).not.toContain('Tool (est.)')

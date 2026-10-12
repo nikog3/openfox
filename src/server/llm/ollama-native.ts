@@ -23,6 +23,7 @@ import type {
 } from './openai-types.js'
 import { logger } from '../utils/logger.js'
 import { ChatHttpClient, DONE, type ChatRequest } from './http-shared.js'
+import { countTokensFromResponse } from './tokenize.js'
 import './proxy.js'
 
 export interface OllamaClientOptions {
@@ -346,6 +347,26 @@ export class OllamaHttpClient extends ChatHttpClient {
 
   protected parseNonStreaming(data: unknown): ChatCompletionResponse {
     return parseOllamaChatResponse(data as OllamaChatResponse)
+  }
+
+  async tokenize(content: string, model?: string): Promise<number | null> {
+    if (!model) return null
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+      if (this.apiKey) {
+        headers['Authorization'] = `Bearer ${this.apiKey}`
+      }
+      const response = await fetch(`${this.baseURL}/api/tokenize`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model, prompt: content }),
+      })
+      return countTokensFromResponse(response)
+    } catch {
+      return null
+    }
   }
 
   protected parseStreamLine(trimmed: string): ChatCompletionChunk | typeof DONE | null {

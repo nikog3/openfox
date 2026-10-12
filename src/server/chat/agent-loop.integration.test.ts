@@ -93,11 +93,14 @@ vi.mock('../../cli/paths.js', () => ({
   getGlobalConfigDir: vi.fn().mockReturnValue('/test/config'),
 }))
 
-vi.mock('../events/index.js', () => ({
-  getCurrentContextWindowId: vi.fn().mockReturnValue(undefined),
-  getCurrentWindowMessageOptions: vi.fn().mockReturnValue(undefined),
-  getEventStore: vi.fn().mockReturnValue({ append: vi.fn(), getEvents: vi.fn().mockReturnValue([]) }),
-}))
+vi.mock('../events/index.js', () => {
+  const store = { append: vi.fn(), getEvents: vi.fn().mockReturnValue([]) }
+  return {
+    getCurrentContextWindowId: vi.fn().mockReturnValue(undefined),
+    getCurrentWindowMessageOptions: vi.fn().mockReturnValue(undefined),
+    getEventStore: vi.fn(() => store),
+  }
+})
 
 import { runTopLevelAgentLoop } from './agent-loop.js'
 import { consumeStreamGenerator, streamLLMPure } from './stream-pure.js'
@@ -716,5 +719,214 @@ describe('agentLoop integration', () => {
     // Total tool content fits the truncated budget
     const totalChars = toolMsgs.reduce((sum: number, m: any) => sum + m.content.length, 0)
     expect(totalChars).toBeLessThanOrEqual(71080)
+  })
+
+  it('re-measures large tool results with the backend tokenizer and truncates to the real budget', async () => {
+    const append = vi.fn()
+    const toolCalls: ToolCall[] = [
+      { id: 'call-1', name: 'web_fetch', arguments: { url: 'http://a' } },
+      { id: 'call-2', name: 'web_fetch', arguments: { url: 'http://b' } },
+    ]
+    const fullOutput = 'x'.repeat(60000)
+
+    // 20k window → maxToolTokens = 20000 - 150 - 2048 = 17802
+    // chars/4 estimate: 2 × (16 + 15000) = 30032 → over budget
+    // real tokens (2 chars/token): 2 × 30000 + 2 × 16 = 60032
+    // → toCut = ceil((60032 - 17802) / 60032 × 120000) = 84415
+    // → first msg cut to floor(60000 × 0.1) = 6000, second to 60000 - (84415 - 54000) = 29585
+    const sessionManager = createMockSessionManager({
+      getCurrentModelContext: vi.fn().mockReturnValue(20000),
+    })
+
+    const assembleRequestMock = vi.fn().mockReturnValue({
+      systemPrompt: 'test-prompt',
+      messages: [],
+      tools: [],
+    })
+
+    const getConversationMessagesMock = vi.fn(async () =>
+      minimalMessagesToRequestContextMessages(
+        buildContextMessagesFromEventHistory(append.mock.calls.map((c: unknown[]) => c[0] as any)),
+      ),
+    )
+
+    ;(consumeStreamGenerator as any)
+      .mockResolvedValueOnce(makeStreamResult({ toolCalls, finishReason: 'tool_calls' }))
+      .mockResolvedValueOnce(makeStreamResult({ content: 'Done', finishReason: 'stop' }))
+    ;(executeTools as any).mockImplementation(
+      async (assistantMsgId: string, calls: ToolCall[], _batch: any, appendEvent: (e: any) => void) => {
+        for (const tc of calls) {
+          appendEvent({ type: 'tool.call', data: { messageId: assistantMsgId, toolCall: tc } })
+        }
+        for (const tc of calls) {
+          appendEvent({
+            type: 'tool.result',
+            data: {
+              messageId: assistantMsgId,
+              toolCallId: tc.id,
+              result: { success: true, output: fullOutput, durationMs: 1, truncated: false },
+            },
+          })
+        }
+        return {
+          toolMessages: calls.map((tc) => ({
+            role: 'tool',
+            content: fullOutput,
+            source: 'history',
+            toolCallId: tc.id,
+          })),
+          executedResults: calls.map((tc, i) => ({
+            toolCall: tc,
+            toolResult: { success: true, output: fullOutput, durationMs: 1, truncated: false },
+            content: fullOutput,
+            index: i,
+          })),
+          stepDoneCalled: false,
+        }
+      },
+    )
+
+    await runTopLevelAgentLoop(
+      makeConfig({
+        append,
+        sessionManager,
+        assembleRequest: assembleRequestMock,
+        getConversationMessages: getConversationMessagesMock,
+        llmClient: {
+          getModel: vi.fn().mockReturnValue('test-model'),
+          tokenize: vi.fn(async (content: string) => Math.ceil(content.length / 2)),
+        } as any,
+      }),
+      turnMetrics,
+    )
+
+    expect(consumeStreamGenerator).toHaveBeenCalledTimes(2)
+
+    const secondCallArgs = assembleRequestMock.mock.calls[1]![0] as { messages: any[] }
+    const toolMsgs = secondCallArgs.messages.filter((m: any) => m.role === 'tool')
+    expect(toolMsgs.map((m: any) => m.toolCallId)).toEqual(['call-1', 'call-2'])
+    // Real-token budget applied, not the chars/4 estimate
+    expect(toolMsgs[0]!.content.length).toBe(6000)
+    expect(toolMsgs[1]!.content.length).toBe(29585)
+
+    // Both truncated results re-emitted with estimated/kept token metadata
+    const reEmitted = append.mock.calls
+      .map((args: unknown[]) => args[0] as any)
+      .filter((e: any) => e.type === 'tool.result' && e.data?.result?.truncated)
+    expect(reEmitted.map((e: any) => e.data.toolCallId)).toEqual(['call-1', 'call-2'])
+    expect(reEmitted[0]!.data.result.metadata.estimatedTokens).toBe(15000)
+    expect(reEmitted[0]!.data.result.metadata.keptTokens).toBe(1500)
+    expect(reEmitted[1]!.data.result.metadata.keptTokens).toBe(7397)
+  })
+
+  it('re-truncates the largest tool result when the server rejects with a token count far above the estimate', async () => {
+    const append = vi.fn()
+    const toolCall: ToolCall = { id: 'call-1', name: 'web_fetch', arguments: { url: 'http://a' } }
+    const fullOutput = 'h'.repeat(250000)
+
+    // 150k window, context at 12000 → estimate = 16 + 62500 = 62516 tokens
+    // request estimate = 12000 + 62516 = 74516
+    // server rejects at 218037 real tokens (> 1.2 × 74516) → re-truncate by ratio
+    // newLen = max(floor(250000 × 0.1), floor(250000 × 74516 / 218037)) = 85439
+    const sessionManager = createMockSessionManager({
+      getCurrentModelContext: vi.fn().mockReturnValue(150000),
+      getContextState: vi.fn().mockReturnValue({
+        currentTokens: 12000,
+        maxTokens: 150000,
+        compactionCount: 0,
+        dangerZone: false,
+        canCompact: false,
+        dynamicContextChanged: false,
+      }),
+    })
+
+    const { getEventStore } = await import('../events/index.js')
+    ;(getEventStore().getEvents as any).mockImplementation(() => append.mock.calls.map((c: unknown[]) => c[0]))
+
+    const assembleRequestMock = vi.fn().mockReturnValue({
+      systemPrompt: 'test-prompt',
+      messages: [],
+      tools: [],
+    })
+
+    const getConversationMessagesMock = vi.fn(async () =>
+      minimalMessagesToRequestContextMessages(
+        buildContextMessagesFromEventHistory(append.mock.calls.map((c: unknown[]) => c[0] as any)),
+      ),
+    )
+
+    ;(consumeStreamGenerator as any)
+      .mockResolvedValueOnce(makeStreamResult({ toolCalls: [toolCall], finishReason: 'tool_calls' }))
+      .mockResolvedValueOnce(
+        makeStreamResult({
+          error: 'request (218037 tokens) exceeds the available context size (150016 tokens)',
+          finishReason: 'stop',
+        }),
+      )
+      .mockResolvedValueOnce(makeStreamResult({ content: 'Done', finishReason: 'stop' }))
+    ;(executeTools as any).mockImplementation(
+      async (assistantMsgId: string, calls: ToolCall[], _batch: any, appendEvent: (e: any) => void) => {
+        for (const tc of calls) {
+          appendEvent({ type: 'tool.call', data: { messageId: assistantMsgId, toolCall: tc } })
+        }
+        for (const tc of calls) {
+          appendEvent({
+            type: 'tool.result',
+            data: {
+              messageId: assistantMsgId,
+              toolCallId: tc.id,
+              result: { success: true, output: fullOutput, durationMs: 1, truncated: false },
+            },
+          })
+        }
+        return {
+          toolMessages: calls.map((tc) => ({
+            role: 'tool',
+            content: fullOutput,
+            source: 'history',
+            toolCallId: tc.id,
+          })),
+          executedResults: calls.map((tc, i) => ({
+            toolCall: tc,
+            toolResult: { success: true, output: fullOutput, durationMs: 1, truncated: false },
+            content: fullOutput,
+            index: i,
+          })),
+          stepDoneCalled: false,
+        }
+      },
+    )
+
+    await runTopLevelAgentLoop(
+      makeConfig({
+        append,
+        sessionManager,
+        assembleRequest: assembleRequestMock,
+        getConversationMessages: getConversationMessagesMock,
+      }),
+      turnMetrics,
+    )
+
+    // tool round → rejected round → re-truncated round
+    expect(consumeStreamGenerator).toHaveBeenCalledTimes(3)
+
+    const thirdCallArgs = assembleRequestMock.mock.calls[2]![0] as { messages: any[] }
+    const toolMsg = thirdCallArgs.messages.find((m: any) => m.role === 'tool')
+    expect(toolMsg!.content.length).toBe(85439)
+
+    // The replacement tool.result carries the original parent message id so the
+    // fold replaces the original result in place (KV cache prefix stays stable)
+    const toolResults = append.mock.calls
+      .map((args: unknown[]) => args[0] as any)
+      .filter((e: any) => e.type === 'tool.result')
+    expect(toolResults.length).toBe(2)
+    expect(toolResults[1]!.data.toolCallId).toBe('call-1')
+    expect(toolResults[1]!.data.messageId).toBe(toolResults[0]!.data.messageId)
+    expect(toolResults[1]!.data.result.truncated).toBe(true)
+    expect(toolResults[1]!.data.result.metadata.estimatedTokens).toBe(62500)
+    expect(toolResults[1]!.data.result.metadata.keptTokens).toBe(21360)
+
+    const chatDoneEvents = append.mock.calls.filter((args: unknown[]) => (args[0] as any).type === 'chat.done')
+    expect(chatDoneEvents.length).toBeGreaterThanOrEqual(1)
   })
 })

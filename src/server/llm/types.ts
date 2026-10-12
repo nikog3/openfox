@@ -83,4 +83,10 @@ export type StreamEvent = LLMStreamEvent
 export interface LLMClient {
   complete(request: LLMCompletionRequest): Promise<LLMCompletionResponse>
   stream(request: LLMCompletionRequest): AsyncIterable<LLMStreamEvent>
+  /**
+   * Count the exact tokens `content` tokenizes to on this backend, or `null`
+   * when the backend has no tokenizer endpoint (or it fails). Used to
+   * re-measure large tool results whose chars/4 estimate is far off (e.g. HTML).
+   */
+  tokenize?(content: string, model?: string): Promise<number | null>
 }

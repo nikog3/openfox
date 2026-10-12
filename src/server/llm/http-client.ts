@@ -6,6 +6,7 @@ import type {
 } from './openai-types.js'
 import { logger } from '../utils/logger.js'
 import { ChatHttpClient, DONE, type ChatRequest } from './http-shared.js'
+import { countTokensFromResponse } from './tokenize.js'
 import './proxy.js'
 
 export interface HttpClientOptions {
@@ -38,6 +39,22 @@ export class OpenAIHttpClient extends ChatHttpClient {
 
   protected parseNonStreaming(data: unknown): ChatCompletionResponse {
     return data as ChatCompletionResponse
+  }
+
+  async tokenize(content: string): Promise<number | null> {
+    try {
+      const response = await fetch(`${this.baseURL}/tokenize`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({ content }),
+      })
+      return countTokensFromResponse(response)
+    } catch {
+      return null
+    }
   }
 
   protected parseStreamLine(trimmed: string): ChatCompletionChunk | typeof DONE | null {

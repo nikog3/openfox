@@ -443,11 +443,12 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             <div className="mt-2 rounded border border-warning/30 bg-warning/10 px-2 py-1.5 text-xs text-warning">
               {t(
                 {
-                  en: 'Output truncated: {{estimated}} tokens > remaining context ({{remaining}} tokens). Only the first {{remaining}} tokens were kept.',
-                  fr: 'Sortie tronquée : {{estimated}} tokens > espace contexte restant ({{remaining}} tokens). Seuls les premiers {{remaining}} tokens ont été conservés.',
+                  en: 'Output truncated: {{original}} tokens → {{kept}} tokens (budget: {{remaining}} tokens).',
+                  fr: 'Sortie tronquée : {{original}} tokens → {{kept}} tokens (budget : {{remaining}} tokens).',
                 },
                 {
-                  estimated: formatTokens(Number(metadata.estimatedTokens) || 0),
+                  original: formatTokens(Number(metadata.estimatedTokens) || 0),
+                  kept: formatTokens(Number(metadata.keptTokens) || Number(metadata.estimatedTokens) || 0),
                   remaining: formatTokens(Number(metadata.remainingContextTokens) || 0),
                 },
               )}

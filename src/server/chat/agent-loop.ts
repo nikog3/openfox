@@ -33,7 +33,7 @@ import {
 } from './stream-pure.js'
 import { LiveEditContextTracker } from './edit-file-preview.js'
 import { preflightPathTool } from './tool-preflight.js'
-import { getCurrentContextWindowId, getCurrentWindowMessageOptions } from '../events/index.js'
+import { getCurrentContextWindowId, getCurrentWindowMessageOptions, getEventStore } from '../events/index.js'
 import { getAllInstructions } from '../context/instructions.js'
 import { getEnabledSkillMetadata } from '../skills/registry.js'
 import { getRuntimeConfig } from '../runtime-config.js'
@@ -53,6 +53,7 @@ import {
   parseContextLengthError,
   CHARS_PER_TOKEN,
   TOOL_MESSAGE_OVERHEAD_TOKENS,
+  TOKENIZE_REMEASURE_THRESHOLD,
 } from './token-budget.js'
 import { loadAllAgentsDefault, getSubAgents } from '../agents/registry.js'
 import { createRetryLimiter, type RetryLimiter } from './retry-limiter.js'
@@ -264,6 +265,23 @@ function computeContextBreakdown(
       gapTokens: parsed.actualTokens - estimatedRequestTokens,
     }),
   }
+}
+
+/**
+ * Find the assistant message that owns a tool result, by scanning the event
+ * store for the latest tool.result with that toolCallId. A re-emitted
+ * tool.result must reuse that parent id: the fold only replaces results
+ * whose parent message exists in the map.
+ */
+function findToolResultParentMessageId(sessionId: string, toolCallId: string): string | undefined {
+  const events = getEventStore().getEvents(sessionId)
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]
+    if (event?.type !== 'tool.result') continue
+    const data = event.data as { messageId?: string; toolCallId?: string } | undefined
+    if (data?.toolCallId === toolCallId) return data.messageId
+  }
+  return undefined
 }
 
 export async function runTopLevelAgentLoop(
@@ -588,6 +606,70 @@ export async function runTopLevelAgentLoop(
       // retry immediately with a reduced maxTokens instead of waiting out backoff.
       if (isContextLengthError(attemptResult.error) && contextRetryCount < MAX_CONTEXT_LENGTH_RETRIES) {
         contextRetryCount += 1
+        // Safety net: when the server reports a token count far above our
+        // estimate, the char-based budget was blind to the real size
+        // (markup-heavy output). Halving maxTokens only shrinks the output
+        // budget — the oversized prompt is sent again unchanged. Re-truncate
+        // the largest tool result proportionally to the reported count and
+        // retry, fixing the request itself.
+        const parsed = parseContextLengthError(attemptResult.error)
+        const estimatedRequestTokens = previousContextTokens + pendingToolResultTokens
+        if (
+          parsed.actualTokens !== undefined &&
+          estimatedRequestTokens > 0 &&
+          parsed.actualTokens > estimatedRequestTokens * 1.2
+        ) {
+          const conversation = await config.getConversationMessages()
+          let largest: RequestContextMessage | undefined
+          for (const m of conversation) {
+            if (m.role !== 'tool' || !m.toolCallId) continue
+            if (!largest || m.content.length > largest.content.length) largest = m
+          }
+          if (largest?.toolCallId) {
+            const len = largest.content.length
+            const newLen = Math.max(
+              Math.floor(len * 0.1),
+              Math.floor((len * estimatedRequestTokens) / parsed.actualTokens),
+            )
+            const parentMessageId = findToolResultParentMessageId(sessionId, largest.toolCallId)
+            if (parentMessageId) {
+              const ctxWindow = sessionManager.getCurrentModelContext(sessionId, config.mode)
+              append(
+                createToolResultEvent(parentMessageId, largest.toolCallId, {
+                  success: true,
+                  output: largest.content.slice(0, newLen),
+                  durationMs: 0,
+                  truncated: true,
+                  metadata: {
+                    truncatedReason: 'context_limit',
+                    estimatedTokens: Math.round(len / CHARS_PER_TOKEN),
+                    keptTokens: Math.ceil(newLen / CHARS_PER_TOKEN),
+                    remainingContextTokens:
+                      ctxWindow - previousContextTokens - pendingToolResultTokens - OUTPUT_RESERVE_TOKENS,
+                    ctxWindow,
+                    currentTokens: previousContextTokens,
+                    estimatedResultTokens: pendingToolResultTokens,
+                    reserveTokens: OUTPUT_RESERVE_TOKENS,
+                  },
+                }),
+              )
+              pendingToolResultTokens = Math.max(
+                0,
+                pendingToolResultTokens - Math.ceil((len - newLen) / CHARS_PER_TOKEN),
+              )
+              logger.warn('Context length error: re-truncated largest tool result to reported size', {
+                sessionId,
+                toolCallId: largest.toolCallId,
+                originalChars: len,
+                keptChars: newLen,
+                reportedTokens: parsed.actualTokens,
+                estimatedTokens: estimatedRequestTokens,
+                attempt: contextRetryCount,
+              })
+              continue
+            }
+          }
+        }
         logger.warn('Context length error: retrying with reduced maxTokens', {
           ...computeContextBreakdown(
             sessionManager,
@@ -879,12 +961,31 @@ ${COMPACTION_PROMPT}`,
         const maxToolTokens = ctxWindow - usedTokens - OUTPUT_RESERVE_TOKENS
         if (pendingToolResultTokens > maxToolTokens && maxToolTokens > 0) {
           const n = batchResult.toolMessages.length
-          const availableContentChars = Math.max(
-            0,
-            (maxToolTokens - n * TOOL_MESSAGE_OVERHEAD_TOKENS) * CHARS_PER_TOKEN,
-          )
           const totalContentChars = batchResult.toolMessages.reduce((sum, m) => sum + m.content.length, 0)
-          if (totalContentChars > availableContentChars) {
+          let toCut =
+            totalContentChars - Math.max(0, (maxToolTokens - n * TOOL_MESSAGE_OVERHEAD_TOKENS) * CHARS_PER_TOKEN)
+          if (toCut > 0 && pendingToolResultTokens > TOKENIZE_REMEASURE_THRESHOLD) {
+            // CHARS_PER_TOKEN underestimates markup-heavy output (HTML, diffs)
+            // by 6-8x, so a char-based budget can still overflow. Re-measure
+            // with the backend tokenizer and cut proportionally to the real
+            // token count when it is higher than the char estimate.
+            const client = resolveClient()
+            const tokenize = client.tokenize
+            if (tokenize) {
+              const model = client.getModel()
+              const realContentTokens = await Promise.all(
+                batchResult.toolMessages.map((m) =>
+                  tokenize(m.content, model).then((t) => t ?? Math.ceil(m.content.length / CHARS_PER_TOKEN)),
+                ),
+              )
+              const totalTokens = realContentTokens.reduce((s, t) => s + t, 0) + n * TOOL_MESSAGE_OVERHEAD_TOKENS
+              if (totalTokens > pendingToolResultTokens) {
+                pendingToolResultTokens = totalTokens
+                toCut = Math.ceil(((totalTokens - maxToolTokens) / totalTokens) * totalContentChars)
+              }
+            }
+          }
+          if (toCut > 0) {
             logger.warn('Tool result truncated to fit context window', {
               sessionId,
               ctxWindow,
@@ -897,7 +998,6 @@ ${COMPACTION_PROMPT}`,
             const sorted = batchResult.toolMessages
               .map((m, i) => ({ i, len: m.content.length }))
               .sort((a, b) => b.len - a.len)
-            let toCut = totalContentChars - availableContentChars
             for (const { i, len } of sorted) {
               if (toCut <= 0) break
               const msg = batchResult.toolMessages[i]
@@ -922,6 +1022,7 @@ ${COMPACTION_PROMPT}`,
                     ...execResult.toolResult.metadata,
                     truncatedReason: 'context_limit',
                     estimatedTokens,
+                    keptTokens: Math.ceil(newLen / CHARS_PER_TOKEN),
                     remainingContextTokens: maxToolTokens,
                     ctxWindow,
                     currentTokens: usedTokens,
