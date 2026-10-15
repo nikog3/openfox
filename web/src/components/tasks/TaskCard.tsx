@@ -6,6 +6,7 @@ import type { AgentInfo } from '../../lib/agents-actions'
 import { getAgentColor } from '../../lib/agents-actions'
 import { useT } from '../../hooks/useT'
 import { DropdownMenu, type DropdownMenuItem } from '../shared/DropdownMenu'
+import { ImageModal } from '../shared/ImageModal'
 import { TaskScheduleBadge } from './TaskScheduleBadge'
 import {
   EllipsisIcon,
@@ -62,6 +63,8 @@ export function TaskCard({
 }: TaskCardProps) {
   const t = useT()
   const [showAudit, setShowAudit] = useState(false)
+  const [zoomSrc, setZoomSrc] = useState<{ data: string; filename: string } | null>(null)
+  const viewImageLabel = t({ en: 'View image', fr: 'Voir l’image' })
 
   const agent = agents.find((a) => a.id === task.agentId)
   const agentColor = task.agentId ? getAgentColor(agents, task.agentId) : undefined
@@ -194,12 +197,20 @@ export function TaskCard({
         {images.length > 0 && (
           <span className="flex -space-x-1">
             {images.slice(0, 3).map((img) => (
-              <img
+              <button
                 key={img.id}
-                src={img.data}
-                alt={''}
-                className="w-6 h-6 rounded object-cover ring-2 ring-bg-tertiary"
-              />
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  e.nativeEvent.stopImmediatePropagation()
+                  setZoomSrc({ data: img.data, filename: img.filename })
+                }}
+                aria-label={viewImageLabel}
+                title={viewImageLabel}
+                className="inline-flex rounded ring-2 ring-bg-tertiary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
+              >
+                <img src={img.data} alt={img.filename} className="w-6 h-6 rounded object-cover" />
+              </button>
             ))}
           </span>
         )}
@@ -253,6 +264,8 @@ export function TaskCard({
           ))}
         </div>
       )}
+
+      {zoomSrc && <ImageModal src={zoomSrc.data} alt={zoomSrc.filename} isOpen onClose={() => setZoomSrc(null)} />}
     </div>
   )
 }

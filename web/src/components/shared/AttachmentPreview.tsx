@@ -1,6 +1,9 @@
+import { useState } from 'react'
 import type { Attachment } from '@shared/types.js'
 import { CloseButton } from './CloseButton'
+import { ImageModal } from './ImageModal'
 import { isPreviewableImage, formatFileSize, getFileExtension } from '../../lib/attachment-utils.js'
+import { useT } from '../../hooks/useT'
 
 interface AttachmentPreviewProps {
   attachment: Attachment
@@ -8,7 +11,11 @@ interface AttachmentPreviewProps {
 }
 
 export function AttachmentPreview({ attachment, onRemove }: AttachmentPreviewProps) {
+  const t = useT()
+  const [zoomSrc, setZoomSrc] = useState<string | null>(null)
   const extension = getFileExtension(attachment.filename)
+  const viewImageLabel = t({ en: 'View image', fr: 'Voir l’image' })
+  const alt = attachment.description || attachment.filename
 
   return (
     <div className="relative inline-flex flex-col items-center p-2 bg-bg-tertiary rounded-lg border border-border">
@@ -21,11 +28,15 @@ export function AttachmentPreview({ attachment, onRemove }: AttachmentPreviewPro
       />
 
       {isPreviewableImage(attachment.mimeType) ? (
-        <img
-          src={attachment.data}
-          alt={attachment.description || attachment.filename}
-          className="w-16 h-16 object-cover rounded-md bg-bg-secondary"
-        />
+        <button
+          type="button"
+          onClick={() => setZoomSrc(attachment.data)}
+          aria-label={viewImageLabel}
+          title={viewImageLabel}
+          className="rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
+        >
+          <img src={attachment.data} alt={alt} className="w-16 h-16 object-cover rounded-md bg-bg-secondary" />
+        </button>
       ) : (
         <div className="w-16 h-16 flex items-center justify-center rounded-md bg-bg-secondary text-xs font-bold text-text-muted">
           {extension}
@@ -36,6 +47,8 @@ export function AttachmentPreview({ attachment, onRemove }: AttachmentPreviewPro
         {attachment.filename}
       </div>
       <div className="text-[10px] text-text-muted">{formatFileSize(attachment.size)}</div>
+
+      {zoomSrc && <ImageModal src={zoomSrc} alt={alt} isOpen onClose={() => setZoomSrc(null)} />}
     </div>
   )
 }
