@@ -15,7 +15,10 @@ import type { ServerMessage } from '../../shared/protocol.js'
 import { logger } from '../utils/logger.js'
 import { updateSessionMetadata } from '../db/sessions.js'
 import { buildMessagesFromStoredEvents, foldPendingConfirmations } from '../events/folding.js'
-import { createSessionStateMessage } from '../ws/protocol.js'
+import { createSessionStateMessage, createSessionNameGeneratingMessage } from '../ws/protocol.js'
+import { evaluateLLMRetry, sleepThroughRetryBackoff } from '../chat/stream-pure.js'
+import { buildRetryPatterns } from '../chat/orchestrator.js'
+import { DEFAULT_LLM_RETRY_POLICY, type LLMRetryPolicy } from '../runner/types.js'
 import { getPendingQuestionsForSession } from '../tools/index.js'
 import { getSessionMessageCount } from '../utils/session-utils.js'
 import { getRuntimeConfig } from '../runtime-config.js'
@@ -90,16 +93,13 @@ export async function generateSessionName(options: GenerateSessionNameOptions): 
       },
     ]
 
-    const timeoutSignal = AbortSignal.timeout(120_000)
-    const composedSignal = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal
-
     const response = await llmClient.complete({
       messages,
       tools: [],
-      signal: composedSignal,
       // Non-thinking mode is achieved via modelSettings (chatTemplateKwargs or queryParams),
       // not by sending an invalid reasoning_effort value.
       ...(modelSettings ? { modelSettings } : {}),
+      ...(signal ? { signal } : {}),
     })
 
     // Use content or fall back to thinkingContent for models that put
@@ -316,12 +316,12 @@ export async function generateSessionNameForSession(
 
   const prompt = SESSION_NAME_PROMPT.replace('{message}', userMessage)
 
+  // Resolve the LLM client to use:
+  //   1. Use a provider-scoped factory when available.
+  //   2. Fall back to the injected client used by tests and legacy callers.
+  //   3. Otherwise create a dedicated HTTP client from the provider config.
+  let client: LLMClientWithModel
   try {
-    // Resolve the LLM client to use:
-    //   1. Use a provider-scoped factory when available.
-    //   2. Fall back to the injected client used by tests and legacy callers.
-    //   3. Otherwise create a dedicated HTTP client from the provider config.
-    let client: LLMClientWithModel
     if (providerConfig && deps.getLLMClientForProvider) {
       const providerClient = deps.getLLMClientForProvider(providerConfig.providerId, providerConfig.model)
       if (!providerClient) return
@@ -337,6 +337,7 @@ export async function generateSessionNameForSession(
             baseUrl: providerConfig.baseUrl,
             model: providerConfig.model,
             ...(providerConfig.apiKey ? { apiKey: providerConfig.apiKey } : {}),
+            idleTimeout: getRuntimeConfig().llm?.idleTimeout,
           },
         } as never,
         (providerConfig.backend ?? 'unknown') as import('../llm/backend.js').Backend,
@@ -348,36 +349,92 @@ export async function generateSessionNameForSession(
       logger.debug('Session name generation skipped: no LLM client available', { sessionId })
       return
     }
-
-    const timeoutSignal = AbortSignal.timeout(120_000)
-    const composedSignal = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal
-
-    const response = await client.complete({
-      sessionId,
-      messages: [{ role: 'user', content: prompt }],
-      tools: [],
-      ...(modelSettings ? { modelSettings } : {}),
-      signal: composedSignal,
-      skipClientReasoningEffort: true,
-    })
-
-    let name = (response.content || response.thinkingContent || '').trim()
-    if (name.length > 50) {
-      name = name.substring(0, 47) + '...'
-    }
-    if (name.length >= 3) {
-      applyGeneratedSessionName(sessionId, name, {
-        sessionManager,
-        eventStore,
-        broadcastForSession,
-      })
-    } else {
-      logger.debug('Session name too short', { sessionId, name })
-    }
   } catch (error) {
-    logger.error('Session name generation error', {
+    logger.error('Session name generation skipped: failed to resolve LLM client', {
       sessionId,
       error: error instanceof Error ? error.message : String(error),
     })
+    return
+  }
+
+  const { maxRetriesPerTurn } = await buildRetryPatterns()
+  const policy: LLMRetryPolicy = { ...DEFAULT_LLM_RETRY_POLICY, maxAttempts: maxRetriesPerTurn }
+
+  let failures = 0
+  let firstFailureAt = 0
+  for (;;) {
+    if (failures === 0) {
+      broadcastForSession(
+        sessionId,
+        createSessionNameGeneratingMessage({ active: true, attempt: 1, maxAttempts: policy.maxAttempts }, sessionId),
+      )
+    }
+
+    try {
+      const response = await client.complete({
+        sessionId,
+        messages: [{ role: 'user', content: prompt }],
+        tools: [],
+        ...(modelSettings ? { modelSettings } : {}),
+        ...(signal ? { signal } : {}),
+        skipClientReasoningEffort: true,
+      })
+
+      let name = (response.content || response.thinkingContent || '').trim()
+      if (name.length > 50) {
+        name = name.substring(0, 47) + '...'
+      }
+      if (name.length >= 3) {
+        try {
+          applyGeneratedSessionName(sessionId, name, {
+            sessionManager,
+            eventStore,
+            broadcastForSession,
+          })
+        } catch (error) {
+          logger.error('Failed to apply generated session name', {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      } else {
+        logger.debug('Session name too short', { sessionId, name })
+      }
+      broadcastForSession(sessionId, createSessionNameGeneratingMessage({ active: false }, sessionId))
+      return
+    } catch (error) {
+      if (signal?.aborted) {
+        broadcastForSession(sessionId, createSessionNameGeneratingMessage({ active: false }, sessionId))
+        return
+      }
+
+      failures++
+      if (firstFailureAt === 0) firstFailureAt = Date.now()
+      logger.error('Session name generation error', {
+        sessionId,
+        attempt: failures,
+        error: error instanceof Error ? error.message : String(error),
+      })
+
+      const decision = evaluateLLMRetry(failures, firstFailureAt, Date.now(), policy)
+      if (!decision.retry) {
+        broadcastForSession(sessionId, createSessionNameGeneratingMessage({ active: false }, sessionId))
+        return
+      }
+
+      broadcastForSession(
+        sessionId,
+        createSessionNameGeneratingMessage(
+          { active: true, attempt: decision.attempt, maxAttempts: policy.maxAttempts, retryInMs: decision.delayMs },
+          sessionId,
+        ),
+      )
+
+      const outcome = await sleepThroughRetryBackoff(decision.delayMs, sessionId, signal)
+      if (outcome !== 'waited') {
+        broadcastForSession(sessionId, createSessionNameGeneratingMessage({ active: false }, sessionId))
+        return
+      }
+    }
   }
 }

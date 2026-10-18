@@ -76,8 +76,8 @@ export async function startChatSession(
 
     broadcastForSession(sessionId, createChatMessageMessage(userMessage))
 
-    // Generate session name if needed (fire-and-forget)
-    generateSessionNameForSession(
+    // Generate session name if needed (sequential: the turn waits for it)
+    await generateSessionNameForSession(
       sessionId,
       content,
       {

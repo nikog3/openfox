@@ -107,6 +107,7 @@ describe('QueueProcessor', () => {
     mockGetLLMClient = vi.fn(() => ({
       getModel: () => 'test-model',
       getBackend: () => 'test',
+      setModel: vi.fn(),
       complete: vi.fn().mockResolvedValue({
         id: 'test',
         content: 'Test name',

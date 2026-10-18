@@ -280,6 +280,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
           crossSessionConfirmations: crossCleanup,
           sessionsWithPendingConfirmations: Object.keys(crossCleanup),
           llmRetry: null,
+          nameGenerating: null,
           pendingSessionCreate: false as boolean | string,
         }
       })
@@ -335,6 +336,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
           pendingQuestions: (data.pendingQuestions ?? []) as PendingQuestionPayload[],
           activeWorkflowExecution: (data.activeWorkflowExecution as WorkflowExecution | undefined) ?? null,
           llmRetry: null,
+          nameGenerating: null,
         }
         return {
           ...replacePane(s, sessionId, nextPane),
@@ -387,6 +389,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
     error: null,
     activeWorkflowExecution: null,
     llmRetry: null,
+    nameGenerating: null,
     liveTurnStats: null,
     sessionStats: null,
     sessionsHasMore: true,

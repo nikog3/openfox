@@ -30,6 +30,7 @@ import type {
   ContextStatePayload,
   QueueStatePayload,
   SessionCreatedPayload,
+  SessionNameGeneratingPayload,
 } from '@shared/protocol.js'
 import { useDevServerStore } from '../dev-server'
 import { useBackgroundProcessesStore } from '../background-processes'
@@ -1182,6 +1183,26 @@ export function handleServerMessage(
               : base.currentSession,
         }
       })
+      break
+    }
+
+    case 'session.name_generating': {
+      const payload = message.payload as SessionNameGeneratingPayload
+      const sessionId = message.sessionId
+      if (sessionId) {
+        set((state) =>
+          updatePane(state, sessionId, (p) => ({
+            ...p,
+            nameGenerating: payload.active
+              ? {
+                  attempt: payload.attempt ?? 1,
+                  maxAttempts: payload.maxAttempts ?? 0,
+                  ...(payload.retryInMs !== undefined ? { retryInMs: payload.retryInMs } : {}),
+                }
+              : null,
+          })),
+        )
+      }
       break
     }
 

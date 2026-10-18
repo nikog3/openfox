@@ -91,6 +91,7 @@ export type ServerMessageType =
   | 'session.running' // Real-time running state change
   | 'session.pause' // Cooperative pause state change (none/pending/paused/resuming)
   | 'session.name_generated' // Session name was auto-generated
+  | 'session.name_generating' // Session name generation in progress (attempt / retry status)
   | 'session.confirmation_pending' // Path confirmation waiting in another session (broadcast to all)
   | 'session.confirmation_resolved' // Path confirmation was answered (broadcast to all)
   // Unified chat events (replaces plan.delta, agent.event, etc.)
@@ -248,6 +249,13 @@ export interface SessionPausePayload {
 
 export interface SessionNameGeneratedPayload {
   name: string
+}
+
+export interface SessionNameGeneratingPayload {
+  active: boolean
+  attempt?: number
+  maxAttempts?: number
+  retryInMs?: number
 }
 
 // Chat payloads (unified streaming)

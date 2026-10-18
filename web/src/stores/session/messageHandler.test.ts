@@ -167,6 +167,100 @@ describe('session.name_generated handler', () => {
   })
 })
 
+describe('session.name_generating handler', () => {
+  beforeEach(() => {
+    wsSendMock.mockClear()
+    fetchMock.mockClear()
+  })
+
+  async function seedStore() {
+    const useSessionStore = await loadSessionStore()
+    useSessionStore.setState((state) => ({
+      ...state,
+      sessions: [
+        {
+          id: 'session-1',
+          projectId: 'project-1',
+          workdir: '/tmp/test',
+          mode: 'builder',
+          phase: 'build',
+          isRunning: false,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+          criteriaCount: 0,
+          criteriaCompleted: 0,
+          messageCount: 0,
+        } as any,
+      ],
+      currentSession: {
+        id: 'session-1',
+        projectId: 'project-1',
+        workdir: '/tmp/test',
+        mode: 'builder',
+        phase: 'build',
+        isRunning: false,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+        messages: [],
+        metadata: { title: 'Session 1' },
+      } as any,
+      focusedSessionId: 'session-1',
+    }))
+    return useSessionStore
+  }
+
+  it('sets the naming progress state when generation starts', async () => {
+    const useSessionStore = await seedStore()
+
+    useSessionStore.getState().handleServerMessage({
+      type: 'session.name_generating',
+      sessionId: 'session-1',
+      payload: { active: true, attempt: 1, maxAttempts: 10 },
+    })
+
+    const state = useSessionStore.getState()
+    expect(state.nameGenerating).toEqual({ attempt: 1, maxAttempts: 10 })
+    expect(state.panes['session-1']?.nameGenerating).toEqual({ attempt: 1, maxAttempts: 10 })
+  })
+
+  it('updates the attempt and backoff countdown on each retry', async () => {
+    const useSessionStore = await seedStore()
+
+    useSessionStore.getState().handleServerMessage({
+      type: 'session.name_generating',
+      sessionId: 'session-1',
+      payload: { active: true, attempt: 1, maxAttempts: 10 },
+    })
+    useSessionStore.getState().handleServerMessage({
+      type: 'session.name_generating',
+      sessionId: 'session-1',
+      payload: { active: true, attempt: 2, maxAttempts: 10, retryInMs: 1000 },
+    })
+
+    const state = useSessionStore.getState()
+    expect(state.nameGenerating).toEqual({ attempt: 2, maxAttempts: 10, retryInMs: 1000 })
+  })
+
+  it('clears the naming progress state when generation finishes', async () => {
+    const useSessionStore = await seedStore()
+
+    useSessionStore.getState().handleServerMessage({
+      type: 'session.name_generating',
+      sessionId: 'session-1',
+      payload: { active: true, attempt: 1, maxAttempts: 10 },
+    })
+    useSessionStore.getState().handleServerMessage({
+      type: 'session.name_generating',
+      sessionId: 'session-1',
+      payload: { active: false },
+    })
+
+    const state = useSessionStore.getState()
+    expect(state.nameGenerating).toBeNull()
+    expect(state.panes['session-1']?.nameGenerating).toBeNull()
+  })
+})
+
 describe('workflow.execution_changed handler', () => {
   beforeEach(() => {
     wsSendMock.mockClear()

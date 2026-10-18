@@ -38,6 +38,22 @@ vi.mock('../events/index.js', () => ({
   combineEventsWithSnapshot: vi.fn((_id: string, _snapshot: unknown, eventsSince: unknown[]) => eventsSince ?? []),
 }))
 
+vi.mock('../chat/stream-pure.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../chat/stream-pure.js')>()
+  return {
+    ...actual,
+    sleepThroughRetryBackoff: vi.fn().mockResolvedValue('waited'),
+  }
+})
+
+vi.mock('../chat/orchestrator.js', () => ({
+  buildRetryPatterns: vi.fn().mockResolvedValue({ retryPatterns: [], maxRetriesPerTurn: 10 }),
+}))
+
+vi.mock('../llm/client.js', () => ({
+  createLLMClient: vi.fn(),
+}))
+
 describe('Session Name Generator', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -476,6 +492,217 @@ describe('Session Name Generator', () => {
       expect(sessionClient.complete).toHaveBeenCalledOnce()
       expect(activeClient.setModel).not.toHaveBeenCalled()
       expect(activeClient.complete).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('generateSessionNameForSession — progress & retry', () => {
+    async function getSleepMock() {
+      const { sleepThroughRetryBackoff } = await import('../chat/stream-pure.js')
+      return sleepThroughRetryBackoff as ReturnType<typeof vi.fn>
+    }
+
+    function makeSession() {
+      return {
+        id: 'test-session',
+        messages: [],
+        metadata: { title: 'Session 1' },
+      } as unknown as Session
+    }
+
+    function makeDeps(client: { complete: ReturnType<typeof vi.fn> }) {
+      const session = makeSession()
+      const sessionManager = {
+        getSession: vi.fn().mockReturnValue(session),
+        getDisplayWorkflowExecution: vi.fn().mockReturnValue(null),
+        resolveEffectiveProviderModel: vi.fn(() => ({
+          providerId: (session as { providerId?: string }).providerId ?? null,
+          model: (session as { providerModel?: string }).providerModel ?? null,
+        })),
+      }
+      const providerManager = {
+        getProviders: vi.fn().mockReturnValue([]),
+        getCurrentModel: vi.fn().mockReturnValue(null),
+        getModelSettings: vi.fn().mockReturnValue(undefined),
+      }
+      return {
+        sessionManager: sessionManager as any,
+        providerManager: providerManager as any,
+        broadcastForSession: vi.fn(),
+        eventStore: { getEvents: vi.fn().mockReturnValue([]), append: vi.fn() } as any,
+        getLLMClient: () => client as any,
+      }
+    }
+
+    function nameGeneratingCalls(broadcastForSession: ReturnType<typeof vi.fn>) {
+      return broadcastForSession.mock.calls
+        .map((c: unknown[]) => c[1] as { type: string; payload?: Record<string, unknown> } | undefined)
+        .filter((m) => m?.type === 'session.name_generating')
+        .map((m) => m!.payload!)
+    }
+
+    const successResponse = {
+      id: 'test-id',
+      content: 'Nice title',
+      finishReason: 'stop',
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    }
+
+    beforeEach(async () => {
+      const { getRuntimeConfig } = await import('../runtime-config.js')
+      ;(getRuntimeConfig as any).mockReturnValue({ disableAutoSessionTitle: false })
+    })
+
+    it('broadcasts naming start and finish around a successful attempt', async () => {
+      const client = { complete: vi.fn().mockResolvedValue(successResponse) }
+      const deps = makeDeps(client)
+
+      await generateSessionNameForSession('test-session', 'Hello world', deps)
+
+      const payloads = nameGeneratingCalls(deps.broadcastForSession)
+      expect(payloads[0]).toEqual({ active: true, attempt: 1, maxAttempts: 10 })
+      expect(payloads[payloads.length - 1]).toEqual({ active: false })
+      expect(client.complete).toHaveBeenCalledOnce()
+    })
+
+    it('retries failed attempts with the shared LLM retry policy, reporting each attempt and backoff', async () => {
+      const sleep = await getSleepMock()
+      const client = {
+        complete: vi
+          .fn()
+          .mockRejectedValueOnce(new Error('boom 1'))
+          .mockRejectedValueOnce(new Error('boom 2'))
+          .mockResolvedValueOnce(successResponse),
+      }
+      const deps = makeDeps(client)
+      const signal = new AbortController().signal
+
+      await generateSessionNameForSession('test-session', 'Hello world', deps, signal)
+
+      expect(client.complete).toHaveBeenCalledTimes(3)
+      const payloads = nameGeneratingCalls(deps.broadcastForSession)
+      expect(payloads[0]).toEqual({ active: true, attempt: 1, maxAttempts: 10 })
+      expect(payloads[1]).toEqual({ active: true, attempt: 2, maxAttempts: 10, retryInMs: 1000 })
+      expect(payloads[2]).toEqual({ active: true, attempt: 3, maxAttempts: 10, retryInMs: 5000 })
+      expect(payloads[payloads.length - 1]).toEqual({ active: false })
+
+      expect(sleep).toHaveBeenNthCalledWith(1, 1000, 'test-session', signal)
+      expect(sleep).toHaveBeenNthCalledWith(2, 5000, 'test-session', signal)
+    })
+
+    it('gives up after maxRetriesPerTurn failures and reports finish', async () => {
+      const { buildRetryPatterns } = await import('../chat/orchestrator.js')
+      ;(buildRetryPatterns as any).mockResolvedValueOnce({ retryPatterns: [], maxRetriesPerTurn: 2 })
+
+      const client = { complete: vi.fn().mockRejectedValue(new Error('always fails')) }
+      const deps = makeDeps(client)
+
+      await generateSessionNameForSession('test-session', 'Hello world', deps)
+
+      expect(client.complete).toHaveBeenCalledTimes(2)
+      const payloads = nameGeneratingCalls(deps.broadcastForSession)
+      expect(payloads[0]).toEqual({ active: true, attempt: 1, maxAttempts: 2 })
+      expect(payloads[1]).toEqual({ active: true, attempt: 2, maxAttempts: 2, retryInMs: 1000 })
+      expect(payloads[payloads.length - 1]).toEqual({ active: false })
+      ;(buildRetryPatterns as any).mockResolvedValue({ retryPatterns: [], maxRetriesPerTurn: 10 })
+    })
+
+    it('stops retrying when the abort signal fires during the backoff', async () => {
+      const sleep = await getSleepMock()
+      ;(sleep as any).mockResolvedValueOnce('aborted')
+
+      const client = { complete: vi.fn().mockRejectedValue(new Error('boom')) }
+      const deps = makeDeps(client)
+
+      await generateSessionNameForSession('test-session', 'Hello world', deps, new AbortController().signal)
+
+      expect(client.complete).toHaveBeenCalledTimes(1)
+      const payloads = nameGeneratingCalls(deps.broadcastForSession)
+      expect(payloads[payloads.length - 1]).toEqual({ active: false })
+    })
+
+    it('passes the caller signal through unchanged (no hardcoded 120s timeout)', async () => {
+      const client = { complete: vi.fn().mockResolvedValue(successResponse) }
+      const deps = makeDeps(client)
+      const signal = new AbortController().signal
+
+      await generateSessionNameForSession('test-session', 'Hello world', deps, signal)
+
+      const callArgs = (client.complete as any).mock.calls[0][0]
+      expect(callArgs.signal).toBe(signal)
+    })
+
+    it('passes the configured LLM idle timeout to the fallback client', async () => {
+      const { getRuntimeConfig } = await import('../runtime-config.js')
+      ;(getRuntimeConfig as any).mockReturnValue({ disableAutoSessionTitle: false, llm: { idleTimeout: 300_000 } })
+      const { createLLMClient } = await import('../llm/client.js')
+
+      const fallbackClient = {
+        complete: vi.fn().mockResolvedValue(successResponse),
+        setModel: vi.fn(),
+      }
+      ;(createLLMClient as any).mockReturnValue(fallbackClient)
+
+      const session = {
+        id: 'test-session',
+        providerId: 'lm-studio',
+        providerModel: 'some-model',
+        metadata: { title: 'Session 1' },
+      } as unknown as Session
+      const sessionManager = {
+        getSession: vi.fn().mockReturnValue(session),
+        resolveEffectiveProviderModel: vi.fn(() => ({
+          providerId: (session as { providerId?: string }).providerId ?? null,
+          model: (session as { providerModel?: string }).providerModel ?? null,
+        })),
+      }
+      const providerManager = {
+        getProviders: vi
+          .fn()
+          .mockReturnValue([{ id: 'lm-studio', url: 'http://localhost:1234/v1', models: [{ id: 'some-model' }] }]),
+        getCurrentModel: vi.fn().mockReturnValue('some-model'),
+        getModelSettings: vi.fn().mockReturnValue(undefined),
+      }
+
+      await generateSessionNameForSession('test-session', 'Hello world', {
+        sessionManager: sessionManager as any,
+        providerManager: providerManager as any,
+        broadcastForSession: vi.fn(),
+        eventStore: { getEvents: vi.fn().mockReturnValue([]), append: vi.fn() } as any,
+      })
+
+      expect(createLLMClient).toHaveBeenCalledWith(
+        expect.objectContaining({
+          llm: expect.objectContaining({ baseUrl: 'http://localhost:1234/v1', idleTimeout: 300_000 }),
+        }),
+        'unknown',
+      )
+      expect(fallbackClient.complete).toHaveBeenCalledOnce()
+    })
+
+    it('generateSessionName passes the caller signal through unchanged', async () => {
+      const mockClient = {
+        complete: vi.fn().mockResolvedValue({
+          id: 'test-id',
+          content: 'React setup',
+          finishReason: 'stop',
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        }),
+        getModel: vi.fn().mockReturnValue('test-model'),
+        setModel: vi.fn(),
+        getProfile: vi.fn(),
+        getBackend: vi.fn().mockReturnValue('unknown'),
+        setBackend: vi.fn(),
+      }
+      const signal = new AbortController().signal
+
+      await generateSessionName({
+        userMessage: 'How do I set up React?',
+        llmClient: mockClient as any,
+        signal,
+      })
+
+      const callArgs = (mockClient.complete as any).mock.calls[0][0]
+      expect(callArgs.signal).toBe(signal)
     })
   })
 

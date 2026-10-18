@@ -7,6 +7,7 @@ import { ProjectSettingsModal } from '../settings/ProjectSettingsModal'
 import { DropdownMenu } from '../shared/DropdownMenu'
 import { authFetch } from '../../lib/api'
 import { XCloseIcon, MenuIcon, ChevronDownIcon, TasksIcon, FolderIcon, GearIcon } from '../shared/icons'
+import { NameGeneratingIndicator } from '../shared/NameGeneratingIndicator'
 import { Link } from 'wouter'
 import { useT } from '../../hooks/useT'
 
@@ -57,6 +58,7 @@ export function SessionPane({ sessionId, focused, onFocus, onClose, className }:
   const isRunning = pane?.session?.isRunning ?? false
   const confirmationsCount = pane?.pendingPathConfirmations.length ?? 0
   const questionsCount = pane?.pendingQuestions.length ?? 0
+  const nameGenerating = pane?.nameGenerating ?? null
   const [tasksOpen, setTasksOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
@@ -134,6 +136,7 @@ export function SessionPane({ sessionId, focused, onFocus, onClose, className }:
             {title}
           </span>
         )}
+        {nameGenerating && <NameGeneratingIndicator state={nameGenerating} />}
         {attention.length > 0 && (
           <span className="flex items-center gap-1 text-[10px] text-amber-400 shrink-0" title={attention.join(' · ')}>
             {attention.join(' · ')}

@@ -1344,7 +1344,7 @@ async function handleClientMessage(
       // Run orchestrator asynchronously
       logger.info('Runner launching', { sessionId, isResume })
 
-      // Generate session name if this is the first interaction (fire-and-forget)
+      // Generate session name if this is the first interaction (sequential: the run waits for it)
       if (!isResume && launchPayload?.workflowId && _providerManager) {
         const session = sessionManager.getSession(sessionId)
         const messageCount = getSessionMessageCount(sessionId)
@@ -1357,7 +1357,7 @@ async function handleClientMessage(
                   .map(([k, v]) => `${k}=${v}`)
                   .join(', ')
               : '')
-          generateSessionNameForSession(
+          await generateSessionNameForSession(
             sessionId,
             nameHint,
             {

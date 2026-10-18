@@ -89,7 +89,7 @@ export class QueueProcessor {
       return
     }
 
-    this.startTurn(sessionId)
+    void this.startTurn(sessionId)
   }
 
   private handleTurnDone(sessionId: string): void {
@@ -102,10 +102,10 @@ export class QueueProcessor {
       return
     }
 
-    this.startTurn(sessionId)
+    void this.startTurn(sessionId)
   }
 
-  private startTurn(sessionId: string): void {
+  private async startTurn(sessionId: string): Promise<void> {
     const { sessionManager, broadcastForSession } = this.deps
     logger.info('Starting turn from queue processor', { sessionId })
 
@@ -163,7 +163,7 @@ export class QueueProcessor {
         messageId: userMessage.id,
       })
 
-      generateSessionNameForSession(
+      await generateSessionNameForSession(
         sessionId,
         nextAsap.content,
         {
@@ -286,7 +286,7 @@ export class QueueProcessor {
           if (currentSession?.isRunning) {
             sessionManager.setRunning(sessionId, false)
           }
-          this.startTurn(sessionId)
+          void this.startTurn(sessionId)
         } catch (error) {
           logger.error('Error in turn completion cleanup', {
             sessionId,

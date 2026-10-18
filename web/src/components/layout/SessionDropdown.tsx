@@ -3,6 +3,7 @@ import { useSessionStore } from '../../stores/session'
 import { useT } from '../../hooks/useT'
 import { DropdownMenu, type DropdownMenuItem } from '../shared/DropdownMenu'
 import { ChevronDownIcon, PlusIcon, CheckIcon, StarIcon, StarFilledIcon } from '../shared/icons'
+import { NameGeneratingIndicator } from '../shared/NameGeneratingIndicator'
 import { groupSessionsByDate, formatDateHeader, formatTime } from '../../lib/format-date'
 import { trimContent } from '../../lib/cross-session-history'
 import type { SessionSummary } from '@shared/types.js'
@@ -25,6 +26,7 @@ export function SessionDropdown({
   const t = useT()
   const loadSession = useSessionStore((state) => state.loadSession)
   const toggleFavorite = useSessionStore((state) => state.toggleFavorite)
+  const nameGenerating = useSessionStore((state) => state.nameGenerating)
   const MAX_TITLE_LEN = 50
 
   const projectSessions = sessions.filter((session) => session.projectId === currentProject.id).slice(0, 15)
@@ -128,6 +130,7 @@ export function SessionDropdown({
           data-testid="header-session-dropdown"
         >
           <span className="truncate min-w-[3ch]">{triggerLabel}</span>
+          {nameGenerating && <NameGeneratingIndicator state={nameGenerating} />}
           <ChevronDownIcon className="w-3 h-3 flex-shrink-0" />
         </button>
       }

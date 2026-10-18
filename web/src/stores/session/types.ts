@@ -49,6 +49,13 @@ export type LLMRetryState =
     }
   | { status: 'failed'; error: string }
 
+/** Progress of automatic session name generation: attempt count and backoff when retrying. */
+export interface NameGeneratingState {
+  attempt: number
+  maxAttempts: number
+  retryInMs?: number
+}
+
 export interface StreamingBuffer {
   messageId: string | null
   deltaContent: string
@@ -93,6 +100,8 @@ export interface SessionPane {
   error: { code: string; message: string } | null
   /** Live status of an LLM failure: backing off before a retry, or the window exhausted. */
   llmRetry: LLMRetryState | null
+  /** Automatic session name generation in progress; null when idle. */
+  nameGenerating: NameGeneratingState | null
   /** Cumulative turn stats streamed while a turn is running; null when idle. */
   liveTurnStats: MessageStats | null
   /** Server-computed headline stats for the whole session (all context windows). Null when no response has stats yet. */
@@ -125,6 +134,8 @@ export interface SessionState {
   error: { code: string; message: string } | null
   /** Live status of an LLM failure: backing off before a retry, or the window exhausted. */
   llmRetry: LLMRetryState | null
+  /** Automatic session name generation in progress; null when idle. */
+  nameGenerating: NameGeneratingState | null
   /** Cumulative turn stats streamed while a turn is running; null when idle. */
   liveTurnStats: MessageStats | null
   /** Server-computed headline stats for the whole session (all context windows). Null when no response has stats yet. */

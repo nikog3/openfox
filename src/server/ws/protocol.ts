@@ -10,6 +10,7 @@ import type {
   SessionRunningPayload,
   SessionPausePayload,
   SessionNameGeneratedPayload,
+  SessionNameGeneratingPayload,
   PendingPathConfirmationPayload,
   PendingQuestionPayload,
   ChatDeltaPayload,
@@ -393,6 +394,20 @@ export function createSessionNameGeneratedMessage(
   const msg: ServerMessage<SessionNameGeneratedPayload> = {
     type: 'session.name_generated',
     payload: { name },
+  }
+  if (sessionId) {
+    msg.sessionId = sessionId
+  }
+  return msg
+}
+
+export function createSessionNameGeneratingMessage(
+  payload: SessionNameGeneratingPayload,
+  sessionId?: string,
+): ServerMessage<SessionNameGeneratingPayload> {
+  const msg: ServerMessage<SessionNameGeneratingPayload> = {
+    type: 'session.name_generating',
+    payload,
   }
   if (sessionId) {
     msg.sessionId = sessionId
