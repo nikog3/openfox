@@ -35,6 +35,7 @@ import type {
 import { useDevServerStore } from '../dev-server'
 import { useBackgroundProcessesStore } from '../background-processes'
 import { useTasksStore } from '../tasks'
+import { useSttStore } from '../stt'
 import { handlePluginMessage } from '../../lib/plugin-ws'
 import { playNewMessage } from '../../lib/sound'
 import type { AgentType } from '../notifications'
@@ -1266,6 +1267,30 @@ export function handleServerMessage(
     case 'plugin.notification_deleted':
     case 'plugin.ui_state': {
       handlePluginMessage(message)
+      break
+    }
+
+    case 'stt.partial': {
+      const payload = message.payload as { text: string }
+      useSttStore.getState().handlePartial(payload.text)
+      break
+    }
+
+    case 'stt.final': {
+      const payload = message.payload as { text: string }
+      useSttStore.getState().handleFinal(payload.text)
+      break
+    }
+
+    case 'stt.error': {
+      const payload = message.payload as { message: string }
+      useSttStore.getState().handleError(payload.message)
+      break
+    }
+
+    case 'stt.state': {
+      const payload = message.payload as { state: 'off' | 'loading' | 'listening' | 'transcribing' }
+      useSttStore.getState().handleState(payload.state)
       break
     }
 

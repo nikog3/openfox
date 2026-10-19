@@ -21,6 +21,6 @@
       "@openfox/shared": ["../src/shared/index.ts"]
     }
   },
-  "include": ["**/*.ts"],
+  "include": ["**/*.ts", "../src/shared/voskify.d.ts", "../src/shared/sherpa-onnx-node.d.ts"],
   "exclude": ["node_modules", "dist"]
 }

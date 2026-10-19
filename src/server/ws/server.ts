@@ -4,7 +4,15 @@ import type { Server } from 'node:http'
 import type { ServerMessage } from '../../shared/protocol.js'
 import type { GitDiffFile } from '../../shared/protocol.js'
 import { createServerMessage } from '../../shared/protocol.js'
-import { createSessionStateMessage } from './protocol.js'
+import type { SttStartPayload, SttAudioChunkPayload } from '../../shared/protocol.js'
+import {
+  createSessionStateMessage,
+  createSttPartialMessage,
+  createSttFinalMessage,
+  createSttErrorMessage,
+  createSttStateMessage,
+} from './protocol.js'
+import { getSttService } from '../stt/index.js'
 import { handleTerminalMessage, unsubscribeAllFromTerminal } from './terminal.js'
 import type { Config } from '../config.js'
 import type { LLMClientWithModel } from '../llm/client.js'
@@ -656,6 +664,24 @@ export function createWebSocketServer(
     }
   })
 
+  let sttActiveSessionId: string | null = null
+  let sttActiveWs: WebSocket | null = null
+  getSttService().subscribe((event) => {
+    if (!sttActiveSessionId) return
+    const sid = sttActiveSessionId
+    if (event.type === 'partial') {
+      broadcastForSession(sid, createSttPartialMessage(event.text, sid))
+    } else if (event.type === 'final') {
+      broadcastForSession(sid, createSttFinalMessage(event.text, sid))
+      sttActiveSessionId = null
+    } else if (event.type === 'error') {
+      broadcastForSession(sid, createSttErrorMessage(event.message, sid))
+      sttActiveSessionId = null
+    } else if (event.type === 'state') {
+      broadcastForSession(sid, createSttStateMessage(event.state, sid))
+    }
+  })
+
   wss.on('connection', async (ws, req) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`)
     const token = url.searchParams.get('token')
@@ -726,6 +752,56 @@ export function createWebSocketServer(
         return
       }
 
+      // Handle STT messages separately (global singleton, not per-session)
+      if (message.type.startsWith('stt.')) {
+        const sttClient = clients.get(ws)!
+        const sttSend = (msg: ServerMessage) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            const seq = sttClient.lastSentSeq + 1
+            enqueueSend(sttClient, serializeServerMessage(msg), seq)
+          }
+        }
+        try {
+          if (message.type === 'stt.start') {
+            const payload = message.payload as SttStartPayload
+            const sessionId = payload?.sessionId ?? sttClient.activeSessionId
+            if (!sessionId) {
+              sttSend(
+                createErrorMessage(
+                  'INVALID_PAYLOAD',
+                  serverT({ en: 'No active session for STT', fr: 'Aucune session active pour la dictée' }),
+                  message.id,
+                ),
+              )
+              return
+            }
+            if (getSttService().getState() !== 'off') {
+              sttSend(
+                createSttErrorMessage(
+                  serverT({ en: 'Dictation already in use', fr: 'La dictée est déjà en cours' }),
+                  sessionId,
+                ),
+              )
+              return
+            }
+            sttActiveSessionId = sessionId
+            sttActiveWs = ws
+            sttSend({ type: 'ack', payload: {}, id: message.id })
+            await getSttService().start()
+          } else if (message.type === 'stt.audio_chunk') {
+            const payload = message.payload as SttAudioChunkPayload
+            if (payload?.chunk) {
+              await getSttService().feedAudio(Buffer.from(payload.chunk, 'base64'))
+            }
+          } else if (message.type === 'stt.stop') {
+            await getSttService().stop()
+          }
+        } catch (error) {
+          logger.error('STT message handling error', { error, type: message.type })
+        }
+        return
+      }
+
       const client = clients.get(ws)!
 
       try {
@@ -775,6 +851,11 @@ export function createWebSocketServer(
       }
       // Unsubscribe from all terminal sessions
       unsubscribeAllFromTerminal(ws)
+      if (sttActiveWs === ws) {
+        sttActiveWs = null
+        sttActiveSessionId = null
+        void getSttService().stop()
+      }
       clients.delete(ws)
       // Stop polling if no remaining clients for this workdir
       if (disconnectedWorkdir) {

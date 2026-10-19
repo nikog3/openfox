@@ -10,6 +10,7 @@ import { AdvancedTab } from './tabs/AdvancedTab'
 import { KeybindingsTab } from './tabs/KeybindingsTab'
 import { ToolsTab } from './tabs/ToolsTab'
 import { PluginsTab } from './tabs/PluginsTab'
+import { AudioTab } from './tabs/AudioTab'
 import { useUpdateStore } from '../../stores/update'
 import { wsClient } from '../../lib/ws'
 import { PluginZone } from '../plugins/PluginZone'
@@ -18,7 +19,7 @@ import { usePlugins } from '../../hooks/usePlugins'
 import { useLocalizedString } from '../../hooks/useLocalizedString'
 
 export type CoreTab =
-  'instructions' | 'skills' | 'plugins' | 'notifications' | 'display' | 'keybindings' | 'advanced' | 'tools'
+  'instructions' | 'skills' | 'plugins' | 'notifications' | 'display' | 'keybindings' | 'advanced' | 'tools' | 'audio'
 
 export type Tab = CoreTab | `plugin:${string}:${string}`
 
@@ -58,6 +59,7 @@ export function GlobalSettingsModal({ isOpen, onClose, initialTab }: GlobalSetti
     { id: 'plugins', label: t({ en: 'Plugins', fr: 'Plugins' }) },
     { id: 'notifications', label: t({ en: 'Notifications', fr: 'Notifications' }) },
     { id: 'display', label: t({ en: 'Display', fr: 'Affichage' }) },
+    { id: 'audio', label: t({ en: 'Audio', fr: 'Audio' }) },
     { id: 'keybindings', label: t({ en: 'Keybindings', fr: 'Raccourcis clavier' }) },
     { id: 'advanced', label: t({ en: 'Advanced', fr: 'Avancé' }), showDot: updateAvailable },
     ...pluginTabs.map((tab) => ({
@@ -109,6 +111,7 @@ export function GlobalSettingsModal({ isOpen, onClose, initialTab }: GlobalSetti
             {activeTab === 'plugins' && <PluginsTab />}
             {activeTab === 'notifications' && <NotificationSettings />}
             {activeTab === 'display' && <DisplayTab />}
+            {activeTab === 'audio' && <AudioTab />}
             {activeTab === 'keybindings' && <KeybindingsTab />}
             {activeTab === 'tools' && <ToolsTab />}
             {activeTab === 'advanced' && <AdvancedTab onClose={onClose} />}

@@ -41,6 +41,10 @@ export type ClientMessageType =
   | 'path.confirm' // User response to path confirmation request
   // Ask user
   | 'ask.answer' // User response to ask_user question
+  // Speech-to-text
+  | 'stt.start' // Begin dictation for a session
+  | 'stt.audio_chunk' // Stream a base64 16kHz mono Int16 PCM chunk
+  | 'stt.stop' // End dictation and request the final transcript
 
 export interface ClientMessage<T = unknown> {
   id: string
@@ -61,6 +65,20 @@ export interface AskAnswerPayload {
   callId: string
   answer: string
   skip?: boolean
+}
+
+// Speech-to-text payloads (client → server)
+export interface SttStartPayload {
+  sessionId: string
+}
+
+export interface SttAudioChunkPayload {
+  sessionId: string
+  chunk: string // base64-encoded 16kHz mono Int16 PCM
+}
+
+export interface SttStopPayload {
+  sessionId: string
 }
 
 // Shared queue types
@@ -155,6 +173,11 @@ export type ServerMessageType =
   | 'plugin.notification_read' // Notification read state changed (unread count refresh)
   | 'plugin.notification_deleted' // Notification deleted (single or all)
   | 'plugin.ui_state' // Plugin published state for a declarative panel
+  // Speech-to-text events
+  | 'stt.partial' // Live partial transcript while dictating
+  | 'stt.final' // Final consolidated transcript for the dictation
+  | 'stt.error' // STT failure (model download, recognition, etc.)
+  | 'stt.state' // STT engine state change (loading model, listening, transcribing)
   // Other
   | 'lsp.diagnostics'
   | 'error'
@@ -587,6 +610,23 @@ export interface PluginUiStateMessagePayload {
   panelId?: string
   key: string
   value: unknown
+}
+
+// Speech-to-text payloads (server → client)
+export interface SttPartialPayload {
+  text: string
+}
+
+export interface SttFinalPayload {
+  text: string
+}
+
+export interface SttErrorPayload {
+  message: string
+}
+
+export interface SttStatePayload {
+  state: 'off' | 'loading' | 'listening' | 'transcribing'
 }
 
 // Shared background process types

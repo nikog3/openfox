@@ -17,7 +17,9 @@ import { AttachmentPreview } from '../shared/AttachmentPreview.js'
 import { PromptHistoryList } from '../shared/PromptHistory.js'
 import { RunningIndicator } from '../shared/RunningIndicator'
 import { AutoScrollToggle } from '../shared/AutoScrollToggle'
-import { PauseIcon, PlayIcon, SearchIcon, SendIcon, StopIcon, XCloseIcon } from '../shared/icons'
+import { MicIcon, PauseIcon, PlayIcon, SearchIcon, SendIcon, StopIcon, XCloseIcon } from '../shared/icons'
+import { Spinner } from '../shared/Spinner'
+import { useSttStore } from '../../stores/stt'
 import { WorkflowBar } from './WorkflowBar'
 import { processFile } from '../../lib/file-processing.js'
 import { mimeTypeToExtension, isSupportedMimeType } from '../../lib/attachment-utils.js'
@@ -126,7 +128,16 @@ export function ChatInput({
   const currentProject = useCurrentProject()
   const perSessionMcpEnabled = useSetting(SETTINGS_KEYS.FEATURES_PER_SESSION_MCP, 'false').value === 'true'
   const fullscreenComposer = useSetting(SETTINGS_KEYS.DISPLAY_MOBILE_FULLSCREEN_COMPOSER, 'false').value === 'true'
+  const sttEngine = useSetting(SETTINGS_KEYS.STT_ENGINE, 'off').value
+  const sttEnabled = sttEngine !== 'off'
   const stopGeneration = useSessionStore((state) => state.stopGeneration)
+  const sttStatus = useSttStore((s) => s.status)
+  const sttPartialText = useSttStore((s) => s.partialText)
+  const sttFinalText = useSttStore((s) => s.finalText)
+  const sttStart = useSttStore((s) => s.start)
+  const sttStop = useSttStore((s) => s.stop)
+  const sttReset = useSttStore((s) => s.reset)
+  const sttBaseInputRef = useRef('')
   const pauseGeneration = useSessionStore((state) => state.pauseGeneration)
   const resumeGeneration = useSessionStore((state) => state.resumeGeneration)
   const pauseState = useScopedPaneState(
@@ -268,6 +279,32 @@ export function ChatInput({
   useEffect(() => {
     resizeTextarea()
   }, [input, resizeTextarea])
+
+  useEffect(() => {
+    if (sttStatus !== 'loading' && sttStatus !== 'listening') return
+    const base = sttBaseInputRef.current
+    const display = sttPartialText ? `${base} ${sttPartialText}` : base
+    setInput(display)
+  }, [sttStatus, sttPartialText, setInput])
+
+  useEffect(() => {
+    if (sttFinalText !== null) {
+      const base = sttBaseInputRef.current
+      const newText = base && sttFinalText ? `${base} ${sttFinalText}` : sttFinalText || base
+      setInput(newText)
+      sttReset()
+      textareaRef.current?.focus()
+    }
+  }, [sttFinalText, setInput, sttReset])
+
+  const sttError = useSttStore((s) => s.error)
+  useEffect(() => {
+    if (!sttError) return
+    setInput(sttBaseInputRef.current)
+    setErrorMessage(sttError)
+    sttReset()
+    textareaRef.current?.focus()
+  }, [sttError, setInput, setErrorMessage, sttReset])
 
   // Mobile full-height composer (opt-in): while the textarea is focused on a
   // touch device and the keyboard is up, pin it to the remaining pane height so
@@ -645,6 +682,55 @@ export function ChatInput({
     </button>
   )
 
+  const micButton = ({ mobile = false }: { mobile?: boolean } = {}) => {
+    if (!sttEnabled) return null
+    const isListening = sttStatus === 'listening'
+    const isLoading = sttStatus === 'loading'
+    const isTranscribing = sttStatus === 'transcribing'
+    const isBusy = isLoading || isTranscribing
+    const label = isListening
+      ? t({ en: 'Stop dictation', fr: 'Arrêter la dictée' })
+      : isTranscribing
+        ? t({ en: 'Transcribing…', fr: 'Transcription…' })
+        : isLoading
+          ? t({ en: 'Loading speech model…', fr: 'Chargement du modèle de dictée…' })
+          : t({ en: 'Dictate', fr: 'Dictée' })
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          if (!sessionId || isBusy) return
+          if (isListening) {
+            sttStop()
+          } else {
+            sttBaseInputRef.current = input
+            void sttStart(sessionId)
+          }
+        }}
+        disabled={!sessionId || isBusy}
+        data-testid={mobile ? 'chat-mic-button-touch' : 'chat-mic-button'}
+        title={label}
+        aria-label={label}
+        {...(mobile ? { onMouseDown: keepComposerFocus } : {})}
+        className={`flex items-center justify-center px-3 py-2 rounded transition-colors ${
+          isListening
+            ? 'bg-accent-error/30 text-accent-error animate-pulse'
+            : isBusy
+              ? 'bg-accent-primary/20 text-accent-primary'
+              : 'bg-accent-primary/10 text-accent-primary hover:bg-accent-primary/20 disabled:opacity-30 disabled:cursor-not-allowed'
+        }`}
+      >
+        {isListening ? (
+          <StopIcon className="w-4 h-4" />
+        ) : isBusy ? (
+          <Spinner size="sm" />
+        ) : (
+          <MicIcon className="w-4 h-4" />
+        )}
+      </button>
+    )
+  }
+
   const pauseButton = ({ mobile = false }: { mobile?: boolean } = {}) => (
     <button
       type="button"
@@ -749,6 +835,19 @@ export function ChatInput({
           {errorMessage && (
             <div className="mb-2 p-2 bg-red-500/10 border border-red-500/50 rounded text-red-300 text-sm">
               {errorMessage}
+            </div>
+          )}
+
+          {sttStatus === 'loading' && (
+            <div className="mb-2 p-2 bg-accent-primary/10 border border-accent-primary/30 rounded text-accent-primary text-sm">
+              {t({ en: 'Loading speech model…', fr: 'Chargement du modèle de dictée…' })}
+            </div>
+          )}
+
+          {sttStatus === 'transcribing' && (
+            <div className="mb-2 p-2 bg-accent-primary/10 border border-accent-primary/30 rounded text-accent-primary text-sm flex items-center gap-2">
+              <Spinner size="sm" />
+              {t({ en: 'Transcribing…', fr: 'Transcription…' })}
             </div>
           )}
 
@@ -860,6 +959,7 @@ export function ChatInput({
                 </div>
               )}
               <div className="flex items-center">
+                {micButton()}
                 {sendButton()}
                 {moreMenu()}
               </div>
@@ -872,6 +972,7 @@ export function ChatInput({
                 </div>
               )}
               <div className="flex items-center">
+                {micButton({ mobile: true })}
                 {sendButton({ mobile: true })}
                 {moreMenu({ mobile: true })}
               </div>

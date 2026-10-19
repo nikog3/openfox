@@ -40,6 +40,10 @@ import type {
   ErrorPayload,
   QueueStatePayload,
   QueuedMessage,
+  SttPartialPayload,
+  SttFinalPayload,
+  SttErrorPayload,
+  SttStatePayload,
 } from '../../shared/protocol.js'
 import type { GitStatusPayload } from '../../shared/protocol.js'
 import type { MetadataEntry } from '../../shared/types.js'
@@ -454,6 +458,42 @@ export function isUIFeedbackPayload(
 // Queue messages
 export function createQueueStateMessage(messages: QueuedMessage[]): ServerMessage<QueueStatePayload> {
   return createServerMessage('queue.state', { messages })
+}
+
+// Speech-to-text messages
+export function createSttPartialMessage(text: string, sessionId?: string): ServerMessage<SttPartialPayload> {
+  const message = createServerMessage('stt.partial', { text })
+  if (sessionId) {
+    message.sessionId = sessionId
+  }
+  return message
+}
+
+export function createSttFinalMessage(text: string, sessionId?: string): ServerMessage<SttFinalPayload> {
+  const message = createServerMessage('stt.final', { text })
+  if (sessionId) {
+    message.sessionId = sessionId
+  }
+  return message
+}
+
+export function createSttErrorMessage(message: string, sessionId?: string): ServerMessage<SttErrorPayload> {
+  const msg = createServerMessage('stt.error', { message })
+  if (sessionId) {
+    msg.sessionId = sessionId
+  }
+  return msg
+}
+
+export function createSttStateMessage(
+  state: 'off' | 'loading' | 'listening' | 'transcribing',
+  sessionId?: string,
+): ServerMessage<SttStatePayload> {
+  const msg = createServerMessage('stt.state', { state })
+  if (sessionId) {
+    msg.sessionId = sessionId
+  }
+  return msg
 }
 
 // ============================================================================

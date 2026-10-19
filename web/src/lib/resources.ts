@@ -563,6 +563,40 @@ export async function setSetting(key: string, value: string): Promise<void> {
   settingResource.write(data.value ?? value, key)
 }
 
+export interface SttWhisperModelStatus {
+  size: 'base' | 'small' | 'medium'
+  file: string
+  bytes: number
+  downloaded: boolean
+}
+
+export interface SttStatusData {
+  engine: string
+  whisperModel: string
+  whisper: SttWhisperModelStatus
+}
+
+export async function fetchSttStatus(): Promise<SttStatusData> {
+  const res = await authFetch('/api/stt/status')
+  if (!res.ok) throw new Error(`Failed to load STT status (${res.status})`)
+  return (await res.json()) as SttStatusData
+}
+
+export const sttStatusResource = resource<SttStatusData, [string]>({
+  key: (model) => `stt:status:${model}`,
+  fetch: fetchSttStatus,
+  maxAgeMs: 0,
+})
+
+export async function downloadSttWhisperModel(model: string): Promise<void> {
+  const res = await authFetch('/api/stt/whisper-model', { method: 'POST' })
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(data.error ?? `Failed to download STT model (${res.status})`)
+  }
+  await sttStatusResource.refresh(model)
+}
+
 /** In-flight batched settings request, keyed by the joined key list so two
  * concurrent warm-ups with identical keys share one request. */
 let bulkInFlight: { keys: string; promise: Promise<void> } | null = null
@@ -651,6 +685,9 @@ export const SETTINGS_KEYS = {
   PROXY_URL: 'network.proxyUrl',
   DEFAULT_AGENT: 'agent.defaultAgent',
   VSCODE_REMOTE_PREFIX: 'editor.vscodeRemotePrefix',
+  STT_ENGINE: 'stt.engine',
+  STT_WHISPER_MODEL: 'stt.whisper.model',
+  STT_LANGUAGE: 'stt.language',
 } as const
 
 export const DISPLAY_SETTINGS_KEYS = [

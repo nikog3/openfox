@@ -43,7 +43,7 @@ import { createWebSocketServer } from './ws/index.js'
 import { SessionManager } from './session/manager.js'
 import { clearSessionsForDeletedProvider, reconcileSessionProviders } from './session/provider-reconcile.js'
 import { toClientSession } from './session/client-session.js'
-import { setRuntimeConfig } from './runtime-config.js'
+import { setRuntimeConfig, getRuntimeConfig } from './runtime-config.js'
 import { createSkillRoutes } from './routes/skills.js'
 import { createCommandRoutes } from './routes/commands.js'
 import { createAgentRoutes } from './routes/agents.js'
@@ -62,7 +62,7 @@ import { createFileSearchRoutes } from './routes/file-search.js'
 import { createAutoUpdateRoutes } from './routes/auto-update.js'
 import { createProviderAuthRoutes } from './routes/provider-auth.js'
 import { devServerManager } from './dev-server/manager.js'
-import { getGlobalConfigDir } from '../cli/paths.js'
+import { getGlobalConfigDir, getGlobalDataDir } from '../cli/paths.js'
 import { ProviderRegistry } from './providers/plugins/index.js'
 import { PluginHost } from './plugins/host.js'
 import { createPluginRoutes } from './routes/plugins.js'
@@ -1964,6 +1964,33 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
   app.get('/api/tools/shells', async (_req, res) => {
     const { listAvailableShells } = await import('./utils/platform.js')
     res.json({ shells: listAvailableShells() })
+  })
+
+  // STT engine + selected whisper model status
+  app.get('/api/stt/status', async (_req, res) => {
+    const { getSetting, SETTINGS_KEYS, SETTINGS_DEFAULTS } = await import('./db/settings.js')
+    const { resolveWhisperModelSize, getWhisperModelStatus } = await import('./stt/whisper-model.js')
+    const engine = getSetting(SETTINGS_KEYS.STT_ENGINE) ?? SETTINGS_DEFAULTS[SETTINGS_KEYS.STT_ENGINE] ?? 'off'
+    const size = resolveWhisperModelSize(getSetting(SETTINGS_KEYS.STT_WHISPER_MODEL))
+    const dataDir = getGlobalDataDir(getRuntimeConfig().mode ?? 'production')
+    const whisper = await getWhisperModelStatus(dataDir, size)
+    res.json({ engine, whisperModel: size, whisper })
+  })
+
+  // Download the currently selected whisper model
+  app.post('/api/stt/whisper-model', async (_req, res) => {
+    const { getSetting, SETTINGS_KEYS } = await import('./db/settings.js')
+    const { resolveWhisperModelSize, ensureWhisperModel, getWhisperModelStatus } =
+      await import('./stt/whisper-model.js')
+    const size = resolveWhisperModelSize(getSetting(SETTINGS_KEYS.STT_WHISPER_MODEL))
+    const dataDir = getGlobalDataDir(getRuntimeConfig().mode ?? 'production')
+    try {
+      await ensureWhisperModel(dataDir, size)
+      const whisper = await getWhisperModelStatus(dataDir, size)
+      res.json({ whisperModel: size, whisper })
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+    }
   })
 
   // Config endpoint

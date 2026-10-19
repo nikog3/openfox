@@ -225,6 +225,45 @@ vi.mock('../llm/index.js', async (importOriginal) => {
   }
 })
 
+const sttServiceMock = vi.hoisted(() => {
+  const service = {
+    state: 'off' as 'off' | 'loading' | 'listening',
+    listeners: new Set<(event: unknown) => void>(),
+    startCalls: 0,
+    stopCalls: 0,
+    async start() {
+      this.startCalls += 1
+      this.state = 'listening'
+    },
+    async feedAudio() {},
+    async stop() {
+      this.stopCalls += 1
+      this.state = 'off'
+      for (const listener of [...this.listeners]) {
+        listener({ type: 'final', text: '' })
+      }
+    },
+    subscribe(listener: (event: unknown) => void) {
+      this.listeners.add(listener)
+      return () => {
+        this.listeners.delete(listener)
+      }
+    },
+    getState() {
+      return this.state
+    },
+    async dispose() {
+      this.state = 'off'
+      this.listeners.clear()
+    },
+  }
+  return service
+})
+
+vi.mock('../stt/index.js', () => ({
+  getSttService: () => sttServiceMock,
+}))
+
 import { createWebSocketServer } from './server.js'
 
 type TestMessage = { id?: string; type: string; payload: Record<string, unknown>; seq?: number; sessionId?: string }
@@ -629,6 +668,11 @@ describe('createWebSocketServer', () => {
     })
     getGlobalConfigDirMock.mockReset()
     getGlobalConfigDirMock.mockReturnValue('/tmp/config')
+
+    sttServiceMock.state = 'off'
+    sttServiceMock.startCalls = 0
+    sttServiceMock.stopCalls = 0
+    sttServiceMock.listeners.clear()
   })
 
   afterEach(async () => {
@@ -2148,6 +2192,23 @@ describe('createWebSocketServer', () => {
     })
 
     await windowB.close()
+    await harness.close()
+  })
+
+  it('stops the STT service when the dictating client disconnects', async () => {
+    const harness = await createHarness()
+    const secondary = await harness.connectClient()
+
+    secondary.send({ id: 'stt1', type: 'stt.start', payload: { sessionId: 'sess-1' } })
+    expect(await secondary.nextMessage((message) => message.id === 'stt1')).toMatchObject({ type: 'ack' })
+    expect(sttServiceMock.startCalls).toBe(1)
+    expect(sttServiceMock.state).toBe('listening')
+
+    await secondary.close()
+
+    await vi.waitFor(() => expect(sttServiceMock.stopCalls).toBe(1))
+    expect(sttServiceMock.state).toBe('off')
+
     await harness.close()
   })
 })
