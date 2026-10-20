@@ -84,8 +84,8 @@ export function AudioTab() {
           <div className="text-sm text-text-primary font-medium">{t({ en: 'Engine', fr: 'Moteur' })}</div>
           <div className="text-xs text-text-muted mt-0.5">
             {t({
-              en: 'Vosk = real-time · Whisper = more accurate (batch)',
-              fr: 'Vosk = temps réel · Whisper = plus précis (batch)',
+              en: 'Vosk = real-time · Whisper = more accurate (live, segmented)',
+              fr: 'Vosk = temps réel · Whisper = plus précis (live, segmenté)',
             })}
           </div>
         </div>

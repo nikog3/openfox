@@ -570,10 +570,17 @@ export interface SttWhisperModelStatus {
   downloaded: boolean
 }
 
+export interface SttVadModelStatus {
+  file: string
+  bytes: number
+  downloaded: boolean
+}
+
 export interface SttStatusData {
   engine: string
   whisperModel: string
   whisper: SttWhisperModelStatus
+  vad: SttVadModelStatus
 }
 
 export async function fetchSttStatus(): Promise<SttStatusData> {

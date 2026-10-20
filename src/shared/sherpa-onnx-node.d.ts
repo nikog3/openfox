@@ -51,4 +51,38 @@ declare module 'sherpa-onnx-node' {
     decodeAsync(stream: OfflineStream): Promise<OfflineRecognizerResult>
     getResult(stream: OfflineStream): OfflineRecognizerResult
   }
+
+  export interface SileroVadModelConfig {
+    model?: string
+    threshold?: number
+    minSilenceDuration?: number
+    minSpeechDuration?: number
+    windowSize?: number
+    maxSpeechDuration?: number
+  }
+
+  export interface VadConfig {
+    sileroVad?: SileroVadModelConfig
+    sampleRate?: number
+    numThreads?: number
+    provider?: string
+    debug?: number | boolean
+  }
+
+  export interface SpeechSegment {
+    start: number
+    samples: Float32Array
+  }
+
+  export class Vad {
+    constructor(config: VadConfig, bufferSizeInSeconds: number)
+    config: VadConfig
+    acceptWaveform(samples: Float32Array): void
+    isEmpty(): boolean
+    isDetected(): boolean
+    front(): SpeechSegment | null
+    pop(): SpeechSegment | null
+    clear(): void
+    reset(): void
+  }
 }

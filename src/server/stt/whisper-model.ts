@@ -1,6 +1,5 @@
-import { mkdir, rm, rename, stat } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { downloadFile } from './model.js'
+import { join } from 'node:path'
+import { filePresent, downloadIfMissing } from './model.js'
 
 export type WhisperModelSize = 'base' | 'small' | 'medium'
 
@@ -61,16 +60,7 @@ export function resolveWhisperModelSize(size: string | null | undefined): Whispe
   return 'small'
 }
 
-async function filePresent(path: string): Promise<boolean> {
-  try {
-    const s = await stat(path)
-    return s.isFile() && s.size > 0
-  } catch {
-    return false
-  }
-}
-
-function isWhisperModelPresent(dataDir: string, size: WhisperModelSize): Promise<boolean> {
+async function isWhisperModelPresent(dataDir: string, size: WhisperModelSize): Promise<boolean> {
   return Promise.all([
     filePresent(getWhisperEncoderPath(dataDir, size)),
     filePresent(getWhisperDecoderPath(dataDir, size)),
@@ -92,20 +82,6 @@ export async function getWhisperModelStatus(dataDir: string, size: WhisperModelS
     file: `${info.encoder} + ${info.decoder}`,
     bytes: info.bytes,
     downloaded: await isWhisperModelPresent(dataDir, size),
-  }
-}
-
-async function downloadIfMissing(url: string, dest: string): Promise<void> {
-  if (await filePresent(dest)) {
-    return
-  }
-  await mkdir(dirname(dest), { recursive: true })
-  const work = `${dest}.part`
-  try {
-    await downloadFile(url, work)
-    await rename(work, dest)
-  } finally {
-    await rm(work, { force: true }).catch(() => {})
   }
 }
 

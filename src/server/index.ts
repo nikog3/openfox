@@ -1970,11 +1970,12 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
   app.get('/api/stt/status', async (_req, res) => {
     const { getSetting, SETTINGS_KEYS, SETTINGS_DEFAULTS } = await import('./db/settings.js')
     const { resolveWhisperModelSize, getWhisperModelStatus } = await import('./stt/whisper-model.js')
+    const { getVadModelStatus } = await import('./stt/vad-model.js')
     const engine = getSetting(SETTINGS_KEYS.STT_ENGINE) ?? SETTINGS_DEFAULTS[SETTINGS_KEYS.STT_ENGINE] ?? 'off'
     const size = resolveWhisperModelSize(getSetting(SETTINGS_KEYS.STT_WHISPER_MODEL))
     const dataDir = getGlobalDataDir(getRuntimeConfig().mode ?? 'production')
-    const whisper = await getWhisperModelStatus(dataDir, size)
-    res.json({ engine, whisperModel: size, whisper })
+    const [whisper, vad] = await Promise.all([getWhisperModelStatus(dataDir, size), getVadModelStatus(dataDir)])
+    res.json({ engine, whisperModel: size, whisper, vad })
   })
 
   // Download the currently selected whisper model

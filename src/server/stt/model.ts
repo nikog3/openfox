@@ -1,6 +1,6 @@
 import { createWriteStream } from 'node:fs'
 import { mkdir, rename, rm, access, readdir, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import AdmZip from 'adm-zip'
 
 export const STT_MODEL_NAME = 'vosk-model-small-fr-0.22'
@@ -101,4 +101,27 @@ export async function downloadFile(url: string, dest: string): Promise<void> {
 async function extractZip(zipPath: string, destDir: string): Promise<void> {
   const zip = new AdmZip(zipPath)
   zip.extractAllTo(destDir, true)
+}
+
+export async function filePresent(path: string): Promise<boolean> {
+  try {
+    const s = await stat(path)
+    return s.isFile() && s.size > 0
+  } catch {
+    return false
+  }
+}
+
+export async function downloadIfMissing(url: string, dest: string): Promise<void> {
+  if (await filePresent(dest)) {
+    return
+  }
+  await mkdir(dirname(dest), { recursive: true })
+  const work = `${dest}.part`
+  try {
+    await downloadFile(url, work)
+    await rename(work, dest)
+  } finally {
+    await rm(work, { force: true }).catch(() => {})
+  }
 }

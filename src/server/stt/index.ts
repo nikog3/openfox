@@ -5,6 +5,7 @@ import { getSetting, SETTINGS_KEYS } from '../db/settings.js'
 import { ensureSttModel } from './model.js'
 import { createVoskProvider } from './vosk-provider.js'
 import { ensureWhisperModel, resolveWhisperModelSize } from './whisper-model.js'
+import { ensureVadModel } from './vad-model.js'
 import { createWhisperProvider } from './whisper-provider.js'
 import { SttService } from './service.js'
 import type { SttProviderFactory } from './types.js'
@@ -37,12 +38,14 @@ function createFactory(): SttProviderFactory {
       const size = resolveWhisperModelSize(getSetting(SETTINGS_KEYS.STT_WHISPER_MODEL))
       const language = (getSetting(SETTINGS_KEYS.STT_LANGUAGE) ?? 'fr').trim() || 'fr'
       let model: Awaited<ReturnType<typeof ensureWhisperModel>>
+      let vadModel: string
       try {
         model = await ensureWhisperModel(dataDir, size)
+        vadModel = await ensureVadModel(dataDir)
       } catch (error) {
         throw modelPrepError(error)
       }
-      return createWhisperProvider(model.encoder, model.decoder, model.tokens, language, onPartial)
+      return createWhisperProvider(model.encoder, model.decoder, model.tokens, language, vadModel, onPartial)
     }
 
     let modelPath: string
