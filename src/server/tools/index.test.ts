@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, sep } from 'node:path'
 
 const {
   readExecuteMock,
@@ -490,6 +494,148 @@ describe('tool registries', () => {
     expect(denied.error).toContain('not in your allowed tools list')
 
     setMcpTools([])
+  })
+
+  it('caps large tool output to the window-derived dynamic limit in the common layer', async () => {
+    const { setMcpTools } = await import('./index.js')
+    const bigTool = {
+      name: 'big_output',
+      definition: {
+        type: 'function' as const,
+        function: { name: 'big_output', description: 'Big', parameters: {} },
+      },
+      execute: vi.fn(async () => ({
+        success: true,
+        output: 'x'.repeat(50_000),
+        durationMs: 1,
+        truncated: false,
+      })),
+    }
+    setMcpTools([bigTool])
+
+    const registry = createRegistryFromTools([bigTool])
+    // 1000-token window → cap = floor(1000 * 0.25 * 2.4) = 600 chars
+    const context = {
+      workdir: '/tmp/project',
+      sessionId: 'session-1',
+      sessionManager: { getCurrentModelContext: () => 1000 } as never,
+    }
+
+    const result = await registry.execute('big_output', {}, context)
+
+    expect(result.success).toBe(true)
+    expect(result.truncated).toBe(true)
+    expect(result.output!.length).toBeGreaterThan(600)
+    expect(result.output!.length).toBeLessThan(50_000)
+    expect(result.output!).toContain('truncated at 600 chars of 50000')
+    expect(result.metadata).toMatchObject({
+      truncatedReason: 'dynamic_context_cap',
+      originalOutputChars: 50_000,
+      keptChars: 600,
+    })
+
+    // Short output below the cap is left untouched.
+    const shortResult = await registry.execute(
+      'big_output',
+      {},
+      {
+        ...context,
+        sessionManager: { getCurrentModelContext: () => 100_000 } as never,
+      },
+    )
+    expect(shortResult.truncated).toBe(false)
+
+    setMcpTools([])
+  })
+
+  it('persists the full output to a scratch file and points the marker at it', async () => {
+    const { setMcpTools } = await import('./index.js')
+    const full = 'y'.repeat(50_000)
+    const bigTool = {
+      name: 'persist_output',
+      definition: {
+        type: 'function' as const,
+        function: { name: 'persist_output', description: 'Persist', parameters: {} },
+      },
+      execute: vi.fn(async () => ({
+        success: true,
+        output: full,
+        durationMs: 1,
+        truncated: false,
+      })),
+    }
+    setMcpTools([bigTool])
+    const registry = createRegistryFromTools([bigTool])
+
+    const workdir = await mkdtemp(join(tmpdir(), 'openfox-scratch-'))
+    try {
+      // 1000-token window → cap = 600 chars, well below the 50k output.
+      const context = {
+        workdir,
+        sessionId: 'session-1',
+        toolCallId: 'call_abc123',
+        sessionManager: { getCurrentModelContext: () => 1000 } as never,
+      }
+
+      const result = await registry.execute('persist_output', {}, context)
+
+      expect(result.truncated).toBe(true)
+      // The marker points at the scratch file.
+      expect(result.metadata?.['fullOutputPath']).toBeDefined()
+      const scratchPath = result.metadata!['fullOutputPath'] as string
+      expect(result.output!).toContain(scratchPath)
+      expect(result.output!).toContain('re-read that file')
+      // The scratch file holds the FULL (pre-truncation) output.
+      const persisted = await readFile(scratchPath, 'utf8')
+      expect(persisted).toBe(full)
+      // The file name is derived from the tool call id.
+      expect(scratchPath).toContain('call_abc123')
+    } finally {
+      await rm(workdir, { recursive: true, force: true })
+      setMcpTools([])
+    }
+  })
+
+  it('sanitizes the tool name so a malicious MCP name cannot escape the scratch dir', async () => {
+    const { setMcpTools } = await import('./index.js')
+    const full = 'z'.repeat(50_000)
+    const evilTool = {
+      name: '../../evil_escape',
+      definition: {
+        type: 'function' as const,
+        function: { name: '../../evil_escape', description: 'Evil', parameters: {} },
+      },
+      execute: vi.fn(async () => ({ success: true, output: full, durationMs: 1, truncated: false })),
+    }
+    setMcpTools([evilTool])
+    const registry = createRegistryFromTools([evilTool])
+
+    const workdir = await mkdtemp(join(tmpdir(), 'openfox-scratch-evil-'))
+    try {
+      // 1000-token window → cap = 600 chars, well below the 50k output, so the
+      // full output is persisted to a scratch file.
+      const context = {
+        workdir,
+        sessionId: 'session-1',
+        toolCallId: 'call_evil',
+        sessionManager: { getCurrentModelContext: () => 1000 } as never,
+      }
+
+      const result = await registry.execute('../../evil_escape', {}, context)
+
+      expect(result.truncated).toBe(true)
+      const scratchDir = join(workdir, '.openfox', 'scratch')
+      const scratchPath = result.metadata?.['fullOutputPath'] as string | undefined
+      // If a scratch path is reported, it must stay inside the scratch dir.
+      if (scratchPath) {
+        expect(scratchPath.startsWith(scratchDir + sep)).toBe(true)
+      }
+      // No file escaped to the workdir root (where an unsanitized name would land).
+      expect(existsSync(join(workdir, 'evil_escape-call_evil.txt'))).toBe(false)
+    } finally {
+      await rm(workdir, { recursive: true, force: true })
+      setMcpTools([])
+    }
   })
 
   it('builder can still use write_file (unchanged)', async () => {

@@ -42,6 +42,9 @@ interface ChatFeedItemsProps {
   showStats?: boolean
   showAgentDefinitions?: boolean
   showWorkflowBars?: boolean
+  showContextState?: boolean
+  contextMaxTokens?: number
+  contextDangerZone?: boolean
   /**
    * Overrides the feedVirtualization setting for the windowing (hint,
    * placeholders, reveal triggers). Containment still follows the setting.
@@ -69,6 +72,9 @@ export const ChatFeedItems = memo(function ChatFeedItems({
   showStats = true,
   showAgentDefinitions = true,
   showWorkflowBars = true,
+  showContextState = false,
+  contextMaxTokens,
+  contextDangerZone = false,
   virtualization,
 }: ChatFeedItemsProps) {
   const t = useT()
@@ -271,6 +277,9 @@ export const ChatFeedItems = memo(function ChatFeedItems({
                 showThinking={showThinking}
                 showVerboseToolOutput={showVerboseToolOutput}
                 sessionId={sessionId ?? undefined}
+                showContextState={showContextState}
+                contextMaxTokens={contextMaxTokens}
+                contextDangerZone={contextDangerZone}
               />
             </div>
           )

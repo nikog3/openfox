@@ -25,7 +25,14 @@ export interface MessageFragment {
   subAgentId?: string
   subAgentType?: string
   isSystemGenerated?: boolean
-  messageKind?: 'correction' | 'auto-prompt' | 'context-reset' | 'task-completed' | 'workflow-started' | 'command'
+  messageKind?:
+    | 'correction'
+    | 'auto-prompt'
+    | 'context-reset'
+    | 'context-continuation'
+    | 'task-completed'
+    | 'workflow-started'
+    | 'command'
   isCompactionSummary?: boolean
   attachments?: unknown[]
   metadata?: unknown
@@ -115,6 +122,7 @@ export function updateMessageDone(
     segments?: unknown[]
     partial?: boolean
     tokenCount?: number
+    contextTokensAfter?: number
     preparingToolCalls?: unknown[]
   },
   data: Extract<TurnEvent, { type: 'message.done' }>['data'],
@@ -124,6 +132,7 @@ export function updateMessageDone(
   if (data.segments) msg.segments = data.segments
   if (data.partial) msg.partial = true
   if (data.tokenCount !== undefined) msg.tokenCount = data.tokenCount
+  if (data.contextTokensAfter !== undefined) msg.contextTokensAfter = data.contextTokensAfter
   if ('preparingToolCalls' in msg) {
     msg.preparingToolCalls = []
   }
@@ -142,6 +151,7 @@ export function applyEvents<
     segments?: unknown[]
     partial?: boolean
     tokenCount?: number
+    contextTokensAfter?: number
     contextWindowId?: string
     subAgentId?: string
     subAgentType?: string

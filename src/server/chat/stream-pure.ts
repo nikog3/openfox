@@ -925,7 +925,14 @@ export function createMessageStartEvent(
     subAgentId?: string
     subAgentType?: string
     isSystemGenerated?: boolean
-    messageKind?: 'correction' | 'auto-prompt' | 'context-reset' | 'task-completed' | 'workflow-started' | 'command'
+    messageKind?:
+      | 'correction'
+      | 'auto-prompt'
+      | 'context-reset'
+      | 'context-continuation'
+      | 'task-completed'
+      | 'workflow-started'
+      | 'command'
     metadata?: { type: string; name: string; color: string }
   },
 ): TurnEvent {
@@ -954,6 +961,7 @@ export function createMessageDoneEvent(
     stats?: MessageStats
     segments?: MessageSegment[]
     partial?: boolean
+    contextTokensAfter?: number
   },
 ): TurnEvent {
   return {
@@ -963,6 +971,7 @@ export function createMessageDoneEvent(
       ...(options?.stats && { stats: options.stats }),
       ...(options?.segments && { segments: options.segments }),
       ...(options?.partial && { partial: options.partial }),
+      ...(options?.contextTokensAfter !== undefined && { contextTokensAfter: options.contextTokensAfter }),
     },
   }
 }

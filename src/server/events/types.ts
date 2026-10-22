@@ -73,11 +73,18 @@ export type TurnEvent =
         subAgentId?: string
         subAgentType?: string
         isSystemGenerated?: boolean
-        messageKind?: 'correction' | 'auto-prompt' | 'context-reset' | 'task-completed' | 'workflow-started' | 'command'
+        messageKind?:
+          | 'correction'
+          | 'auto-prompt'
+          | 'context-reset'
+          | 'context-continuation'
+          | 'task-completed'
+          | 'workflow-started'
+          | 'command'
         isCompactionSummary?: boolean // True if this is the summary message after compaction
         tokenCount?: number // Known upfront for user messages
         attachments?: Attachment[] // Optional image attachments
-        metadata?: { type: string; name: string; color: string; kind?: 'definition' | 'reminder' } // For auto-prompt messages
+        metadata?: { type: string; name: string; color: string; kind?: 'definition' | 'reminder' | 'continuation' } // For auto-prompt messages
       }
     }
   | {
@@ -103,6 +110,7 @@ export type TurnEvent =
         segments?: MessageSegment[]
         partial?: boolean // True if interrupted
         tokenCount?: number // Final token count for assistant messages
+        contextTokensAfter?: number // Tracked context size (prompt+completion) after this turn
       }
     }
 
@@ -540,16 +548,24 @@ export interface SnapshotMessage {
   stats?: MessageStats
   timestamp: number
   tokenCount?: number
+  contextTokensAfter?: number
   isStreaming?: boolean
   partial?: boolean
   subAgentId?: string
   subAgentType?: string
   isSystemGenerated?: boolean
-  messageKind?: 'correction' | 'auto-prompt' | 'context-reset' | 'task-completed' | 'workflow-started' | 'command'
+  messageKind?:
+    | 'correction'
+    | 'auto-prompt'
+    | 'context-reset'
+    | 'context-continuation'
+    | 'task-completed'
+    | 'workflow-started'
+    | 'command'
   contextWindowId?: string
   isCompactionSummary?: boolean
   attachments?: Attachment[] // Optional image attachments
-  metadata?: { type: string; name: string; color: string; kind?: 'definition' | 'reminder' } // For auto-prompt messages
+  metadata?: { type: string; name: string; color: string; kind?: 'definition' | 'reminder' | 'continuation' } // For auto-prompt messages
 }
 
 export interface ToolCallWithResult extends ToolCall {

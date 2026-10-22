@@ -47,19 +47,20 @@ import {
   createChatStatsMessage,
 } from '../ws/protocol.js'
 import { executeTools, type ToolBatchContext } from './execute-tools.js'
-import {
-  estimateToolResultTokens,
-  isContextLengthError,
-  parseContextLengthError,
-  CHARS_PER_TOKEN,
-  TOOL_MESSAGE_OVERHEAD_TOKENS,
-  TOKENIZE_REMEASURE_THRESHOLD,
-} from './token-budget.js'
+import { isContextLengthError, parseContextLengthError, CHARS_PER_TOKEN } from './token-budget.js'
+import { applyMeasuredBackstop, OUTPUT_RESERVE_TOKENS } from './measured-backstop.js'
 import { loadAllAgentsDefault, getSubAgents } from '../agents/registry.js'
 import { createRetryLimiter, type RetryLimiter } from './retry-limiter.js'
 import { drainQueue } from './drain-queue.js'
 import { COMPACTION_PROMPT, CONTINUE_PROMPT, CONTINUE_AFTER_STREAM_ERROR_PROMPT } from './prompts.js'
-import { COMPACTION_SUMMARY_BUDGET_TOKENS } from '../context/compactor.js'
+import {
+  COMPACTION_SUMMARY_BUDGET_TOKENS,
+  COMPACTION_HEADROOM_TOKENS,
+  MAX_COMPACTION_ATTEMPTS,
+  shouldCompact,
+  appendCompactionPrompt,
+  fitSummaryInput,
+} from '../context/compactor.js'
 import { logger } from '../utils/logger.js'
 import { emitPluginHook } from '../plugins/hook-emitter.js'
 import { applyPluginMessageTransforms } from '../plugins/message-transforms.js'
@@ -192,6 +193,10 @@ export interface TopLevelLoopConfig {
   /** Called after auto-compaction completes within the loop, before the next iteration.
    *  Reinjects the agent definition reminder into the new context window. */
   injectAgentReminder?: (() => void) | undefined
+  /** Called after a compaction mints a fresh context window. Injects the
+   *  continuation reminder (not the full onboarding definition) so the agent
+   *  resumes from the summary instead of restarting the task. */
+  injectContinuationReminder?: (() => void) | undefined
   /** Called after a compaction creates a new context window, so the fresh
    *  system prompt + tools become canonical for that window. */
   rebuildCachedContext?: (() => Promise<void> | void) | undefined
@@ -224,7 +229,6 @@ export interface TopLevelLoopConfig {
 
 const MAX_TRUNCATION_RETRIES = 3
 const MAX_CONTEXT_LENGTH_RETRIES = 3
-const OUTPUT_RESERVE_TOKENS = 2048
 
 export interface ContextBreakdown {
   ctxWindow: number
@@ -284,6 +288,67 @@ function findToolResultParentMessageId(sessionId: string, toolCallId: string): s
   return undefined
 }
 
+/**
+ * Soft-delete (tombstone) all events belonging to the given message ids, so a
+ * failed compaction attempt (prompt + partial summary + rejection nudge) does
+ * not pollute the context: without this, each failed attempt leaves ~400
+ * tokens behind and the next attempt starts fuller than the last.
+ *
+ * Stream/fetch note: this only soft-deletes in the event store, so folds,
+ * snapshots and exports are correct immediately. A live WS client that already
+ * rendered the rolled-back prompt/summary sees it until the next reload — there
+ * is no "message removed" event. That is an accepted divergence for this rare,
+ * bounded path (a failed compaction is capped at MAX_COMPACTION_ATTEMPTS and
+ * then blocked for the turn); adding a removal event is not worth the risk to
+ * the streaming hot path.
+ */
+function tombstoneMessageEvents(sessionId: string, messageIds: string[]): void {
+  const ids = new Set(messageIds.filter(Boolean))
+  if (ids.size === 0) return
+  try {
+    const store = getEventStore()
+    const seqs = store
+      .getEvents(sessionId)
+      .filter((event) => {
+        if (!event.type.startsWith('message.')) return false
+        const messageId = (event.data as { messageId?: string } | undefined)?.messageId
+        return messageId !== undefined && ids.has(messageId)
+      })
+      .map((event) => event.seq)
+    if (seqs.length > 0) store.tombstoneEvents(sessionId, seqs)
+  } catch (error) {
+    logger.warn('Failed to roll back a failed compaction attempt', {
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+/**
+ * Find the last real user message (not system-generated, no message kind) so
+ * a compaction can re-inject the user's current question verbatim into the
+ * fresh window — the summary alone used to truncate it mid-sentence, leaving
+ * the agent asking the user to repeat a question it had already answered.
+ */
+function findLastUserMessage(sessionId: string): string | undefined {
+  const events = getEventStore().getEvents(sessionId)
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]
+    if (event?.type !== 'message.start') continue
+    const data = event.data as
+      | {
+          role?: string
+          content?: string
+          isSystemGenerated?: boolean
+          messageKind?: string
+        }
+      | undefined
+    if (data?.role !== 'user' || data.isSystemGenerated || data.messageKind || !data.content) continue
+    return data.content
+  }
+  return undefined
+}
+
 export async function runTopLevelAgentLoop(
   config: TopLevelLoopConfig,
   turnMetrics: TurnMetrics,
@@ -311,6 +376,13 @@ export async function runTopLevelAgentLoop(
   let lastPatternMatch: { pattern: string; field: string; matchedContent: string } | undefined
   let compacting = config.initialCompacting ?? false
   let returnValueNudgeCount = 0
+  // Compaction attempt accounting: a trigger may spend at most
+  // MAX_COMPACTION_ATTEMPTS summary calls; after that, compaction is blocked
+  // for the rest of this turn so a failing summary cannot loop (each failure
+  // used to re-fire on the next iteration and grow the context).
+  let compactionAttempts = 0
+  let compactionBlocked = false
+  let compactionPromptMsgId: string | undefined
 
   for (;;) {
     if (signal?.aborted) throw new Error('Aborted')
@@ -465,6 +537,27 @@ export async function runTopLevelAgentLoop(
         contextWindow - previousContextTokens - pendingToolResultTokens - OUTPUT_RESERVE_TOKENS,
       )
 
+      // Pre-call compaction: the fixed-headroom safety trigger, checked BEFORE
+      // the LLM request. If the tracked context is within COMPACTION_HEADROOM_TOKENS
+      // of the window, an over-full prompt must never be sent — compact first.
+      // Only the tracked context is considered (not pendingToolResultTokens):
+      // new tool results are already truncated by Layer 2's measured backstop to
+      // fit the window, so they must not re-trigger compaction here. The
+      // percentage quality threshold is deliberately NOT applied here (it stays
+      // in the post-turn check) so a near-full-but-safe prompt is not
+      // re-triggered on every iteration.
+      if (
+        !compacting &&
+        !compactionBlocked &&
+        contextWindow > 0 &&
+        contextWindow - previousContextTokens < COMPACTION_HEADROOM_TOKENS
+      ) {
+        compactionPromptMsgId = appendCompactionPrompt(sessionId, append, config.subAgentMetadata)
+        compacting = true
+        compactionAttempts += 1
+        continue
+      }
+
       let modelSettings = config.modelSettings ?? sessionManager.getCurrentModelSettings(sessionId, config.mode)
       if (modelSettings && currentMaxTokensOverride !== undefined) {
         modelSettings = { ...modelSettings, maxTokens: currentMaxTokensOverride }
@@ -472,11 +565,14 @@ export async function runTopLevelAgentLoop(
 
       if (modelSettings) {
         const requestedMaxTokens = modelSettings.maxTokens ?? profileDefaultMaxTokens
-        // Compaction summary must have a guaranteed output budget — never clamp
-        // it to the (possibly-negative) availableForOutput floor, which truncates
-        // the summary to a fragment and wipes the whole context.
+        // The compaction summary always gets the full COMPACTION_SUMMARY_BUDGET_TOKENS.
+        // Capping it at availableForOutput collapsed the budget to the 256-token
+        // floor when the window was nearly full: the summary hit its output
+        // limit, the compaction was abandoned, and the re-trigger looped. The
+        // input side is fitted below with fitSummaryInput instead, so
+        // input + budget can never overflow the window.
         const resolvedMaxTokens = compacting
-          ? Math.max(requestedMaxTokens, COMPACTION_SUMMARY_BUDGET_TOKENS)
+          ? COMPACTION_SUMMARY_BUDGET_TOKENS
           : Math.min(requestedMaxTokens, availableForOutput)
         modelSettings = { ...modelSettings, maxTokens: resolvedMaxTokens }
       }
@@ -495,6 +591,17 @@ export async function runTopLevelAgentLoop(
         ...(config.mode ? { mode: config.mode } : {}),
         ...(signal ? { signal } : {}),
       })
+
+      // While compacting, fit the summary call's input to the window: trim the
+      // oldest conversation messages so input + the full summary budget always
+      // fits (the summary is meant to replace the trimmed messages).
+      if (compacting) {
+        transformResult.messages = fitSummaryInput(
+          transformResult.messages,
+          transformResult.systemPrompt,
+          contextWindow,
+        )
+      }
 
       // Resolve retry patterns fresh each round so a mid-turn edit (deleting
       // or toggling a pattern, changing the cap) takes effect on the next
@@ -819,9 +926,8 @@ export async function runTopLevelAgentLoop(
     // Check compaction threshold with fresh promptTokens from LLM.
     // When exceeded, append compaction prompt and let the next iteration
     // handle summarization — same agent, same loop, no nested call.
-    if (!compacting) {
+    if (!compacting && !compactionBlocked) {
       const contextState = sessionManager.getContextState(sessionId)
-      const { shouldCompact, appendCompactionPrompt } = await import('../context/compactor.js')
       const compactionTokens = config.subAgentMetadata
         ? (sessionManager.getSubAgentContextTokens?.(config.subAgentMetadata.subAgentId) ?? 0)
         : contextState.currentTokens
@@ -836,8 +942,9 @@ export async function runTopLevelAgentLoop(
             runtimeConfig.context.compactionThreshold,
         )
       ) {
-        appendCompactionPrompt(sessionId, append, config.subAgentMetadata)
+        compactionPromptMsgId = appendCompactionPrompt(sessionId, append, config.subAgentMetadata)
         compacting = true
+        compactionAttempts += 1
         continue
       }
     }
@@ -914,6 +1021,10 @@ ${COMPACTION_PROMPT}`,
           ),
         )
         append({ type: 'message.done', data: { messageId: rejectionMsgId } })
+        // The nudge is a one-shot signal: tombstone it so repeated tool calls
+        // during compaction cannot pile up context (the compaction prompt
+        // already in context is what drives the summary).
+        tombstoneMessageEvents(sessionId, [rejectionMsgId])
         retryLimiter.reset()
         continue
       }
@@ -954,87 +1065,65 @@ ${COMPACTION_PROMPT}`,
         batchContext.agentTimeout = getRuntimeConfig().agent.toolTimeout
         batchContext.allowParallelSubAgents = getSetting(SETTINGS_KEYS.AGENT_ALLOW_PARALLEL_SUB_AGENTS) === 'true'
         const batchResult = await executeTools(assistantMsgId, result.toolCalls, batchContext, append)
-        pendingToolResultTokens = estimateToolResultTokens(batchResult.toolMessages)
 
+        // Measured backstop: measure the real prompt size (backend tokenizer
+        // when available, dense 2.4 ratio otherwise) and, if the tool results
+        // would overflow the window, iteratively truncate them (re-measuring
+        // after each pass) until prompt + reserve fits. Enforces the hard
+        // invariant max_tokens = window − measured_prompt − 2048 (floor 256).
         const usedTokens = result.usage.promptTokens + result.usage.completionTokens
         const ctxWindow = sessionManager.getCurrentModelContext(sessionId, config.mode)
-        const maxToolTokens = ctxWindow - usedTokens - OUTPUT_RESERVE_TOKENS
-        if (pendingToolResultTokens > maxToolTokens && maxToolTokens > 0) {
-          const n = batchResult.toolMessages.length
-          const totalContentChars = batchResult.toolMessages.reduce((sum, m) => sum + m.content.length, 0)
-          let toCut =
-            totalContentChars - Math.max(0, (maxToolTokens - n * TOOL_MESSAGE_OVERHEAD_TOKENS) * CHARS_PER_TOKEN)
-          if (toCut > 0 && pendingToolResultTokens > TOKENIZE_REMEASURE_THRESHOLD) {
-            // CHARS_PER_TOKEN underestimates markup-heavy output (HTML, diffs)
-            // by 6-8x, so a char-based budget can still overflow. Re-measure
-            // with the backend tokenizer and cut proportionally to the real
-            // token count when it is higher than the char estimate.
-            const client = resolveClient()
-            const tokenize = client.tokenize
-            if (tokenize) {
-              const model = client.getModel()
-              const realContentTokens = await Promise.all(
-                batchResult.toolMessages.map((m) =>
-                  tokenize(m.content, model).then((t) => t ?? Math.ceil(m.content.length / CHARS_PER_TOKEN)),
-                ),
-              )
-              const totalTokens = realContentTokens.reduce((s, t) => s + t, 0) + n * TOOL_MESSAGE_OVERHEAD_TOKENS
-              if (totalTokens > pendingToolResultTokens) {
-                pendingToolResultTokens = totalTokens
-                toCut = Math.ceil(((totalTokens - maxToolTokens) / totalTokens) * totalContentChars)
-              }
-            }
-          }
-          if (toCut > 0) {
-            logger.warn('Tool result truncated to fit context window', {
-              sessionId,
+        const backstopClient = resolveClient()
+        const backstop = await applyMeasuredBackstop({
+          toolMessages: batchResult.toolMessages,
+          usedTokens,
+          contextWindow: ctxWindow,
+          ...(backstopClient.tokenize ? { tokenize: backstopClient.tokenize } : {}),
+          model: backstopClient.getModel(),
+        })
+        // Hard invariant for the next LLM call: `availableForOutput` (computed
+        // at the top of the next round) folds this measured tool size into
+        // max(256, window − measured_prompt − 2048). We deliberately do NOT set
+        // currentMaxTokensOverride here — that would pin max_tokens and defeat
+        // the per-round clamp against the user's requested maxTokens.
+        pendingToolResultTokens = backstop.measuredToolTokens
+        if (backstop.truncated) {
+          logger.warn('Measured backstop: truncated tool results to fit context window', {
+            sessionId,
+            ctxWindow,
+            currentTokens: usedTokens,
+            measuredPromptTokens: backstop.measuredPromptTokens,
+            measuredResultTokens: backstop.measuredToolTokens,
+            reserveTokens: OUTPUT_RESERVE_TOKENS,
+            maxTokens: backstop.maxTokens,
+          })
+          batchResult.toolMessages.forEach((msg, idx) => {
+            const newContent = backstop.contents[idx]
+            if (newContent === undefined || newContent === msg.content) return
+            msg.content = newContent
+            const execResult = batchResult.executedResults.find((e) => e.toolCall.id === msg.toolCallId)
+            if (!execResult) return
+            // The re-appended tool.result must render the truncated content
+            // byte-identically to the message sent to the LLM — the fold
+            // replaces the original result with it (last event wins), so the
+            // next request carries one truncated message per call, never the
+            // full output.
+            execResult.toolResult.output = newContent
+            delete execResult.toolResult.error
+            execResult.toolResult.truncated = true
+            execResult.toolResult.metadata = {
+              ...execResult.toolResult.metadata,
+              truncatedReason: 'context_limit',
+              measuredPromptTokens: backstop.measuredPromptTokens,
+              measuredResultTokens: backstop.measuredToolTokens,
+              maxTokens: backstop.maxTokens,
+              remainingContextTokens: backstop.maxTokens,
               ctxWindow,
               currentTokens: usedTokens,
-              estimatedResultTokens: pendingToolResultTokens,
-              estimatedResultChars: totalContentChars,
               reserveTokens: OUTPUT_RESERVE_TOKENS,
-              availableTokens: maxToolTokens,
-            })
-            const sorted = batchResult.toolMessages
-              .map((m, i) => ({ i, len: m.content.length }))
-              .sort((a, b) => b.len - a.len)
-            for (const { i, len } of sorted) {
-              if (toCut <= 0) break
-              const msg = batchResult.toolMessages[i]
-              if (!msg) continue
-              const newLen = Math.max(Math.floor(len * 0.1), len - toCut)
-              const cut = len - newLen
-              if (cut > 0) {
-                const estimatedTokens = Math.round(len / CHARS_PER_TOKEN)
-                msg.content = msg.content.slice(0, newLen)
-                toCut -= cut
-                const execResult = batchResult.executedResults.find((e) => e.toolCall.id === msg.toolCallId)
-                if (execResult) {
-                  // The re-appended tool.result must render the truncated
-                  // content byte-identically to the message sent to the LLM —
-                  // the fold replaces the original result with it (last event
-                  // wins), so the next request carries one truncated message
-                  // per call, never the full output.
-                  execResult.toolResult.output = msg.content
-                  delete execResult.toolResult.error
-                  execResult.toolResult.truncated = true
-                  execResult.toolResult.metadata = {
-                    ...execResult.toolResult.metadata,
-                    truncatedReason: 'context_limit',
-                    estimatedTokens,
-                    keptTokens: Math.ceil(newLen / CHARS_PER_TOKEN),
-                    remainingContextTokens: maxToolTokens,
-                    ctxWindow,
-                    currentTokens: usedTokens,
-                    estimatedResultTokens: pendingToolResultTokens,
-                    reserveTokens: OUTPUT_RESERVE_TOKENS,
-                  }
-                  append(createToolResultEvent(assistantMsgId, execResult.toolCall.id, execResult.toolResult))
-                }
-              }
             }
-            pendingToolResultTokens = estimateToolResultTokens(batchResult.toolMessages)
-          }
+            append(createToolResultEvent(assistantMsgId, execResult.toolCall.id, execResult.toolResult))
+          })
         }
 
         if (batchResult.stepDoneCalled) {
@@ -1107,6 +1196,8 @@ ${COMPACTION_PROMPT}`,
           },
         })
         logger.warn('Compaction produced empty summary, continuing', { sessionId })
+        tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? '', assistantMsgId])
+        if (compactionAttempts >= MAX_COMPACTION_ATTEMPTS) compactionBlocked = true
         compacting = false
         if (config.initialCompacting) break
         continue
@@ -1127,6 +1218,8 @@ ${COMPACTION_PROMPT}`,
           },
         })
         logger.warn('Compaction summary was truncated, continuing', { sessionId })
+        tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? '', assistantMsgId])
+        if (compactionAttempts >= MAX_COMPACTION_ATTEMPTS) compactionBlocked = true
         compacting = false
         if (config.initialCompacting) break
         continue
@@ -1202,9 +1295,24 @@ ${COMPACTION_PROMPT}`,
         append({ type: 'message.done', data: { messageId: freshMsgId } })
       }
 
-      // Reinject the agent reminder into the new window (top-level only)
+      // Reinject the user's current question verbatim into the new window
+      // (top-level only). The summary can truncate it mid-sentence; re-adding
+      // it verbatim guarantees the agent keeps the user's actual request.
       if (!config.subAgentMetadata) {
-        config.injectAgentReminder?.()
+        const question = findLastUserMessage(sessionId)
+        if (question) {
+          const continuationMsgId = crypto.randomUUID()
+          append(
+            createMessageStartEvent(continuationMsgId, 'user', question, {
+              contextWindowId: newWindowId,
+              isSystemGenerated: true,
+              messageKind: 'context-continuation',
+              metadata: { type: 'compaction', name: 'Continuation', color: '#64748b' },
+            }),
+          )
+          append({ type: 'message.done', data: { messageId: continuationMsgId } })
+        }
+        config.injectContinuationReminder?.()
       }
       compacting = false
 
@@ -1239,10 +1347,17 @@ ${COMPACTION_PROMPT}`,
     }
 
     const stats = turnMetrics.buildStats(statsIdentity, mode)
+    // Tracked context size (prompt+completion) right after this turn — carries
+    // the same value in the stream (message.done) and the snapshot (fetch) so
+    // the frontend can show a per-message context-state chip with parity.
+    const contextTokensAfter = config.subAgentMetadata
+      ? (sessionManager.getSubAgentContextTokens?.(config.subAgentMetadata.subAgentId) ?? 0)
+      : sessionManager.getContextState(sessionId).currentTokens
     append(
       createMessageDoneEvent(assistantMsgId, {
         segments: result.segments,
         stats,
+        contextTokensAfter,
       }),
     )
     append(createChatDoneEvent(assistantMsgId, 'complete', stats, agentType))

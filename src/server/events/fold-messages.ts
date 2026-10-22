@@ -31,6 +31,7 @@ export function spreadOptionalMessageFields(message: SnapshotMessage) {
     ...(message.segments !== undefined && { segments: message.segments }),
     ...(message.stats !== undefined && { stats: message.stats }),
     ...(message.tokenCount !== undefined && { tokenCount: message.tokenCount }),
+    ...(message.contextTokensAfter !== undefined && { contextTokensAfter: message.contextTokensAfter }),
     ...(message.isStreaming !== undefined && { isStreaming: message.isStreaming }),
     ...(message.partial !== undefined && { partial: message.partial }),
     ...(message.subAgentId !== undefined && { subAgentId: message.subAgentId }),

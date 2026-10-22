@@ -22,6 +22,24 @@ const baseEvent = {
   timestamp: Date.parse('2024-01-01T00:00:00.000Z'),
 }
 
+describe('contextTokensAfter stream/fetch parity', () => {
+  const events: StoredEvent[] = [
+    { ...baseEvent, type: 'message.start', data: { messageId: 'm1', role: 'assistant' } },
+    { ...baseEvent, seq: 2, type: 'message.delta', data: { messageId: 'm1', content: 'Hello' } },
+    { ...baseEvent, seq: 3, type: 'message.done', data: { messageId: 'm1', contextTokensAfter: 12_400 } },
+  ]
+
+  it('attaches contextTokensAfter to the folded message (stream path)', () => {
+    const { messages } = buildMessagesFromStoredEvents(events)
+    expect(messages[0]?.contextTokensAfter).toBe(12_400)
+  })
+
+  it('carries contextTokensAfter into the snapshot message (fetch path)', () => {
+    const snapshotMessages = foldTurnEventsToSnapshotMessages(events)
+    expect(snapshotMessages[0]?.contextTokensAfter).toBe(12_400)
+  })
+})
+
 describe('apply-events.ts new handlers', () => {
   describe('tool.output events', () => {
     it('populates streamingOutput on tool calls', () => {

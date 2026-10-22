@@ -318,6 +318,18 @@ export function buildAgentSmallReminder(name: string): string {
   return `<system-reminder>\nReminder: you are in '${name}' mode.\n</system-reminder>`
 }
 
+/**
+ * Runtime reminder injected after a compaction, in place of the full agent
+ * definition. A compaction mints a fresh (empty) context window, so the
+ * definition-reminder heuristic would otherwise re-inject the whole onboarding
+ * prompt — which instructs the agent to understand the goal and explore from
+ * scratch, making it discard the summary and restart the task. This reminder
+ * instead tells the agent it is mid-task and to continue from the summary.
+ */
+export function buildAgentContinuationReminder(name: string): string {
+  return `<system-reminder>\nYou are continuing an in-progress task in '${name}' mode. The summary above IS your current state — it lists what is done, the data you have gathered, and the next steps. Continue from where you left off. Do NOT restart research or re-derive what the summary already established.\n</system-reminder>`
+}
+
 // ============================================================================
 // Utility Prompts
 // ============================================================================
@@ -335,10 +347,12 @@ Summarize the conversation history concisely, preserving:
 5. Important technical decisions and WHY they were made
 6. Requirements that should persist
 7. Next steps or pending actions that should be continued after compaction
-8. The user's current question, prompt, or active request
+8. The user's current question, prompt, or active request — preserved VERBATIM (word for word), even if long
+9. Working data needed to continue the task: concrete lists, identifiers (PR/issue numbers, commit hashes, file paths), counts, intermediate results, and any scratch/working file paths — not just the narrative
 
 Do not respond to any questions in the conversation, only output the summary.
-Be thorough but concise. Output as a structured summary.`
+Be thorough but concise. Output as a structured summary.
+The summary replaces the full history: if a detail is not in the summary, it is lost.`
 
 export const FORMAT_CORRECTION_PROMPT = `IMPORTANT: You MUST use the JSON function calling API. Do NOT output XML tags like <tool_call>, <function=>, or <parameter=>. Your previous attempt was stopped because you used the wrong format. Use the proper tool_calls format.`
 

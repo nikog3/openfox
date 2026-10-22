@@ -357,7 +357,9 @@ describe('emitContextState', () => {
 
     const state = getSessionState('s1')
     expect(state!.contextState.currentTokens).toBe(5000)
-    expect(state!.contextState.maxTokens).toBe(200000)
+    // No explicit maxTokens is passed to getSessionState, so it falls back to
+    // the conservative config default (not the model's claimed 200k window).
+    expect(state!.contextState.maxTokens).toBe(32768)
     expect(state!.contextState.dangerZone).toBe(false)
   })
 })

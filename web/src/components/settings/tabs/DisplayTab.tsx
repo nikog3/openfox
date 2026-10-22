@@ -74,6 +74,15 @@ const FEED_TOGGLES: ToggleDefinition[] = [
     },
   },
   {
+    key: SETTINGS_KEYS.DISPLAY_SHOW_CONTEXT_STATE,
+    label: { en: 'Show context state', fr: 'Afficher l’état du contexte' },
+    description: {
+      en: 'Show a per-message chip with the context size and its share of the window',
+      fr: 'Affiche un badge par message avec la taille du contexte et sa part de la fenêtre',
+    },
+    defaultValue: 'false',
+  },
+  {
     key: SETTINGS_KEYS.DISPLAY_SHOW_AGENT_DEFINITIONS,
     label: { en: 'Show agent definitions', fr: 'Afficher les définitions d’agents' },
     description: {

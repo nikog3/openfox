@@ -525,6 +525,65 @@ describe('AssistantMessage', () => {
     expect(screen.queryByRole('button', { name: '2026/08/16 14:44' })).toBeNull()
   })
 
+  it('shows the per-message context chip when enabled', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMessage
+        showContextState
+        contextMaxTokens={45000}
+        message={{
+          id: 'assistant-ctx',
+          role: 'assistant',
+          content: 'Answer',
+          timestamp: '2024-01-01T00:00:00.000Z',
+          tokenCount: 0,
+          isStreaming: false,
+          contextTokensAfter: 12400,
+        }}
+      />,
+    )
+
+    expect(html).toContain('12.4k / 45k')
+    expect(html).toContain('28%')
+  })
+
+  it('hides the context chip when the setting is off', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMessage
+        contextMaxTokens={45000}
+        message={{
+          id: 'assistant-ctx-off',
+          role: 'assistant',
+          content: 'Answer',
+          timestamp: '2024-01-01T00:00:00.000Z',
+          tokenCount: 0,
+          isStreaming: false,
+          contextTokensAfter: 12400,
+        }}
+      />,
+    )
+
+    expect(html).not.toContain('12.4k / 45k')
+  })
+
+  it('omits the context chip when the message has no token count', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMessage
+        showContextState
+        contextMaxTokens={45000}
+        message={{
+          id: 'assistant-ctx-none',
+          role: 'assistant',
+          content: 'Answer',
+          timestamp: '2024-01-01T00:00:00.000Z',
+          tokenCount: 0,
+          isStreaming: false,
+        }}
+      />,
+    )
+
+    expect(html).not.toContain('12.4k / 45k')
+  })
+
   it('strips provider path prefix from model name', () => {
     const html = renderToStaticMarkup(
       <AssistantMessage

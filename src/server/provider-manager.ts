@@ -20,6 +20,7 @@ import {
   collapseModeFamilies,
   UNKNOWN_CONTEXT_WINDOW,
 } from '../shared/reasoning-effort.js'
+import { resolveContextWindow, CONSERVATIVE_CONTEXT_WINDOW } from './context/window.js'
 
 /**
  * num_ctx is the context window we request from Ollama's native /api/chat
@@ -71,6 +72,39 @@ async function fetchModelsFromBackend(
     logger.debug('Error fetching models', { url, error: error instanceof Error ? error.message : String(error) })
     return []
   }
+}
+
+/**
+ * Detect llama.cpp's REAL per-slot context window. llama.cpp's OpenAI
+ * /v1/models never reports max_model_len, so the standard fetch falls back to
+ * the conservative default — which under-budgets a large server. The /slots
+ * endpoint reports each live slot's n_ctx; the minimum is the tightest real
+ * limit. Falls back to /props main_gpu.context_size (total, pre-split) when
+ * /slots is unavailable, and to undefined when neither works.
+ */
+async function fetchLlamaCppSlotContext(baseUrl: string): Promise<number | undefined> {
+  const base = baseUrl.replace(/\/v\d+\/?$/, '').replace(/\/+$/, '')
+  try {
+    const res = await fetch(`${base}/slots`, { signal: AbortSignal.timeout(5000) })
+    if (res.ok) {
+      const data = (await res.json()) as { slots?: Array<{ n_ctx?: number }> }
+      const ctxs = (data.slots ?? []).map((s) => s.n_ctx).filter((n): n is number => typeof n === 'number' && n > 0)
+      if (ctxs.length > 0) return Math.min(...ctxs)
+    }
+  } catch (error) {
+    logger.debug('llama.cpp /slots unavailable', { error: error instanceof Error ? error.message : String(error) })
+  }
+  try {
+    const res = await fetch(`${base}/props`, { signal: AbortSignal.timeout(5000) })
+    if (res.ok) {
+      const data = (await res.json()) as { main_gpu?: { context_size?: number } }
+      const ctx = data.main_gpu?.context_size
+      if (typeof ctx === 'number' && ctx > 0) return ctx
+    }
+  } catch (error) {
+    logger.debug('llama.cpp /props unavailable', { error: error instanceof Error ? error.message : String(error) })
+  }
+  return undefined
 }
 
 function enrichWithProfileDefaults(model: ModelConfig): ModelConfig {
@@ -190,13 +224,20 @@ function mergeModelsWithUserOverrides(
       // catalog's display name wins. Any other stored name is kept verbatim.
       const name = storedName !== undefined && storedName !== existingUserModel.id ? storedName : backendModel.name
       // A stored context window equal to the legacy hardcoded placeholder means
-      // "unknown", not a deliberate cap — let the catalog update it.
-      const contextWindow =
-        existingUserModel.contextWindow === LEGACY_PLACEHOLDER_CONTEXT_WINDOW &&
-        backendModel.contextWindow !== undefined &&
-        backendModel.contextWindow !== LEGACY_PLACEHOLDER_CONTEXT_WINDOW
-          ? backendModel.contextWindow
-          : existingUserModel.contextWindow
+      // "unknown", not a deliberate cap — let the catalog update it. The cascade
+      // keeps the user override supreme (detection never raises it) while letting
+      // a smaller detected window lower it (min downward), so a stale/too-large
+      // override can't blind the token budget to the model's real limit.
+      const windowResolution = resolveContextWindow(existingUserModel.contextWindow, backendModel.contextWindow)
+      if (windowResolution.loweredToDetected) {
+        logger.warn('User context-window override lowered to the detected backend window', {
+          model: backendModel.id,
+          override: existingUserModel.contextWindow,
+          detected: backendModel.contextWindow,
+          effective: windowResolution.window,
+        })
+      }
+      const contextWindow = windowResolution.window
       return enrichWithProfileDefaults({
         ...backendModel,
         ...userOverrides,
@@ -256,6 +297,25 @@ export async function fetchModelsWithContext(
     logger.info('LM Studio native endpoint unavailable, falling back to /v1/models')
   }
 
+  // llama.cpp never reports max_model_len on /v1/models — probe /slots for the
+  // real per-slot context window so we don't fall back to the conservative
+  // default and under-budget a large server.
+  if (backend === 'llamacpp') {
+    const models = await fetchModelsFromBackend(buildModelsUrl(baseUrl), apiKey)
+    const slotCtx = await fetchLlamaCppSlotContext(baseUrl)
+    logger.info('Fetched llama.cpp models via /v1/models + /slots', { count: models.length, slotCtx })
+    if (models.length === 0) return []
+    return models.map((m) => {
+      const contextWindow = m.contextWindow ?? slotCtx
+      return {
+        id: m.id,
+        contextWindow: contextWindow ?? CONSERVATIVE_CONTEXT_WINDOW,
+        ...(m.supportsVision !== undefined && { supportsVision: m.supportsVision }),
+        source: contextWindow ? ('backend' as const) : ('default' as const),
+      }
+    })
+  }
+
   // OpenCode Go exposes its models at https://opencode.ai/zen/go/v1/models
   // (see https://opencode.ai/docs/go/) — the standard buildModelsUrl already
   // produces the correct URL, so no rewrite to the Zen API (/zen/v1) is needed.
@@ -269,7 +329,7 @@ export async function fetchModelsWithContext(
   logger.info('Fetched models from /v1/models', { count: models.length })
   return models.map((m) => ({
     id: m.id,
-    contextWindow: m.contextWindow ?? 200000,
+    contextWindow: m.contextWindow ?? CONSERVATIVE_CONTEXT_WINDOW,
     ...(m.supportsVision !== undefined && { supportsVision: m.supportsVision }),
     source: m.contextWindow ? 'backend' : ('default' as const),
   }))
@@ -318,7 +378,7 @@ async function fetchOllamaModelsWithContext(baseUrl: string, _apiKey?: string): 
           }
 
           const mi = showData.model_info
-          const contextLength = mi?.llama?.context_length ?? mi?.context_length ?? 200000
+          const contextLength = mi?.llama?.context_length ?? mi?.context_length ?? CONSERVATIVE_CONTEXT_WINDOW
           // vision_start_token_id and known vision modality keys are positive
           // evidence. Emit `undefined` when there is no such evidence so a
           // model-profile default can still apply later (enrichWithProfileDefaults
@@ -330,13 +390,13 @@ async function fetchOllamaModelsWithContext(baseUrl: string, _apiKey?: string): 
             id: model.name,
             contextWindow: contextLength,
             ...(isVisionModel ? { supportsVision: true } : {}),
-            source: contextLength !== 200000 ? 'backend' : ('default' as const),
+            source: contextLength !== CONSERVATIVE_CONTEXT_WINDOW ? 'backend' : ('default' as const),
           })
         } else {
           // Fall back to default if /api/show fails
           modelsWithContext.push({
             id: model.name,
-            contextWindow: 200000,
+            contextWindow: CONSERVATIVE_CONTEXT_WINDOW,
             source: 'default' as const,
           })
         }
@@ -348,7 +408,7 @@ async function fetchOllamaModelsWithContext(baseUrl: string, _apiKey?: string): 
         // Fall back to default
         modelsWithContext.push({
           id: model.name,
-          contextWindow: 200000,
+          contextWindow: CONSERVATIVE_CONTEXT_WINDOW,
           source: 'default' as const,
         })
       }
@@ -394,7 +454,7 @@ async function fetchLmStudioModelsWithContext(baseUrl: string, _apiKey?: string)
       logger.info('LM Studio model detected', { modelId: model.id, contextWindow: model.contextWindow })
       return {
         id: model.id,
-        contextWindow: model.contextWindow ?? 200000,
+        contextWindow: model.contextWindow ?? CONSERVATIVE_CONTEXT_WINDOW,
         source: model.contextWindow ? 'backend' : ('default' as const),
       }
     })
@@ -975,7 +1035,7 @@ export function createProviderManager(config: Config, options: ProviderManagerOp
       // Merge with existing model to preserve any other settings
       const updatedModel: ModelConfig = enrichWithProfileDefaults({
         id: modelId,
-        contextWindow: settings.contextWindow ?? existingModel?.contextWindow ?? 200000,
+        contextWindow: settings.contextWindow ?? existingModel?.contextWindow ?? CONSERVATIVE_CONTEXT_WINDOW,
         source: 'user',
         ...(existingModel?.name !== undefined && { name: existingModel.name }),
         ...(existingModel?.apiModelId !== undefined && { apiModelId: existingModel.apiModelId }),

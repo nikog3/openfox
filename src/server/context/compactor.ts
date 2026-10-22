@@ -10,6 +10,9 @@
 import { COMPACTION_PROMPT } from '../chat/prompts.js'
 import { createMessageStartEvent } from '../chat/stream-pure.js'
 import { getCurrentWindowMessageOptions } from '../events/index.js'
+import { OUTPUT_RESERVE_TOKENS } from '../chat/measured-backstop.js'
+import { DENSE_CHARS_PER_TOKEN } from '../tools/output-cap.js'
+import type { ContextMessage } from '../events/fold-types.js'
 
 /**
  * Append the compaction prompt to the event store.
@@ -17,12 +20,13 @@ import { getCurrentWindowMessageOptions } from '../events/index.js'
  * manual compaction (always appended, in ws/server.ts).
  * When a sub-agent compacts, the prompt is tagged with its metadata so it
  * stays scoped to the sub-agent's context and chatfeed window.
+ * Returns the prompt's message id so a failed attempt can roll the pair back.
  */
 export function appendCompactionPrompt(
   sessionId: string,
   append: (event: import('../events/types.js').TurnEvent) => void,
   subAgent?: { subAgentId: string; subAgentType: string },
-): void {
+): string {
   const compactPromptMsgId = crypto.randomUUID()
   append(
     createMessageStartEvent(compactPromptMsgId, 'user', COMPACTION_PROMPT, {
@@ -34,34 +38,102 @@ export function appendCompactionPrompt(
     }),
   )
   append({ type: 'message.done', data: { messageId: compactPromptMsgId } })
+  return compactPromptMsgId
 }
 
 /**
- * Hard ceiling: compaction always fires when fewer than 5K tokens remain,
- * regardless of the configured threshold. Also capped at 95% of the
- * context window for large models, matching the config schema and UI.
+ * Fixed headroom: compaction always fires when fewer than 5K tokens remain,
+ * regardless of the configured threshold. This is the safety trigger — it is
+ * window-relative (never percentage-based) so a 25k window is protected exactly
+ * like a 200k one.
  */
 export const COMPACTION_HEADROOM_TOKENS = 5_000
-export const COMPACTION_MAX_RATIO = 0.95
 
 /**
- * Guaranteed minimum output budget for the compaction summary call.
- * Compaction only fires between LLM calls, so a large tool result can push the
- * context past the window before it triggers — at which point the normal output
- * clamp (availableForOutput) goes negative and floors at 256 tokens. That 256
- * tokens, mostly consumed by thinking, yields a truncated summary that wipes the
- * whole context. The summary call must never be subject to that floor: it always
- * gets at least this many tokens.
+ * Output budget for the compaction summary call. Measured on a real model the
+ * summary is stable at 600-850 tokens for ~15k-token conversations, but a
+ * large (50k+) context can need more, so the budget is 4096 to give the
+ * summary room to finish (a truncated summary aborts compaction and leaves the
+ * context over-full). It is ALWAYS granted in full — the input side is fitted
+ * to the window instead (see fitSummaryInput), so the call can never overflow
+ * (no 400s) even when the context is already over-full.
  */
 export const COMPACTION_SUMMARY_BUDGET_TOKENS = 4_096
 
 /**
+ * Max summary LLM calls per compaction trigger. A failed attempt (empty or
+ * truncated summary) must not re-trigger compaction endlessly: each failure
+ * used to append its prompt+summary pair to the context, making the next
+ * attempt start fuller than the last (observed: 7 attempts in 60s, context
+ * growing +418 tokens per attempt past the window).
+ */
+export const MAX_COMPACTION_ATTEMPTS = 2
+
+/**
+ * Wire size of a message: content + thinking. convertMessages re-echoes prior
+ * thinkingContent into the request (gated by sendReasoningInMessages, NOT by
+ * the summary call's reasoningEffort:'none), so the fitted input must count
+ * both — counting only content underestimates the real prompt and lets the
+ * summary call overflow the window.
+ */
+function messageWireSize(message: ContextMessage): number {
+  return message.content.length + (message.thinkingContent?.length ?? 0)
+}
+
+/**
+ * Trim the summarization input so the call can never overflow the window.
+ *
+ * The summary always gets COMPACTION_SUMMARY_BUDGET_TOKENS (decoupled from
+ * `availableForOutput`, which floors at 256 exactly when the context is
+ * over-full — the state where compaction is needed). To keep
+ * `input + budget + reserve ≤ window`, the conversation is trimmed from the
+ * FRONT (oldest first): the oldest content is the least relevant, and the
+ * window already starts with the previous summary, so nothing essential is
+ * lost. The last message (the compaction prompt itself) is never dropped,
+ * and a dropped assistant message never leaves its tool results orphaned.
+ */
+export function fitSummaryInput(
+  messages: ContextMessage[],
+  systemPrompt: string,
+  contextWindow: number,
+): ContextMessage[] {
+  if (contextWindow <= 0 || messages.length === 0) return messages
+
+  const allowedChars =
+    Math.max(0, contextWindow - COMPACTION_SUMMARY_BUDGET_TOKENS - OUTPUT_RESERVE_TOKENS) * DENSE_CHARS_PER_TOKEN
+
+  let total = systemPrompt.length
+  for (const message of messages) total += messageWireSize(message)
+  // Already fits — nothing to trim.
+  if (total <= allowedChars) return messages
+
+  // Drop messages from the FRONT (oldest first) until the remainder — which
+  // always includes the last message, the compaction prompt — fits the budget.
+  let start = 0
+  while (start < messages.length - 1 && total > allowedChars) {
+    total -= messageWireSize(messages[start]!)
+    start++
+  }
+  // A dropped assistant message must not leave its tool results behind: skip
+  // leading tool messages whose parent was dropped.
+  while (start < messages.length - 1 && messages[start]!.role === 'tool') {
+    total -= messageWireSize(messages[start]!)
+    start++
+  }
+  return messages.slice(start)
+}
+
+/**
  * Check if automatic compaction should be triggered.
- * Applies a hard ceiling to guarantee headroom before the context fills up.
+ *
+ * Two independent triggers:
+ * 1. Safety (fixed): fewer than COMPACTION_HEADROOM_TOKENS of headroom remain.
+ *    Always active — the threshold cannot disable it.
+ * 2. Quality (optional): the configured percentage threshold, honored as-is.
  */
 export function shouldCompact(currentTokens: number, maxTokens: number, threshold: number): boolean {
-  if (threshold <= 0) return false
-  const ceilingRatio = Math.min(1, Math.max(0, (maxTokens - COMPACTION_HEADROOM_TOKENS) / maxTokens))
-  const effectiveThreshold = Math.min(threshold, ceilingRatio, COMPACTION_MAX_RATIO)
-  return currentTokens > maxTokens * effectiveThreshold
+  if (maxTokens <= 0) return false
+  if (maxTokens - currentTokens < COMPACTION_HEADROOM_TOKENS) return true
+  if (threshold > 0 && currentTokens > maxTokens * threshold) return true
+  return false
 }

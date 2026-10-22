@@ -10,6 +10,7 @@ export function useDisplaySettings() {
     showThinking: useSetting(SETTINGS_KEYS.DISPLAY_SHOW_THINKING, 'true').value === 'true',
     showVerboseToolOutput: useSetting(SETTINGS_KEYS.DISPLAY_SHOW_VERBOSE_TOOL_OUTPUT, 'true').value === 'true',
     showStats: useSetting(SETTINGS_KEYS.DISPLAY_SHOW_STATS, 'true').value === 'true',
+    showContextState: useSetting(SETTINGS_KEYS.DISPLAY_SHOW_CONTEXT_STATE, 'false').value === 'true',
     showAgentDefinitions: useSetting(SETTINGS_KEYS.DISPLAY_SHOW_AGENT_DEFINITIONS, 'true').value === 'true',
     showWorkflowBars: useSetting(SETTINGS_KEYS.DISPLAY_SHOW_WORKFLOW_BARS, 'true').value === 'true',
     showSyntaxHighlighting: useSetting(SETTINGS_KEYS.DISPLAY_SHOW_SYNTAX_HIGHLIGHTING, 'true').value === 'true',

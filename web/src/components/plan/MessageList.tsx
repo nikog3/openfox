@@ -14,7 +14,7 @@ import { CloseButton } from '../shared/CloseButton'
 import { Modal } from '../shared/Modal'
 import { ChevronUpIcon, InfoIcon } from '../shared/icons'
 import { useClickOutside } from '../../hooks/useClickOutside'
-import { useSessionScope, useScopedPaneState } from '../../stores/session/session-scope'
+import { useSessionScope, useScopedPaneState, useScopedContext } from '../../stores/session/session-scope'
 import type { DisplayItem } from './groupMessages.js'
 import type { MetadataEntry, WorkflowScope } from '@shared/types.js'
 import type { LLMRetryState } from '../../stores/session/types'
@@ -175,8 +175,9 @@ export const MessageList = memo(function MessageList({
   useEffect(() => {
     if (!llmRetry) setShowRetryError(false)
   }, [llmRetry])
-  const { showThinking, showVerboseToolOutput, showStats, showAgentDefinitions, showWorkflowBars } =
+  const { showThinking, showVerboseToolOutput, showStats, showAgentDefinitions, showWorkflowBars, showContextState } =
     useDisplaySettings()
+  const { contextState } = useScopedContext()
 
   const { workflows } = useWorkflows(useSessionWorkdir())
 
@@ -305,6 +306,9 @@ export const MessageList = memo(function MessageList({
               showStats={showStats}
               showAgentDefinitions={showAgentDefinitions}
               showWorkflowBars={showWorkflowBars}
+              showContextState={showContextState}
+              contextMaxTokens={contextState?.maxTokens}
+              contextDangerZone={contextState?.dangerZone}
             />
           </div>
           {displayItems.length === 0 && emptyState && (

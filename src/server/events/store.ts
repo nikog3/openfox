@@ -19,6 +19,7 @@ import { existsSync, statSync, unlinkSync } from 'node:fs'
 import type { TurnEvent, StoredEvent, SessionSnapshot, SnapshotMessage } from './types.js'
 import { logger } from '../utils/logger.js'
 import { foldSessionState, buildSnapshot, trimSnapshotStreamingOutput } from './folding.js'
+import { CONSERVATIVE_CONTEXT_WINDOW } from '../context/window.js'
 import { SETTINGS_KEYS } from '../db/settings.js'
 import { EVENTS_INDEX_DDL } from '../db/events-schema.js'
 
@@ -425,6 +426,7 @@ export class EventStore {
     })
 
     transaction()
+    this.invalidateSessionCache(sessionId)
     return count
   }
 
@@ -1094,7 +1096,7 @@ export class EventStore {
           ? (latestSnapshot.data as { messages: SnapshotMessage[] }).messages
           : []
 
-      const foldedState = foldSessionState(events, initialWindowId, 200000, snapshotMessages)
+      const foldedState = foldSessionState(events, initialWindowId, CONSERVATIVE_CONTEXT_WINDOW, snapshotMessages)
       const newSnapshot = buildSnapshot(foldedState, latestSeq)
 
       const deleteResult = this.db

@@ -1,22 +1,8 @@
-import type { RequestContextMessage } from './request-context.js'
-
 /** Rough token estimate: ~4 chars per token, matching the tool-definition estimate in mcp/manager.ts. */
 export const CHARS_PER_TOKEN = 4
 
 /** JSON framing overhead per tool message (role, tool_call_id, content key). */
 export const TOOL_MESSAGE_OVERHEAD_TOKENS = 16
-
-/** Re-measure tool results with the backend tokenizer once the batch estimate
- *  exceeds this many tokens — small batches are cheap to estimate, large ones
- *  (HTML, minified JSON) are where the chars/4 heuristic is most off. */
-export const TOKENIZE_REMEASURE_THRESHOLD = 8000
-
-export function estimateToolResultTokens(toolMessages: Array<Pick<RequestContextMessage, 'content'>>): number {
-  return toolMessages.reduce(
-    (sum, message) => sum + TOOL_MESSAGE_OVERHEAD_TOKENS + Math.ceil(message.content.length / CHARS_PER_TOKEN),
-    0,
-  )
-}
 
 const CONTEXT_LENGTH_ERROR_PATTERN =
   /context\s*length|context_length|context window|context size|prompt (?:is )?too long/i

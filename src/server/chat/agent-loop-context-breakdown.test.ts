@@ -43,10 +43,14 @@ vi.mock('./conversation-history.js', () => ({
   getConversationMessages: vi.fn().mockReturnValue([]),
 }))
 
-vi.mock('../context/compactor.js', () => ({
-  shouldCompact: vi.fn(() => false),
-  appendCompactionPrompt: vi.fn(),
-}))
+vi.mock('../context/compactor.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../context/compactor.js')>()
+  return {
+    ...actual,
+    shouldCompact: vi.fn(() => false),
+    appendCompactionPrompt: vi.fn(),
+  }
+})
 
 vi.mock('../agents/registry.js', () => ({
   loadAllAgentsDefault: vi.fn(async () => []),
@@ -244,16 +248,17 @@ describe('agent loop context breakdown logging', () => {
     await runTopLevelAgentLoop(makeConfig({ append, llmRetryPolicy: FAST_POLICY }), mockTurnMetrics)
 
     const warnCalls = (logger.warn as any).mock.calls
-    const truncationLog = warnCalls.find((c: any[]) => c[0] === 'Tool result truncated to fit context window')
+    const truncationLog = warnCalls.find(
+      (c: any[]) => c[0] === 'Measured backstop: truncated tool results to fit context window',
+    )
     expect(truncationLog).toBeDefined()
     const ctx = truncationLog[1]
     expect(ctx.sessionId).toBe('test-session')
     expect(ctx.ctxWindow).toBe(128000)
     expect(ctx.currentTokens).toBe(1200)
-    expect(ctx.estimatedResultTokens).toBeGreaterThan(0)
+    expect(ctx.measuredResultTokens).toBeGreaterThan(0)
     expect(ctx.reserveTokens).toBe(2048)
-    expect(ctx.availableTokens).toBeGreaterThan(0)
-    expect(ctx.estimatedResultChars).toBe(600_000)
+    expect(ctx.maxTokens).toBeGreaterThan(0)
   })
 
   it('sends context breakdown in chat.llm_retry payload once context retries are exhausted', async () => {

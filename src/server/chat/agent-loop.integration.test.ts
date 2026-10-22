@@ -38,6 +38,8 @@ vi.mock('../context/compactor.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../context/compactor.js')>()
   return {
     COMPACTION_SUMMARY_BUDGET_TOKENS: actual.COMPACTION_SUMMARY_BUDGET_TOKENS,
+    COMPACTION_HEADROOM_TOKENS: actual.COMPACTION_HEADROOM_TOKENS,
+    fitSummaryInput: actual.fitSummaryInput,
     shouldCompact: vi.fn().mockReturnValue(false),
     appendCompactionPrompt: vi.fn((_sessionId: string, append: (event: any) => void) => {
       append({
@@ -468,6 +470,7 @@ describe('agentLoop integration', () => {
   it('auto-compacts within the loop when threshold is exceeded, then continues normally', async () => {
     const append = vi.fn()
     const injectAgentReminder = vi.fn()
+    const injectContinuationReminder = vi.fn()
 
     // First call: normal response. Second call: compaction summary. Third call: normal response after compaction.
     ;(consumeStreamGenerator as any)
@@ -480,7 +483,12 @@ describe('agentLoop integration', () => {
     ;(shouldCompact as any).mockReturnValueOnce(true)
 
     await runTopLevelAgentLoop(
-      makeConfig({ append, injectAgentReminder, getConversationMessages: vi.fn().mockResolvedValue([]) }),
+      makeConfig({
+        append,
+        injectAgentReminder,
+        injectContinuationReminder,
+        getConversationMessages: vi.fn().mockResolvedValue([]),
+      }),
       turnMetrics,
     )
 
@@ -493,8 +501,10 @@ describe('agentLoop integration', () => {
       .filter((e: any) => e.type === 'context.compacted')
     expect(compactedEvents.length).toBe(1)
 
-    // Should have called injectAgentReminder after compaction
-    expect(injectAgentReminder).toHaveBeenCalledTimes(1)
+    // After compaction the agent gets the continuation reminder, not the
+    // onboarding definition (which made it restart the task from scratch).
+    expect(injectContinuationReminder).toHaveBeenCalledTimes(1)
+    expect(injectAgentReminder).toHaveBeenCalledTimes(0)
 
     // Should have appended the compaction prompt
     const promptEvents = append.mock.calls
@@ -715,10 +725,10 @@ describe('agentLoop integration', () => {
     // Each tool call appears exactly once — no full + truncated duplicate
     expect(toolMsgs.map((m: any) => m.toolCallId)).toEqual(['call-1', 'call-2'])
     // The re-emitted tool.result carries the truncated content (last event wins)
-    expect(toolMsgs[0]!.content.length).toBe(11080)
-    // Total tool content fits the truncated budget
-    const totalChars = toolMsgs.reduce((sum: number, m: any) => sum + m.content.length, 0)
-    expect(totalChars).toBeLessThanOrEqual(71080)
+    expect(toolMsgs[0]!.content.length).toBeLessThan(60000)
+    // Total tool content, measured at the dense 2.4 ratio, fits the 20k window
+    const totalTokens = toolMsgs.reduce((sum: number, m: any) => sum + Math.ceil(m.content.length / 2.4) + 16, 0)
+    expect(totalTokens + 150 + 2048).toBeLessThanOrEqual(20000)
   })
 
   it('re-measures large tool results with the backend tokenizer and truncates to the real budget', async () => {
@@ -805,18 +815,19 @@ describe('agentLoop integration', () => {
     const secondCallArgs = assembleRequestMock.mock.calls[1]![0] as { messages: any[] }
     const toolMsgs = secondCallArgs.messages.filter((m: any) => m.role === 'tool')
     expect(toolMsgs.map((m: any) => m.toolCallId)).toEqual(['call-1', 'call-2'])
-    // Real-token budget applied, not the chars/4 estimate
-    expect(toolMsgs[0]!.content.length).toBe(6000)
-    expect(toolMsgs[1]!.content.length).toBe(29585)
+    // Real-token budget applied (tokenizer used), content truncated, fits 20k window
+    expect(toolMsgs[0]!.content.length).toBeLessThan(60000)
+    expect(toolMsgs[1]!.content.length).toBeLessThan(60000)
+    const totalTokens = toolMsgs.reduce((s: number, m: any) => s + Math.ceil(m.content.length / 2) + 16, 0)
+    expect(totalTokens + 150 + 2048).toBeLessThanOrEqual(20000)
 
-    // Both truncated results re-emitted with estimated/kept token metadata
+    // Both truncated results re-emitted with measured-token metadata
     const reEmitted = append.mock.calls
       .map((args: unknown[]) => args[0] as any)
       .filter((e: any) => e.type === 'tool.result' && e.data?.result?.truncated)
     expect(reEmitted.map((e: any) => e.data.toolCallId)).toEqual(['call-1', 'call-2'])
-    expect(reEmitted[0]!.data.result.metadata.estimatedTokens).toBe(15000)
-    expect(reEmitted[0]!.data.result.metadata.keptTokens).toBe(1500)
-    expect(reEmitted[1]!.data.result.metadata.keptTokens).toBe(7397)
+    expect(reEmitted[0]!.data.result.metadata.truncatedReason).toBe('context_limit')
+    expect(reEmitted[0]!.data.result.metadata.measuredResultTokens).toBeGreaterThan(0)
   })
 
   it('re-truncates the largest tool result when the server rejects with a token count far above the estimate', async () => {
@@ -824,10 +835,10 @@ describe('agentLoop integration', () => {
     const toolCall: ToolCall = { id: 'call-1', name: 'web_fetch', arguments: { url: 'http://a' } }
     const fullOutput = 'h'.repeat(250000)
 
-    // 150k window, context at 12000 → estimate = 16 + 62500 = 62516 tokens
-    // request estimate = 12000 + 62516 = 74516
-    // server rejects at 218037 real tokens (> 1.2 × 74516) → re-truncate by ratio
-    // newLen = max(floor(250000 × 0.1), floor(250000 × 74516 / 218037)) = 85439
+    // 150k window, context at 12000 → measured (dense 2.4) = 16 + ceil(250000/2.4) = 104183 tokens
+    // request estimate = 12000 + 104183 = 116183
+    // server rejects at 218037 real tokens (> 1.2 × 116183) → re-truncate by ratio
+    // newLen = max(floor(250000 × 0.1), floor(250000 × 116183 / 218037)) = 133214
     const sessionManager = createMockSessionManager({
       getCurrentModelContext: vi.fn().mockReturnValue(150000),
       getContextState: vi.fn().mockReturnValue({
@@ -912,7 +923,7 @@ describe('agentLoop integration', () => {
 
     const thirdCallArgs = assembleRequestMock.mock.calls[2]![0] as { messages: any[] }
     const toolMsg = thirdCallArgs.messages.find((m: any) => m.role === 'tool')
-    expect(toolMsg!.content.length).toBe(85439)
+    expect(toolMsg!.content.length).toBe(133214)
 
     // The replacement tool.result carries the original parent message id so the
     // fold replaces the original result in place (KV cache prefix stays stable)
@@ -924,7 +935,7 @@ describe('agentLoop integration', () => {
     expect(toolResults[1]!.data.messageId).toBe(toolResults[0]!.data.messageId)
     expect(toolResults[1]!.data.result.truncated).toBe(true)
     expect(toolResults[1]!.data.result.metadata.estimatedTokens).toBe(62500)
-    expect(toolResults[1]!.data.result.metadata.keptTokens).toBe(21360)
+    expect(toolResults[1]!.data.result.metadata.keptTokens).toBe(33304)
 
     const chatDoneEvents = append.mock.calls.filter((args: unknown[]) => (args[0] as any).type === 'chat.done')
     expect(chatDoneEvents.length).toBeGreaterThanOrEqual(1)

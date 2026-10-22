@@ -1,5 +1,6 @@
 import type { Criterion, SessionMode, SessionPhase, ContextState, Todo } from '../../shared/types.js'
 import { resolveDefaultAgentId } from '../agents/registry.js'
+import { CONSERVATIVE_CONTEXT_WINDOW } from '../context/window.js'
 import type {
   TurnEvent,
   SessionSnapshot,
@@ -557,7 +558,7 @@ export function buildSnapshotFromSessionState(input: {
   cachedSystemPrompt?: string
   dynamicContextHash?: string
 }): SessionSnapshot {
-  const { session, events, latestSeq, snapshotAt = Date.now(), maxTokens = 200000 } = input
+  const { session, events, latestSeq, snapshotAt = Date.now(), maxTokens = CONSERVATIVE_CONTEXT_WINDOW } = input
   let initialWindowId = ''
   for (const event of events) {
     if (event.type === 'session.initialized') {

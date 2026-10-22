@@ -22,6 +22,7 @@ import { buildModelsUrl } from './llm/url-utils.js'
 
 import { createMockLLMClient } from './llm/mock.js'
 import { createProviderManager, parseDefaultModelSelection } from './provider-manager.js'
+import { CONSERVATIVE_CONTEXT_WINDOW } from './context/window.js'
 import { cascadeProviderDelete } from './providers/adapters/provider-deletion.js'
 import { isReasoningEffortValidForModel, collapseModeFamilies } from '../shared/reasoning-effort.js'
 import { createToolRegistry, setMcpTools, getBuiltInToolNames } from './tools/index.js'
@@ -2083,7 +2084,7 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
   function buildModelConfigs(models: ModelConfigInput[]): ModelConfig[] {
     return models.map((m) => ({
       id: m.id,
-      contextWindow: m.contextWindow ?? 200000,
+      contextWindow: m.contextWindow ?? CONSERVATIVE_CONTEXT_WINDOW,
       source: 'user' as const,
       ...(m.name !== undefined && { name: m.name }),
       ...(m.apiModelId !== undefined && { apiModelId: m.apiModelId }),

@@ -4,7 +4,9 @@ import {
   buildTopLevelSystemPrompt,
   buildSubAgentSystemPrompt,
   buildAgentReminder,
+  buildAgentContinuationReminder,
   buildSubAgentsSection,
+  COMPACTION_PROMPT,
 } from './prompts.js'
 import type { AgentDefinition } from '../agents/types.js'
 
@@ -202,6 +204,32 @@ describe('buildAgentReminder', () => {
   })
 })
 
+describe('buildAgentContinuationReminder', () => {
+  it('wraps the reminder in <system-reminder>…</system-reminder>', () => {
+    const reminder = buildAgentContinuationReminder('Builder')
+    expect(reminder.startsWith('<system-reminder>')).toBe(true)
+    expect(reminder.endsWith('</system-reminder>')).toBe(true)
+  })
+
+  it('states the agent is continuing an in-progress task in the given mode', () => {
+    const reminder = buildAgentContinuationReminder('Planner')
+    expect(reminder).toContain('continuing an in-progress task')
+    expect(reminder).toContain("'Planner' mode")
+  })
+
+  it('tells the agent the summary is the current state and to continue from it', () => {
+    const reminder = buildAgentContinuationReminder('Builder')
+    expect(reminder).toContain('summary above IS your current state')
+    expect(reminder).toContain('Continue from where you left off')
+  })
+
+  it('forbids restarting research or re-deriving what the summary established', () => {
+    const reminder = buildAgentContinuationReminder('Builder')
+    expect(reminder).toMatch(/do not restart/i)
+    expect(reminder).toMatch(/re-derive/i)
+  })
+})
+
 describe('buildSubAgentsSection', () => {
   it('generates listing from agent definitions', () => {
     const section = buildSubAgentsSection([mockVerifier, mockCodeReviewer])
@@ -295,5 +323,24 @@ describe('caveman thinking option (llm.cavemanThinking)', () => {
     expect(prompt).toContain('## THINKING STYLE')
     expect(prompt).toContain('caveman style')
     expect(prompt).toContain('Same meaning, far fewer tokens.')
+  })
+})
+
+describe('COMPACTION_PROMPT contract', () => {
+  it("instructs preserving the user's current question verbatim", () => {
+    expect(COMPACTION_PROMPT).toContain("The user's current question, prompt, or active request")
+    expect(COMPACTION_PROMPT).toContain('preserved VERBATIM (word for word)')
+  })
+
+  it('instructs preserving working data (identifiers, counts, scratch paths), not just narrative', () => {
+    expect(COMPACTION_PROMPT).toContain('Working data needed to continue the task')
+    expect(COMPACTION_PROMPT).toContain('identifiers (PR/issue numbers, commit hashes, file paths)')
+    expect(COMPACTION_PROMPT).toContain('intermediate results')
+    expect(COMPACTION_PROMPT).toContain('scratch/working file paths')
+    expect(COMPACTION_PROMPT).toContain('not just the narrative')
+  })
+
+  it('states that the summary replaces the full history (nothing unsummarized survives)', () => {
+    expect(COMPACTION_PROMPT).toContain('The summary replaces the full history')
   })
 })

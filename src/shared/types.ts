@@ -495,6 +495,7 @@ export interface Message {
   toolResult?: ToolResult
   timestamp: string
   tokenCount?: number // Deprecated: no longer used for context tracking
+  contextTokensAfter?: number // Tracked context size (prompt+completion) right after this assistant turn
   isCompacted?: boolean
   originalMessageIds?: string[]
   segments?: MessageSegment[] // Preserves streaming order: text/thinking chunks + tool call refs
@@ -503,7 +504,14 @@ export interface Message {
   completeReason?: 'complete' | 'stopped' | 'error' | 'waiting_for_user' | 'truncated' | 'step_done' // How the message ended
   isSystemGenerated?: boolean // true for auto-injected messages (retry prompts, etc.)
   isStreaming?: boolean // true while assistant is still generating
-  messageKind?: 'correction' | 'auto-prompt' | 'context-reset' | 'task-completed' | 'workflow-started' | 'command' // Visual styling hint for system-generated messages
+  messageKind?:
+    | 'correction'
+    | 'auto-prompt'
+    | 'context-reset'
+    | 'context-continuation'
+    | 'task-completed'
+    | 'workflow-started'
+    | 'command' // Visual styling hint for system-generated messages
   isCompactionSummary?: boolean // true if this is the summary message after compaction
   subAgentId?: string // If set, this message belongs to a sub-agent process
   subAgentType?: string // Sub-agent ID from agent registry
@@ -512,7 +520,7 @@ export interface Message {
     type: string
     name: string
     color: string
-    kind?: 'definition' | 'reminder'
+    kind?: 'definition' | 'reminder' | 'continuation'
     branchName?: string
     workspaceName?: string
   } // For auto-prompt messages

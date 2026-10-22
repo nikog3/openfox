@@ -18,7 +18,12 @@ import type { AgentDefinition } from '../agents/types.js'
 import { getEventStore, getCurrentContextWindowId, getCurrentWindowMessageOptions } from '../events/index.js'
 import type { SessionManager } from '../session/index.js'
 import { getToolRegistryForAgent, PathAccessDeniedError } from '../tools/index.js'
-import { buildAgentReminder, buildAgentSmallReminder, buildTopLevelSystemPrompt } from './prompts.js'
+import {
+  buildAgentReminder,
+  buildAgentSmallReminder,
+  buildAgentContinuationReminder,
+  buildTopLevelSystemPrompt,
+} from './prompts.js'
 import { createSnapshotCadence } from './snapshot-cadence.js'
 import { serverT } from '../i18n.js'
 import {
@@ -352,6 +357,29 @@ function injectAgentReminder(sessionId: string, agentDef: AgentDefinition): void
   const isSmallReminder = latestAgentName === currentAgentName
   const content = isSmallReminder ? buildAgentSmallReminder(currentAgentName) : buildAgentReminder(agentDef)
 
+  appendAgentAutoPromptMessage(
+    sessionId,
+    content,
+    currentAgentName,
+    agentDef.metadata.color ?? '#6b7280',
+    isSmallReminder ? 'reminder' : 'definition',
+  )
+}
+
+/**
+ * Append a system-generated auto-prompt user message to the current context
+ * window. Shared by the turn-start agent reminder and the post-compaction
+ * continuation reminder.
+ */
+function appendAgentAutoPromptMessage(
+  sessionId: string,
+  content: string,
+  name: string,
+  color: string,
+  kind: 'definition' | 'reminder' | 'continuation',
+): void {
+  const eventStore = getEventStore()
+  const currentWindowId = getCurrentContextWindowId(sessionId)
   const reminderMsgId = crypto.randomUUID()
   const currentWindowMessageOptions = currentWindowId ? { contextWindowId: currentWindowId } : undefined
 
@@ -364,18 +392,30 @@ function injectAgentReminder(sessionId: string, agentDef: AgentDefinition): void
       ...(currentWindowMessageOptions ?? {}),
       isSystemGenerated: true,
       messageKind: 'auto-prompt',
-      metadata: {
-        type: 'agent',
-        name: currentAgentName,
-        color: agentDef.metadata.color ?? '#6b7280',
-        kind: isSmallReminder ? 'reminder' : 'definition',
-      },
+      metadata: { type: 'agent', name, color, kind },
     },
   })
   eventStore.append(sessionId, {
     type: 'message.done',
     data: { messageId: reminderMsgId },
   })
+}
+
+/**
+ * Inject the continuation reminder into the fresh context window created by a
+ * compaction. Unlike {@link injectAgentReminder}, it always emits the
+ * continuation variant (never the full onboarding definition), so the agent
+ * resumes from the summary instead of restarting the task from scratch.
+ */
+function injectContinuationReminder(sessionId: string, agentDef: AgentDefinition): void {
+  const currentAgentName = agentDef.metadata.name ?? agentDef.metadata.id
+  appendAgentAutoPromptMessage(
+    sessionId,
+    buildAgentContinuationReminder(currentAgentName),
+    currentAgentName,
+    agentDef.metadata.color ?? '#6b7280',
+    'continuation',
+  )
 }
 
 export async function runAgentTurn(
@@ -503,6 +543,7 @@ export async function runAgentTurn(
       getToolRegistry: () => getToolRegistryForAgent(agentDef, options.sessionId),
       getConversationMessages: buildGetConversationMessages(options.sessionId, resolveAgentClient, append),
       injectAgentReminder: () => injectAgentReminder(options.sessionId, agentDef),
+      injectContinuationReminder: () => injectContinuationReminder(options.sessionId, agentDef),
       rebuildCachedContext: async () => {
         const { applyDynamicContext } = await import('./dynamic-context.js')
         await applyDynamicContext(options.sessionManager, options.sessionId, agentLlmClient.getModel())

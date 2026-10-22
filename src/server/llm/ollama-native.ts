@@ -362,6 +362,7 @@ export class OllamaHttpClient extends ChatHttpClient {
         method: 'POST',
         headers,
         body: JSON.stringify({ model, prompt: content }),
+        signal: AbortSignal.timeout(2000),
       })
       return countTokensFromResponse(response)
     } catch {

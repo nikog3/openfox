@@ -50,6 +50,7 @@ vi.mock('../../cli/paths.js', () => ({
 vi.mock('../context/compactor.js', () => ({
   shouldCompact: vi.fn(() => false),
   appendCompactionPrompt: vi.fn(),
+  COMPACTION_HEADROOM_TOKENS: 5_000,
 }))
 
 vi.mock('../agents/registry.js', () => ({

@@ -1,5 +1,8 @@
 import type { ToolResult } from '../../shared/types.js'
 import type { Tool, ToolRegistry, ToolContext } from './types.js'
+import { OUTPUT_LIMITS } from './types.js'
+import { dynamicToolOutputCap, truncateToCap } from './output-cap.js'
+import { CONSERVATIVE_CONTEXT_WINDOW } from '../context/window.js'
 import type { AgentDefinition } from '../agents/types.js'
 import { getSessionDisabledServers } from '../mcp/session-overrides.js'
 import { readFileTool } from './read.js'
@@ -23,6 +26,9 @@ import { workspaceTool } from './workspace.js'
 import { projectTasksTool } from './project-tasks.js'
 import { computeEffectiveTools } from './tool-policy.js'
 import { logger } from '../utils/logger.js'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 
 // ============================================================================
 // Built-in Tool Registry
@@ -38,6 +44,82 @@ import { logger } from '../utils/logger.js'
  *  re-entrant module evaluation).
  */
 let _builtInTools: Tool[] | undefined
+
+/**
+ * Apply the dynamic output cap to a tool result in the common execution layer,
+ * so every built-in and MCP tool result is bounded by the REAL context window
+ * (not just a static constant). Only text `output` is capped — binary payloads
+ * (e.g. image base64) live in `metadata` and are left untouched.
+ */
+function resolveContextWindowSafe(context: ToolContext): number {
+  try {
+    const window = context.sessionManager.getCurrentModelContext(context.sessionId)
+    if (window && window > 0) return window
+  } catch {
+    // sessionManager may be a partial mock or unavailable — fall through
+  }
+  return CONSERVATIVE_CONTEXT_WINDOW
+}
+
+/** Max size of a persisted scratch file. Larger outputs (e.g. uncapped MCP
+ *  tools) are not persisted — the truncation marker falls back to the generic
+ *  "re-run with a narrower scope" hint. Bounds per-file disk growth. */
+const MAX_PERSISTED_OUTPUT_CHARS = 1_000_000
+
+/**
+ * Persist a tool's full (pre-truncation) output to a scratch file so the
+ * agent can re-read it after compaction without re-running the tool. Lives
+ * under `<workdir>/.openfox/scratch/` (gitignored). Best-effort: any failure
+ * returns undefined and the truncation falls back to the generic marker.
+ */
+function persistFullOutput(context: ToolContext, name: string, output: string): string | undefined {
+  // Skip persisting very large outputs — they would grow the scratch dir
+  // without bound (the dynamic cap limits what reaches the LLM, not disk).
+  if (output.length > MAX_PERSISTED_OUTPUT_CHARS) return undefined
+  try {
+    const id =
+      context.toolCallId && context.toolCallId.length > 0
+        ? context.toolCallId.replace(/[^a-zA-Z0-9_-]/g, '-')
+        : createHash('sha256').update(output).digest('hex').slice(0, 16)
+    const dir = join(context.workdir, '.openfox', 'scratch')
+    mkdirSync(dir, { recursive: true })
+    // Sanitize the tool name: MCP tool names are `${server}_${tool}` where the
+    // tool part is untrusted server input — an unsanitized name with `../`
+    // would escape the scratch dir (arbitrary file write).
+    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '-')
+    const filePath = join(dir, `${safeName}-${id}.txt`)
+    writeFileSync(filePath, output, 'utf8')
+    return filePath
+  } catch (error) {
+    logger.warn('Failed to persist full tool output to scratch', {
+      name,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return undefined
+  }
+}
+
+function capToolOutput(name: string, result: ToolResult, context: ToolContext): ToolResult {
+  if (!result.success || !result.output) return result
+  const contextWindow = resolveContextWindowSafe(context)
+  const staticCap = (OUTPUT_LIMITS as Record<string, { maxBytes?: number }>)[name]?.maxBytes
+  const cap = dynamicToolOutputCap(contextWindow, staticCap)
+  if (cap <= 0 || result.output.length <= cap) return result
+  const fullOutputPath = persistFullOutput(context, name, result.output)
+  const { output } = truncateToCap(result.output, cap, fullOutputPath)
+  return {
+    ...result,
+    output,
+    truncated: true,
+    metadata: {
+      ...result.metadata,
+      truncatedReason: 'dynamic_context_cap',
+      originalOutputChars: result.output.length,
+      keptChars: cap,
+      ...(fullOutputPath ? { fullOutputPath } : {}),
+    },
+  }
+}
 
 function getBuiltInTools(): Tool[] {
   if (!_builtInTools) {
@@ -257,15 +339,15 @@ export function createRegistryFromTools(
         logger.debug('Executing tool', { tool: name, args })
 
         try {
-          const result = await tool.execute(args, contextWithPerms)
+          const rawResult = await tool.execute(args, contextWithPerms)
 
           logger.debug('Tool completed', {
             tool: name,
-            success: result.success,
-            durationMs: result.durationMs,
+            success: rawResult.success,
+            durationMs: rawResult.durationMs,
           })
 
-          return result
+          return capToolOutput(name, rawResult, context)
         } catch (error) {
           if (error instanceof AskUserInterrupt) {
             throw error

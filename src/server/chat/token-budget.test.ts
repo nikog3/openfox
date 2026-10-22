@@ -1,33 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
-  estimateToolResultTokens,
-  isContextLengthError,
-  parseContextLengthError,
-  CHARS_PER_TOKEN,
-  TOOL_MESSAGE_OVERHEAD_TOKENS,
-} from './token-budget.js'
-
-describe('estimateToolResultTokens', () => {
-  it('returns 0 for no tool messages', () => {
-    expect(estimateToolResultTokens([])).toBe(0)
-  })
-
-  it('estimates content tokens plus per-message overhead', () => {
-    const content = 'a'.repeat(CHARS_PER_TOKEN * 10)
-    expect(estimateToolResultTokens([{ content }])).toBe(TOOL_MESSAGE_OVERHEAD_TOKENS + 10)
-  })
-
-  it('rounds partial token buckets up per message', () => {
-    expect(estimateToolResultTokens([{ content: 'abc' }])).toBe(TOOL_MESSAGE_OVERHEAD_TOKENS + 1)
-    expect(estimateToolResultTokens([{ content: 'abcde' }])).toBe(TOOL_MESSAGE_OVERHEAD_TOKENS + 2)
-  })
-
-  it('sums estimates across multiple tool messages', () => {
-    const a = 'a'.repeat(CHARS_PER_TOKEN * 5)
-    const b = 'b'.repeat(CHARS_PER_TOKEN * 7)
-    expect(estimateToolResultTokens([{ content: a }, { content: b }])).toBe(2 * TOOL_MESSAGE_OVERHEAD_TOKENS + 12)
-  })
-})
+import { isContextLengthError, parseContextLengthError } from './token-budget.js'
 
 describe('isContextLengthError', () => {
   it('detects OpenAI-style maximum context length errors', () => {

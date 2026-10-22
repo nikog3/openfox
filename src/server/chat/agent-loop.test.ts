@@ -67,6 +67,7 @@ import { getEventStore } from '../events/store.js'
 import { getAllInstructions } from '../context/instructions.js'
 import { getEnabledSkillMetadata } from '../skills/registry.js'
 import { COMPACTION_SUMMARY_BUDGET_TOKENS } from '../context/compactor.js'
+import { buildAgentContinuationReminder } from './prompts.js'
 
 describe('executeTools', () => {
   let mockSessionManager: SessionManager
@@ -528,6 +529,94 @@ describe('runTopLevelAgentLoop compaction', () => {
       .map(([event]) => event)
       .filter((event: any) => event?.type === 'message.start' && event.data?.messageKind === 'context-reset')
     expect(freshContextEvents).toHaveLength(0)
+  })
+
+  it('injects the continuation reminder (not the onboarding definition) after compaction', async () => {
+    mockSessionManager = {
+      enterPauseGate: vi.fn().mockResolvedValue('released'),
+      requireSession: vi.fn().mockReturnValue({
+        workdir: '/test',
+        projectId: 'test-project',
+        executionState: null,
+        criteria: [],
+        isRunning: false,
+      }),
+      getEffectiveWorkdir: vi.fn().mockReturnValue('/test'),
+      getProjectWorkdir: vi.fn().mockReturnValue('/test'),
+      getContextState: vi.fn().mockReturnValue({
+        currentTokens: 0,
+        maxTokens: 200000,
+        compactionCount: 0,
+        dangerZone: false,
+        canCompact: false,
+        dynamicContextChanged: false,
+      }),
+      getCurrentModelContext: vi.fn().mockReturnValue(200000),
+      getCurrentModelSettings: vi.fn().mockReturnValue({}),
+      getModelCompactionThreshold: vi.fn().mockReturnValue(undefined),
+      setCurrentContextSize: vi.fn(),
+      getDynamicContextChanged: vi.fn().mockReturnValue(false),
+      setDynamicContextChanged: vi.fn(),
+      getCachedPrompt: vi.fn().mockReturnValue(undefined),
+      setCachedPrompt: vi.fn(),
+      getLspManager: vi.fn(),
+      drainAsapMessages: vi.fn().mockReturnValue([]),
+      getCurrentWindowMessages: vi.fn().mockReturnValue([]),
+      updateMessage: vi.fn(),
+    } as any
+
+    const appendMock = vi.fn()
+    // Simulate the orchestrator's two reminder callbacks appending real content,
+    // so we can assert the compaction path picks the continuation variant.
+    const injectContinuationReminder = vi.fn(() => {
+      appendMock({
+        type: 'message.start',
+        data: {
+          messageId: 'cont-1',
+          role: 'user',
+          content: buildAgentContinuationReminder('Planner'),
+          isSystemGenerated: true,
+          messageKind: 'auto-prompt',
+          metadata: { type: 'agent', name: 'Planner', color: '#a855f7', kind: 'continuation' },
+        },
+      })
+    })
+    const injectAgentReminder = vi.fn(() => {
+      appendMock({
+        type: 'message.start',
+        data: {
+          messageId: 'def-1',
+          role: 'user',
+          content:
+            "<system-reminder>\n# Plan Mode\nUnderstand the user's goal before locking in details.\n</system-reminder>",
+          isSystemGenerated: true,
+          messageKind: 'auto-prompt',
+          metadata: { type: 'agent', name: 'Planner', color: '#a855f7', kind: 'definition' },
+        },
+      })
+    })
+
+    await runTopLevelAgentLoop(
+      makeConfig({ append: appendMock, initialCompacting: true, injectContinuationReminder, injectAgentReminder }),
+      mockTurnMetrics,
+    )
+
+    // The compaction path must call the continuation callback, never the onboarding one.
+    expect(injectContinuationReminder).toHaveBeenCalledTimes(1)
+    expect(injectAgentReminder).not.toHaveBeenCalled()
+
+    const startEvents = appendMock.mock.calls
+      .map(([event]) => event)
+      .filter((event: any) => event?.type === 'message.start')
+    const continuation = startEvents.find((e: any) => e.data?.metadata?.kind === 'continuation')
+    const definition = startEvents.find((e: any) => e.data?.metadata?.kind === 'definition')
+
+    // Continuation reminder is present with the "continue / don't restart" framing…
+    expect(continuation).toBeDefined()
+    expect(continuation!.data.content).toContain('continuing an in-progress task')
+    expect(continuation!.data.content).toMatch(/do not restart/i)
+    // …and the full onboarding definition is NOT re-injected into the fresh window.
+    expect(definition).toBeUndefined()
   })
 
   it('tags compaction events with sub-agent metadata and does not rebuild cached context', async () => {
@@ -1029,12 +1118,14 @@ describe('maxTokens clamping', () => {
       updateMessage: vi.fn(),
     } as any
 
-    await runTopLevelAgentLoop(makeConfig(), mockTurnMetrics).catch(() => {})
+    await runTopLevelAgentLoop(makeConfig({ initialCompacting: true }), mockTurnMetrics).catch(() => {})
 
     const callArgs = (streamLLMPure as any).mock.calls[0]?.[0]
     expect(callArgs).toBeDefined()
-    // 200000 - 200000 = 0, floor is 256
-    expect(callArgs.modelSettings?.maxTokens).toBe(256)
+    // The compaction summary always gets the full budget (decoupled from
+    // availableForOutput, which would floor at 256 here). The input is fitted
+    // to the window instead, so the call never overflows.
+    expect(callArgs.modelSettings?.maxTokens).toBe(COMPACTION_SUMMARY_BUDGET_TOKENS)
   })
 
   it('does not clamp when context is empty', async () => {
@@ -1568,11 +1659,11 @@ describe('maxTokens clamping', () => {
     await runTopLevelAgentLoop(makeConfig({ getToolRegistry: () => toolRegistry }), mockTurnMetrics).catch(() => {})
 
     // First call: available = 200000 - 5000 - 2048 = 192952.
-    // Tool result (4000 chars) estimated at 16 + 1000 = 1016 tokens.
-    // Second call: available = 192952 - 1016 = 191936.
+    // Tool result (4000 chars) measured at 16 + ceil(4000/2.4) = 1683 tokens (dense 2.4).
+    // Second call: available = 192952 - 1683 = 191269.
     const secondCall = (streamLLMPure as any).mock.calls[1]?.[0]
     expect(secondCall).toBeDefined()
-    expect(secondCall.modelSettings?.maxTokens).toBe(191936)
+    expect(secondCall.modelSettings?.maxTokens).toBe(191269)
   })
 
   it('does not double-count tool-result tokens once they are reflected in promptTokens', async () => {
@@ -1655,11 +1746,11 @@ describe('maxTokens clamping', () => {
 
     await runTopLevelAgentLoop(makeConfig({ getToolRegistry: () => toolRegistry }), mockTurnMetrics).catch(() => {})
 
-    // Iteration 3 must subtract only iteration 2's estimate (1016), not 2032:
+    // Iteration 3 must subtract only iteration 2's measure (1683), not 3366:
     // iteration 1's results are already counted in iteration 2's promptTokens.
     const thirdCall = (streamLLMPure as any).mock.calls[2]?.[0]
     expect(thirdCall).toBeDefined()
-    expect(thirdCall.modelSettings?.maxTokens).toBe(191936)
+    expect(thirdCall.modelSettings?.maxTokens).toBe(191269)
   })
 
   it('retries immediately with halved maxTokens on a context-length error', async () => {
@@ -2008,6 +2099,7 @@ describe('compaction under context overflow', () => {
       getContextWindowEvents: vi.fn().mockReturnValue([]),
       getLatestSeq: vi.fn().mockReturnValue(0),
       cleanupOldEvents: vi.fn().mockReturnValue(0),
+      tombstoneEvents: vi.fn().mockReturnValue(0),
     } as unknown as EventStore
     ;(getEventStore as any).mockReturnValue(mockEventStore)
 
@@ -2092,31 +2184,51 @@ describe('compaction under context overflow', () => {
     }
   }
 
+  // Roomy context: well below the window, so availableForOutput is large and
+  // the compaction summary gets its full budget.
+  function makeRoomySessionManager(): any {
+    return {
+      ...makeOverflowingSessionManager(),
+      getContextState: vi.fn().mockReturnValue({
+        currentTokens: 100_000,
+        maxTokens: 200_000,
+        compactionCount: 0,
+        dangerZone: false,
+        canCompact: false,
+        dynamicContextChanged: false,
+      }),
+      getCurrentModelContext: vi.fn().mockReturnValue(200_000),
+    }
+  }
+
   function emittedEvents(config: TopLevelLoopConfig): any[] {
     return (config.append as any).mock.calls.map((c: any[]) => c[0])
   }
 
-  it('gives the compaction summary a guaranteed output budget, not the 256-token floor', async () => {
+  it('gives the compaction summary the full budget even when the prompt overflows (input is fitted instead)', async () => {
     mockSessionManager = makeOverflowingSessionManager()
 
     await runTopLevelAgentLoop(makeConfig({ initialCompacting: true }), mockTurnMetrics).catch(() => {})
 
     const callArgs = (streamLLMPure as any).mock.calls[0]?.[0]
     expect(callArgs).toBeDefined()
-    // Overflowing context → availableForOutput would floor at 256. The summary
-    // call must instead get at least the guaranteed budget.
+    // Overflowing context used to floor availableForOutput at 256 and cap the
+    // summary budget to it — producing truncated summaries and a re-trigger
+    // loop. The budget is now decoupled (always full); the INPUT is fitted to
+    // the window by fitSummaryInput so the call never overflows (no 400s).
     expect(callArgs.modelSettings?.maxTokens).toBe(COMPACTION_SUMMARY_BUDGET_TOKENS)
   })
 
-  it('keeps the 256-token floor for a NON-compacting call under overflow (control)', async () => {
-    mockSessionManager = makeOverflowingSessionManager()
+  it('gives the compaction summary the full budget when there is room in the window', async () => {
+    mockSessionManager = makeRoomySessionManager()
 
-    await runTopLevelAgentLoop(makeConfig(), mockTurnMetrics).catch(() => {})
+    await runTopLevelAgentLoop(makeConfig({ initialCompacting: true }), mockTurnMetrics).catch(() => {})
 
     const callArgs = (streamLLMPure as any).mock.calls[0]?.[0]
     expect(callArgs).toBeDefined()
-    // Same overflow, but not compacting → the normal clamp floors at 256.
-    expect(callArgs.modelSettings?.maxTokens).toBe(256)
+    // Roomy context → availableForOutput is large, so the summary gets the full
+    // budget.
+    expect(callArgs.modelSettings?.maxTokens).toBe(COMPACTION_SUMMARY_BUDGET_TOKENS)
   })
 
   it('disables reasoning on the compaction call so the budget goes to the summary', async () => {
@@ -2129,7 +2241,7 @@ describe('compaction under context overflow', () => {
   })
 
   it('leaves reasoningEffort unset on a non-compacting call (control)', async () => {
-    mockSessionManager = makeOverflowingSessionManager()
+    mockSessionManager = makeRoomySessionManager()
 
     await runTopLevelAgentLoop(makeConfig(), mockTurnMetrics).catch(() => {})
 
@@ -2167,6 +2279,142 @@ describe('compaction under context overflow', () => {
 
     const events = emittedEvents(config)
     expect(events.some((e) => e?.type === 'context.compacted')).toBe(true)
+  })
+
+  it('compacts a 25k-window session in one shot, fits the input, and keeps the user question', async () => {
+    // 25k window, 24k used → pre-call safety trigger fires (1k < 5k headroom).
+    // The context state is MUTABLE: after the summary call, setCurrentContextSize
+    // drops the tracked tokens so the pre-call trigger does NOT re-fire (mirrors
+    // production, where a fresh window starts nearly empty).
+    let currentTokens = 24_000
+    mockSessionManager = {
+      ...makeOverflowingSessionManager(),
+      getContextState: vi.fn().mockImplementation(() => ({
+        currentTokens,
+        maxTokens: 25_000,
+        compactionCount: 0,
+        dangerZone: false,
+        canCompact: false,
+        dynamicContextChanged: false,
+      })),
+      getCurrentModelContext: vi.fn().mockReturnValue(25_000),
+      setCurrentContextSize: vi.fn((_id: string, prompt: number, completion: number) => {
+        currentTokens = prompt + completion
+      }),
+    }
+    // Dense conversation that overflows the fitted input budget (~45k chars):
+    // fitSummaryInput must trim the oldest messages.
+    const dense = Array.from({ length: 10 }, (_, i) => ({
+      role: 'user' as const,
+      content: `msg-${i}-` + 'x'.repeat(7_990),
+    }))
+    assembleRequestMock.mockReturnValue({ systemPrompt: 'sys', messages: dense })
+    // The user's current question, recoverable from the event log.
+    ;(mockEventStore.getEvents as any).mockReturnValue([
+      {
+        type: 'message.start',
+        seq: 1,
+        data: { messageId: 'u1', role: 'user', content: "Liste les PR que j'ai intégrées" },
+      },
+    ])
+
+    const config = makeConfig()
+    await runTopLevelAgentLoop(config, mockTurnMetrics).catch(() => {})
+
+    // One summary call + one normal call (the turn then completes).
+    expect(streamLLMPure).toHaveBeenCalledTimes(2)
+    const summaryCall = (streamLLMPure as any).mock.calls[0]?.[0]
+    // The summary call got the full (decoupled) budget and a fitted input.
+    expect(summaryCall.modelSettings?.maxTokens).toBe(COMPACTION_SUMMARY_BUDGET_TOKENS)
+    expect(summaryCall.messages.length).toBeLessThan(dense.length)
+    // Compaction succeeded.
+    const events = emittedEvents(config)
+    expect(events.some((e) => e?.type === 'context.compacted')).toBe(true)
+    // The user's question was re-injected verbatim into the fresh window.
+    const continuation = events.find(
+      (e) => e?.type === 'message.start' && e.data?.messageKind === 'context-continuation',
+    )
+    expect(continuation).toBeDefined()
+    expect(continuation.data.content).toBe("Liste les PR que j'ai intégrées")
+  })
+
+  it('bounds a failing compaction to MAX_COMPACTION_ATTEMPTS and does not re-trigger', async () => {
+    // 25k window, 24k used → pre-call trigger (not initialCompacting).
+    mockSessionManager = {
+      ...makeOverflowingSessionManager(),
+      getContextState: vi.fn().mockReturnValue({
+        currentTokens: 24_000,
+        maxTokens: 25_000,
+        compactionCount: 0,
+        dangerZone: false,
+        canCompact: false,
+        dynamicContextChanged: false,
+      }),
+      getCurrentModelContext: vi.fn().mockReturnValue(25_000),
+    }
+    // First two summary attempts are truncated (finishReason=length); the
+    // third (post-block) is a normal complete response.
+    let call = 0
+    ;(consumeStreamGenerator as any).mockImplementation(() => {
+      call += 1
+      return Promise.resolve({
+        content: call <= 2 ? 'partial' : 'final answer',
+        toolCalls: [],
+        segments: [{ type: 'text', content: call <= 2 ? 'partial' : 'final answer' }],
+        usage: { promptTokens: 10, completionTokens: 5 },
+        timing: { ttft: 0.1, completionTime: 0.5, tps: 10, prefillTps: 100 },
+        aborted: false,
+        finishReason: call <= 2 ? 'length' : 'stop',
+        modelParams: {},
+      })
+    })
+
+    const config = makeConfig()
+    // getEvents reflects the appended events so the rollback can find the
+    // prompt + assistant message ids and tombstone them.
+    ;(mockEventStore.getEvents as any).mockImplementation(() =>
+      (config.append as any).mock.calls.map((c: any[], i: number) => ({
+        type: c[0]?.type,
+        seq: i + 1,
+        data: c[0]?.data,
+      })),
+    )
+    await runTopLevelAgentLoop(config, mockTurnMetrics).catch(() => {})
+
+    // 2 compaction attempts (both truncated) + 1 normal call = 3 LLM calls.
+    expect(streamLLMPure).toHaveBeenCalledTimes(3)
+    const events = emittedEvents(config)
+    // No compaction was installed.
+    expect(events.some((e) => e?.type === 'context.compacted')).toBe(false)
+    // Exactly 2 compaction prompts were appended (one per attempt).
+    const compactionPrompts = events.filter((e) => e?.type === 'message.start' && e.data?.messageKind === 'auto-prompt')
+    expect(compactionPrompts.length).toBe(2)
+    // Failed attempts were rolled back (tombstoned) so they don't pollute.
+    expect((mockEventStore.tombstoneEvents as any).mock.calls.length).toBeGreaterThan(0)
+    // The turn ended cleanly.
+    expect(events.some((e) => e?.type === 'chat.done' && e.data?.reason === 'complete')).toBe(true)
+  })
+
+  it('re-injects the user question verbatim into the fresh window after compaction', async () => {
+    mockSessionManager = makeOverflowingSessionManager()
+    ;(mockEventStore.getEvents as any).mockReturnValue([
+      {
+        type: 'message.start',
+        seq: 1,
+        data: { messageId: 'u1', role: 'user', content: "Non. Je veux savoir ce que j'ai intégré" },
+      },
+    ])
+
+    const config = makeConfig({ initialCompacting: true })
+    await runTopLevelAgentLoop(config, mockTurnMetrics).catch(() => {})
+
+    const events = emittedEvents(config)
+    const continuation = events.find(
+      (e) => e?.type === 'message.start' && e.data?.messageKind === 'context-continuation',
+    )
+    expect(continuation).toBeDefined()
+    expect(continuation.data.role).toBe('user')
+    expect(continuation.data.content).toBe("Non. Je veux savoir ce que j'ai intégré")
   })
 })
 

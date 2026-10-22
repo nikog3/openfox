@@ -1428,12 +1428,19 @@ export class SessionManager {
     const options: {
       contextWindowId?: string
       isSystemGenerated?: boolean
-      messageKind?: 'correction' | 'auto-prompt' | 'context-reset' | 'task-completed' | 'workflow-started' | 'command'
+      messageKind?:
+        | 'correction'
+        | 'auto-prompt'
+        | 'context-reset'
+        | 'context-continuation'
+        | 'task-completed'
+        | 'workflow-started'
+        | 'command'
       tokenCount?: number
       attachments?: Attachment[] // Optional image attachments
       subAgentId?: string
       subAgentType?: string
-      metadata?: { type: string; name: string; color: string; kind?: 'definition' | 'reminder' }
+      metadata?: { type: string; name: string; color: string; kind?: 'definition' | 'reminder' | 'continuation' }
     } = {}
     if (contextWindowId !== undefined) options.contextWindowId = contextWindowId
     if (message.isSystemGenerated !== undefined) options.isSystemGenerated = message.isSystemGenerated

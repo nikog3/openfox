@@ -707,6 +707,12 @@ function AutoCompactionField({
           { min: formatTokens(MIN_TOKENS), max: maxPercent },
         )}
       </p>
+      <p className="text-[10px] text-text-muted mt-0.5">
+        {t({
+          en: 'A safety compaction at 5k tokens of headroom is always active and cannot be disabled.',
+          fr: 'Une compaction de sécurité à 5k tokens de marge est toujours active et ne peut pas être désactivée.',
+        })}
+      </p>
     </div>
   )
 }

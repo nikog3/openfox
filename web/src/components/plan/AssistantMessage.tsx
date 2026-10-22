@@ -20,6 +20,7 @@ import { formatTime } from '../../lib/format-stats'
 import { copyToClipboard } from '../../lib/clipboard.js'
 import { useContextMenu } from '../../hooks/useContextMenu'
 import { useMessageContextMenu } from '../../hooks/useMessageContextMenu'
+import { getTextColor } from './token-utils'
 
 interface AssistantMessageProps {
   message: Message
@@ -27,6 +28,17 @@ interface AssistantMessageProps {
   showThinking?: boolean
   showVerboseToolOutput?: boolean
   sessionId?: string
+  showContextState?: boolean
+  contextMaxTokens?: number
+  contextDangerZone?: boolean
+}
+
+// Compact token count for the per-message context chip (e.g. 12400 -> "12.4k",
+// 45000 -> "45k"). Mirrors the k-suffix style of the stats bar.
+function formatCompactTokens(n: number): string {
+  if (n < 1000) return `${n}`
+  const scaled = (n / 1000).toFixed(1)
+  return scaled.endsWith('.0') ? `${scaled.slice(0, -2)}k` : `${scaled}k`
 }
 
 // Display element types for rendering
@@ -163,6 +175,9 @@ export const AssistantMessage = memo(function AssistantMessage({
   showThinking = true,
   showVerboseToolOutput = true,
   sessionId,
+  showContextState = false,
+  contextMaxTokens,
+  contextDangerZone = false,
 }: AssistantMessageProps) {
   const t = useT()
   const criteria = useSessionStore((state) => state.currentSession?.metadataEntries?.['criteria'])
@@ -205,6 +220,20 @@ export const AssistantMessage = memo(function AssistantMessage({
     () => handleCopy(),
     () => void handleFork(),
   )
+
+  const contextTokensAfter = message.contextTokensAfter
+  const contextChip =
+    showContextState &&
+    typeof contextTokensAfter === 'number' &&
+    Number.isFinite(contextTokensAfter) &&
+    typeof contextMaxTokens === 'number' &&
+    contextMaxTokens > 0
+      ? {
+          current: contextTokensAfter,
+          max: contextMaxTokens,
+          percent: Math.round((contextTokensAfter / contextMaxTokens) * 100),
+        }
+      : null
 
   if (elements.length === 0 && !hasThinking) return null
 
@@ -359,6 +388,24 @@ export const AssistantMessage = memo(function AssistantMessage({
             }
           }
         })}
+
+        {contextChip && (
+          <div className="flex items-center gap-1.5 text-[10px] mt-1" data-testid="message-context-chip">
+            <span className={getTextColor(contextChip.percent, contextDangerZone)}>
+              {t(
+                {
+                  en: 'Context {{current}} / {{max}} · {{percent}}%',
+                  fr: 'Contexte {{current}} / {{max}} · {{percent}}%',
+                },
+                {
+                  current: formatCompactTokens(contextChip.current),
+                  max: formatCompactTokens(contextChip.max),
+                  percent: contextChip.percent,
+                },
+              )}
+            </span>
+          </div>
+        )}
 
         {message.partial && (
           <div className="flex items-center gap-1.5 text-[10px] text-accent-warning mt-1">

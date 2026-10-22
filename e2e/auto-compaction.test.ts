@@ -215,6 +215,53 @@ describe('Auto-Compaction', () => {
     })
   })
 
+  describe('Post-Compaction Agent Reminder', () => {
+    it('injects the continuation reminder (not the onboarding definition) after compaction', async () => {
+      // Build context so the summary has something to preserve
+      await client.send('chat.send', { content: 'Building context for the continuation reminder test.' })
+      await client.waitForChatDone()
+
+      await client.send('chat.send', { content: 'More content so the summary has substance.' })
+      await client.waitForChatDone()
+
+      // Trigger manual compaction
+      const response = await client.send('context.compact', {})
+      expect(response.type).toBe('ack')
+
+      // The continuation reminder is appended after the compaction's chat.done,
+      // so wait for it explicitly instead of racing the completion event.
+      const reminderEvent = await client.waitFor(
+        'chat.message',
+        (p: { message: { metadata?: { type?: string; kind?: string } } }) =>
+          p.message.metadata?.type === 'agent' && p.message.metadata?.kind === 'continuation',
+      )
+
+      const reminder = (reminderEvent.payload as { message: { content: string; metadata: { kind: string } } }).message
+      expect(reminder.metadata.kind).toBe('continuation')
+      expect(reminder.content).toContain('continuing an in-progress task')
+      expect(reminder.content).toMatch(/do not restart/i)
+
+      // No onboarding definition reminder may follow the compaction boundary
+      // (the summary message) — that is what made the agent restart the task
+      // from scratch. context.compacted is an internal event never sent to
+      // clients, so the summary message is the observable boundary.
+      const allEvents = client.allEvents()
+      const summaryIndex = allEvents.findIndex(
+        (e) =>
+          e.type === 'chat.message' &&
+          (e.payload as { message: { isCompactionSummary?: boolean } }).message.isCompactionSummary,
+      )
+      expect(summaryIndex).toBeGreaterThanOrEqual(0)
+
+      const kindsAfterCompaction = allEvents
+        .slice(summaryIndex + 1)
+        .filter((e) => e.type === 'chat.message')
+        .map((e) => (e.payload as { message: { metadata?: { kind?: string } } }).message.metadata?.kind)
+
+      expect(kindsAfterCompaction).not.toContain('definition')
+    }, 20000)
+  })
+
   describe('Summary Generation During Compaction', () => {
     it('emits chat.progress during compaction', async () => {
       // Build context

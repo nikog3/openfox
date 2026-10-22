@@ -9,7 +9,7 @@ const envSchema = z.object({
   OPENFOX_VLLM_URL: z.string().url().optional(),
   OPENFOX_BACKEND: backendSchema,
   OPENFOX_MODEL_NAME: z.string().default(''),
-  OPENFOX_MAX_CONTEXT: z.coerce.number().default(200000),
+  OPENFOX_MAX_CONTEXT: z.coerce.number().default(32_768),
   OPENFOX_PORT: z.coerce.number().default(10369),
   OPENFOX_HOST: z.string().optional(),
   OPENFOX_WORKDIR: z.string().optional(),

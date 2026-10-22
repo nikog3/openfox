@@ -50,6 +50,7 @@ export class OpenAIHttpClient extends ChatHttpClient {
           Authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify({ content }),
+        signal: AbortSignal.timeout(2000),
       })
       return countTokensFromResponse(response)
     } catch {
