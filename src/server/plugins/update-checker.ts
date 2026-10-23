@@ -4,10 +4,17 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { NotificationService } from './notifications.js'
 import type { HookLogger } from './hooks.js'
-import { getSetting } from '../db/settings.js'
+import { getSetting, setSetting } from '../db/settings.js'
 import { isDirectoryEntry, scopedPackageDirs } from './plugin-dirs.js'
 
 const execFileP = promisify(execFile)
+
+const UPDATE_STATE_KEY = 'plugin_update_state'
+const NOTIFIED_TTL_MS = 30 * 86_400_000
+
+interface PluginUpdateState {
+  notified: Record<string, string>
+}
 
 export interface PluginUpdateCheckerOptions {
   configDirectory: string
@@ -26,7 +33,7 @@ export interface PluginUpdateInfo {
 
 export class PluginUpdateChecker {
   private timer: NodeJS.Timeout | null = null
-  private readonly notifiedUpdates = new Set<string>()
+  private readonly notifiedUpdates = new Map<string, string>()
   private readonly configDirectory: string
   private readonly notifications: NotificationService
   private readonly logger: HookLogger
@@ -37,6 +44,7 @@ export class PluginUpdateChecker {
     this.notifications = options.notifications
     this.logger = options.logger
     this.fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis)
+    this.loadState()
   }
 
   start(): void {
@@ -235,7 +243,8 @@ export class PluginUpdateChecker {
   private notifyUpdate(update: PluginUpdateInfo): void {
     const notifyKey = `${update.packageName}:${update.latestVersion ?? 'new'}`
     if (this.notifiedUpdates.has(notifyKey)) return
-    this.notifiedUpdates.add(notifyKey)
+    this.notifiedUpdates.set(notifyKey, new Date().toISOString())
+    this.persistState()
 
     this.notifications.emit('openfox', {
       title: {
@@ -254,5 +263,38 @@ export class PluginUpdateChecker {
         },
       ],
     })
+  }
+
+  private loadState(): void {
+    try {
+      const raw = getSetting(UPDATE_STATE_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as Partial<PluginUpdateState> | null
+      const notified = parsed?.notified
+      if (!notified || typeof notified !== 'object') return
+      const cutoff = Date.now() - NOTIFIED_TTL_MS
+      for (const [key, timestamp] of Object.entries(notified)) {
+        if (typeof timestamp === 'string' && new Date(timestamp).getTime() >= cutoff) {
+          this.notifiedUpdates.set(key, timestamp)
+        }
+      }
+    } catch {
+      // Ignore state read / JSON parse error
+    }
+  }
+
+  private persistState(): void {
+    try {
+      const cutoff = Date.now() - NOTIFIED_TTL_MS
+      const notified: Record<string, string> = {}
+      for (const [key, timestamp] of this.notifiedUpdates) {
+        if (new Date(timestamp).getTime() >= cutoff) {
+          notified[key] = timestamp
+        }
+      }
+      setSetting(UPDATE_STATE_KEY, JSON.stringify({ notified }))
+    } catch (err) {
+      this.logger.debug('Failed to persist plugin update state', { error: String(err) })
+    }
   }
 }

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { PluginUpdateChecker } from './update-checker.js'
 import { NotificationService } from './notifications.js'
-import { setSetting } from '../db/settings.js'
+import { getSetting, setSetting } from '../db/settings.js'
 import { closeDatabase, initDatabase } from '../db/index.js'
 import { loadConfig } from '../config.js'
 
@@ -90,6 +90,130 @@ describe('PluginUpdateChecker', () => {
     emitSpy.mockClear()
     await checker.checkUpdates()
     expect(emitSpy).not.toHaveBeenCalled()
+  })
+
+  it('does not re-emit a notification after a restart for the same version', async () => {
+    const pluginDir = join(configDirectory, 'plugins', 'test-plugin')
+    await mkdir(pluginDir, { recursive: true })
+    await writeFile(
+      join(pluginDir, 'package.json'),
+      JSON.stringify({
+        name: 'test-plugin',
+        version: '1.0.0',
+        openfox: { apiVersion: 2, displayName: 'Test Plugin' },
+      }),
+    )
+
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ version: '1.2.0' }),
+    })
+
+    const emitSpy = vi.spyOn(notifications, 'emit')
+
+    const firstBoot = new PluginUpdateChecker({
+      configDirectory,
+      notifications,
+      logger,
+      fetcher: fetcher as unknown as typeof fetch,
+    })
+    await firstBoot.checkUpdates()
+    expect(emitSpy).toHaveBeenCalledTimes(1)
+
+    // Simulate a server restart: fresh checker instance, same database
+    emitSpy.mockClear()
+    const secondBoot = new PluginUpdateChecker({
+      configDirectory,
+      notifications,
+      logger,
+      fetcher: fetcher as unknown as typeof fetch,
+    })
+    await secondBoot.checkUpdates()
+    expect(emitSpy).not.toHaveBeenCalled()
+  })
+
+  it('emits again after a restart when the latest version changed', async () => {
+    const pluginDir = join(configDirectory, 'plugins', 'test-plugin')
+    await mkdir(pluginDir, { recursive: true })
+    await writeFile(
+      join(pluginDir, 'package.json'),
+      JSON.stringify({
+        name: 'test-plugin',
+        version: '1.0.0',
+        openfox: { apiVersion: 2, displayName: 'Test Plugin' },
+      }),
+    )
+
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ version: '1.2.0' }),
+    })
+
+    const emitSpy = vi.spyOn(notifications, 'emit')
+
+    const firstBoot = new PluginUpdateChecker({
+      configDirectory,
+      notifications,
+      logger,
+      fetcher: fetcher as unknown as typeof fetch,
+    })
+    await firstBoot.checkUpdates()
+    expect(emitSpy).toHaveBeenCalledTimes(1)
+
+    fetcher.mockResolvedValue({
+      ok: true,
+      json: async () => ({ version: '1.3.0' }),
+    })
+
+    emitSpy.mockClear()
+    const secondBoot = new PluginUpdateChecker({
+      configDirectory,
+      notifications,
+      logger,
+      fetcher: fetcher as unknown as typeof fetch,
+    })
+    await secondBoot.checkUpdates()
+    expect(emitSpy).toHaveBeenCalledTimes(1)
+    expect(emitSpy).toHaveBeenCalledWith(
+      'openfox',
+      expect.objectContaining({
+        title: { en: 'Update available: Test Plugin', fr: 'Mise à jour disponible : Test Plugin' },
+      }),
+    )
+  })
+
+  it('purges notified entries older than 30 days when persisting state', async () => {
+    const staleTimestamp = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString()
+    setSetting('plugin_update_state', JSON.stringify({ notified: { 'stale-plugin:0.0.1': staleTimestamp } }))
+
+    const pluginDir = join(configDirectory, 'plugins', 'test-plugin')
+    await mkdir(pluginDir, { recursive: true })
+    await writeFile(
+      join(pluginDir, 'package.json'),
+      JSON.stringify({
+        name: 'test-plugin',
+        version: '1.0.0',
+        openfox: { apiVersion: 2, displayName: 'Test Plugin' },
+      }),
+    )
+
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ version: '1.2.0' }),
+    })
+
+    const checker = new PluginUpdateChecker({
+      configDirectory,
+      notifications,
+      logger,
+      fetcher: fetcher as unknown as typeof fetch,
+    })
+    await checker.checkUpdates()
+
+    const raw = getSetting('plugin_update_state')
+    const state = JSON.parse(raw ?? '{}') as { notified: Record<string, string> }
+    expect(state.notified['test-plugin:1.2.0']).toBeDefined()
+    expect(state.notified['stale-plugin:0.0.1']).toBeUndefined()
   })
 
   it('discovers and checks scoped npm plugins in node_modules/@scope/pkg', async () => {
