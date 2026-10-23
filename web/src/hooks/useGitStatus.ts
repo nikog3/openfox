@@ -1,15 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useScopedContext, useScopedPaneState } from '../stores/session/session-scope'
-
-interface GitDiffFile {
-  path: string
-  status: 'modified' | 'added' | 'deleted'
-  additions: number
-  deletions: number
-}
+import type { GitDiffFile, GitStatusSync } from '@shared/protocol.js'
 
 interface UseGitStatusResult {
   branch: string | null
+  sync: GitStatusSync | null
   diff: {
     files: GitDiffFile[]
     loading: boolean
@@ -35,6 +30,7 @@ export function useGitStatus(): UseGitStatusResult {
 
   return {
     branch: gitStatus?.branch ?? null,
+    sync: gitStatus?.sync ?? null,
     diff: {
       files: gitStatus?.diff?.files ?? [],
       loading,

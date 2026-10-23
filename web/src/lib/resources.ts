@@ -855,6 +855,25 @@ export const branchResource = resource<BranchData, [string]>({
   maxAgeMs: 0,
 })
 
+export interface GitFileDiffData {
+  diff: string
+}
+
+export async function fetchGitFileDiff(workdir: string, path: string, staged = false): Promise<GitFileDiffData> {
+  const res = await authFetch(
+    `/api/git/diff?workdir=${encodeURIComponent(workdir)}&path=${encodeURIComponent(path)}&staged=${staged ? 1 : 0}`,
+  )
+  if (!res.ok) throw new Error(`Failed to load file diff (${res.status})`)
+  return (await res.json()) as GitFileDiffData
+}
+
+/** Unified diff for a single file (staged or unstaged view), keyed by workdir + path + view. */
+export const gitFileDiffResource = resource<GitFileDiffData, [string, string, boolean]>({
+  key: (workdir, path, staged) => `git-file-diff:${workdir}:${path}:${staged ? 'staged' : 'unstaged'}`,
+  fetch: fetchGitFileDiff,
+  maxAgeMs: 0,
+})
+
 export async function fetchDevServerStatus(workdir: string): Promise<DevServerStatus> {
   const res = await authFetch(`/api/dev-server?workdir=${encodeURIComponent(workdir)}`)
   if (!res.ok) throw new Error(`Failed to load dev server status (${res.status})`)

@@ -191,9 +191,10 @@ export function createProjectListMessage(
 export function createGitStatusMessage(
   branch: string | null,
   diffFiles: import('../../shared/protocol.js').GitDiffFile[],
+  sync: import('../../shared/protocol.js').GitStatusSync | null,
   correlationId?: string,
 ): ServerMessage<import('../../shared/protocol.js').GitStatusPayload> {
-  return createServerMessage('git.status', { branch, diff: { files: diffFiles } }, correlationId)
+  return createServerMessage('git.status', { branch, sync, diff: { files: diffFiles } }, correlationId)
 }
 
 // Chat messages - all include messageId to identify which message to update

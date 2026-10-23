@@ -24,6 +24,7 @@ import { BranchModal } from './BranchModal'
 import { useScopedContext } from '../../stores/session/session-scope'
 import { ContextPopover } from './ContextPopover'
 import { FolderIcon, BranchIcon, ChevronDownIcon, OpenExternalIcon, PlayIcon } from '../shared/icons'
+import { SyncBadge } from './SyncBadge'
 import { MetadataEntries } from '../shared/MetadataEntries'
 import { MetadataModal } from '../shared/MetadataModal'
 import { formatMetadataKeyLabel } from '../../lib/metadata-keys'
@@ -193,7 +194,7 @@ export function SidebarSummaryHeader({ visible }: SidebarSummaryHeaderProps) {
   const workdir = session ? (session.workspace ?? session.workdir) : undefined
   const { status: devServerStatus, config: devServerConfig, logs: devServerLogs } = useDevServer(workdir)
   const devServerStart = useDevServerStore((s) => s.start)
-  const { branch, diff } = useGitStatus()
+  const { branch, diff, sync } = useGitStatus()
   const [showLogModal, setShowLogModal] = useState(false)
   const [showDevServerConfig, setShowDevServerConfig] = useState(false)
   const [showSystemPromptModal, setShowSystemPromptModal] = useState(false)
@@ -252,6 +253,7 @@ export function SidebarSummaryHeader({ visible }: SidebarSummaryHeaderProps) {
           <span className="text-text-muted">/</span>
           <BranchIcon className="w-3.5 h-3.5 text-text-muted flex-shrink-0" />
           <span className="truncate text-text-secondary max-w-[120px]">{branch ?? '-'}</span>
+          {sync && <SyncBadge sync={sync} className="gap-1 text-xs" />}
           {diffFiles.length > 0 ? (
             <span className="text-text-muted shrink-0 font-mono">{`+${totalAdditions} -${totalDeletions}`}</span>
           ) : (

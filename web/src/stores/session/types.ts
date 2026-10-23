@@ -13,6 +13,8 @@ import type {
   SessionStatsSummary,
   DangerLevel,
 } from '@shared/types.js'
+import type { GitDiffFile, GitStatusSync } from '@shared/protocol.js'
+export type { GitDiffFile }
 import type { ServerMessage, QueuedMessage, ChoiceOption } from '@shared/protocol.js'
 import type { ConnectionStatus } from '../../lib/ws'
 
@@ -65,8 +67,9 @@ export interface StreamingBuffer {
 
 export type GitStatus = {
   branch: string | null
+  sync: GitStatusSync | null
   diff: {
-    files: { path: string; status: 'modified' | 'added' | 'deleted'; additions: number; deletions: number }[]
+    files: GitDiffFile[]
   }
 } | null
 

@@ -44,10 +44,12 @@ vi.mock('../shared/icons', () => ({
   ChevronDownIcon: () => '[ChevronDownIcon]',
   OpenExternalIcon: () => '[OpenExternalIcon]',
   PlayIcon: () => '[PlayIcon]',
+  ArrowUpIcon: () => '[ArrowUpIcon]',
+  ArrowDownIcon: () => '[ArrowDownIcon]',
 }))
 
 vi.mock('./CriteriaEditor', () => ({ CriteriaEditor: () => null }))
-vi.mock('./DiffViewer', () => ({ DiffViewer: () => '[DiffViewer]' }))
+vi.mock('./GitStatusPanel', () => ({ GitStatusPanel: () => '[GitStatusPanel]' }))
 vi.mock('./DevServerFooter', () => ({ DevServerFooter: () => '[DevServerFooter]' }))
 vi.mock('./BranchModal', () => ({ BranchModal: () => null }))
 vi.mock('./WorkspaceModal', () => ({ WorkspaceModal: () => null }))

@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { createHash } from 'node:crypto'
 import type { Server } from 'node:http'
 import type { ServerMessage } from '../../shared/protocol.js'
-import type { GitDiffFile } from '../../shared/protocol.js'
+import type { GitDiffFile, GitStatusSync } from '../../shared/protocol.js'
 import { createServerMessage } from '../../shared/protocol.js'
 import type { SttStartPayload, SttAudioChunkPayload } from '../../shared/protocol.js'
 import {
@@ -64,7 +64,7 @@ export function signalMcpReady(): void {
 }
 
 import { getAuthConfig, isValidToken } from '../auth.js'
-import { getGitBranch, getGitDiffFiles } from '../git/diff.js'
+import { getGitBranch, getGitDiffFiles, getGitSyncInfo } from '../git/diff.js'
 import {
   parseClientMessage,
   serializeServerMessage,
@@ -89,11 +89,15 @@ function hashContent(content: string): string {
   return createHash('sha256').update(content).digest('hex')
 }
 
-async function moduleGitDiff(cwd: string): Promise<{ hash: string; files: GitDiffFile[] }> {
+async function moduleGitDiff(cwd: string): Promise<{ hash: string; files: GitDiffFile[]; sync: GitStatusSync | null }> {
   const files = await getGitDiffFiles(cwd)
-  const raw = files.map((f) => `${f.status}\t${f.path}`).join('\n')
+  const sync = await getGitSyncInfo(cwd)
+  const raw = [
+    ...files.map((f) => `${f.status}\t${f.path}`),
+    sync ? `sync\t${sync.behind}\t${sync.ahead}` : 'sync',
+  ].join('\n')
   const hash = raw ? hashContent(raw) : ''
-  return { hash, files }
+  return { hash, files, sync }
 }
 
 const moduleWorkdirLastHash = new Map<string, string>()
@@ -111,11 +115,11 @@ function moduleGitPoll(workdir: string) {
   ;(async () => {
     try {
       const branch = await moduleGitBranch(workdir)
-      const { hash, files } = await moduleGitDiff(workdir)
+      const { hash, files, sync } = await moduleGitDiff(workdir)
       const lastHash = moduleWorkdirLastHash.get(workdir)
       if (hash !== lastHash) {
         moduleWorkdirLastHash.set(workdir, hash)
-        const msg = createGitStatusMessage(branch, files)
+        const msg = createGitStatusMessage(branch, files, sync)
         const activeClients = moduleClients
         const sendFn = moduleEnqueueSend
         if (!activeClients || !sendFn) return
@@ -146,6 +150,26 @@ function moduleStopGitPolling(workdir: string) {
     clearInterval(interval)
     moduleWorkdirInterval.delete(workdir)
     moduleWorkdirLastHash.delete(workdir)
+  }
+}
+
+async function moduleRefreshGitStatus(workdir: string): Promise<void> {
+  try {
+    const branch = await moduleGitBranch(workdir)
+    const { hash, files, sync } = await moduleGitDiff(workdir)
+    moduleWorkdirLastHash.set(workdir, hash)
+    const msg = createGitStatusMessage(branch, files, sync)
+    const activeClients = moduleClients
+    const sendFn = moduleEnqueueSend
+    if (!activeClients || !sendFn) return
+    for (const [ws, client] of activeClients) {
+      if (client.activeWorkdir === workdir && ws.readyState === WebSocket.OPEN) {
+        const seq = client.lastSentSeq + 1
+        sendFn(client, serializeServerMessage({ ...msg, sessionId: client.activeSessionId ?? '' }), seq)
+      }
+    }
+  } catch {
+    /* skip */
   }
 }
 
@@ -649,8 +673,8 @@ export function createWebSocketServer(
         ;(async () => {
           const branch = await moduleGitBranch(effectiveWorkdir)
           if (!branch) return
-          const { files } = await moduleGitDiff(effectiveWorkdir)
-          broadcastForSession(updatedSession.id, createGitStatusMessage(branch, files))
+          const { files, sync } = await moduleGitDiff(effectiveWorkdir)
+          broadcastForSession(updatedSession.id, createGitStatusMessage(branch, files, sync))
         })()
       }
     }
@@ -895,6 +919,7 @@ export function createWebSocketServer(
     broadcastForSession,
     broadcastForProject,
     broadcastAll,
+    refreshGitStatus: (workdir: string) => moduleRefreshGitStatus(workdir),
   }
 }
 
@@ -905,6 +930,7 @@ export interface WebSocketServerExports {
   broadcastForSession: (sessionId: string, msg: ServerMessage) => void
   broadcastForProject: (projectId: string, sessionId: string, msg: ServerMessage) => void
   broadcastAll: (msg: ServerMessage) => void
+  refreshGitStatus: (workdir: string) => Promise<void>
 }
 
 async function handleClientMessage(
@@ -1007,8 +1033,8 @@ async function handleClientMessage(
       // Send initial git status immediately
       if (effectiveWorkdir) {
         const branch = await moduleGitBranch(effectiveWorkdir)
-        const { files } = await moduleGitDiff(effectiveWorkdir)
-        const msg = createGitStatusMessage(branch, files)
+        const { files, sync } = await moduleGitDiff(effectiveWorkdir)
+        const msg = createGitStatusMessage(branch, files, sync)
         send(msg)
         if (branch) moduleStartGitPolling(effectiveWorkdir)
       }

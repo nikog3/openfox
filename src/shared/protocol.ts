@@ -560,8 +560,14 @@ export interface BackgroundProcessRemovedPayload {
 }
 
 // Git status payloads
+export interface GitStatusSync {
+  ahead: number
+  behind: number
+}
+
 export interface GitStatusPayload {
   branch: string | null
+  sync: GitStatusSync | null
   diff: {
     files: GitDiffFile[]
   }
@@ -570,6 +576,9 @@ export interface GitStatusPayload {
 export interface GitDiffFile {
   path: string
   status: 'modified' | 'added' | 'deleted'
+  staged: boolean
+  unstaged: boolean
+  untracked: boolean
   additions: number
   deletions: number
 }

@@ -3,6 +3,7 @@ import type {
   ServerMessage,
   SessionStatePayload,
   GitDiffFile,
+  GitStatusSync,
   SessionListPayload,
   SessionRunningPayload,
   SessionPausePayload,
@@ -1231,14 +1232,21 @@ export function handleServerMessage(
     }
 
     case 'git.status': {
-      const payload = message.payload as { branch: string | null; diff: { files: GitDiffFile[] } }
+      const payload = message.payload as {
+        branch: string | null
+        sync: GitStatusSync | null
+        diff: { files: GitDiffFile[] }
+      }
       const sessionId = message.sessionId ?? effectiveFocusedId(get())
       if (sessionId && isLivePane(get(), sessionId)) {
         set((state) =>
-          updatePane(state, sessionId, (p) => ({ ...p, gitStatus: { branch: payload.branch, diff: payload.diff } })),
+          updatePane(state, sessionId, (p) => ({
+            ...p,
+            gitStatus: { branch: payload.branch, sync: payload.sync ?? null, diff: payload.diff },
+          })),
         )
       } else {
-        set({ gitStatus: { branch: payload.branch, diff: payload.diff } })
+        set({ gitStatus: { branch: payload.branch, sync: payload.sync ?? null, diff: payload.diff } })
       }
       break
     }

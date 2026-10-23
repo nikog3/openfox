@@ -3,7 +3,7 @@ import { FolderIcon, BranchIcon } from '../shared/icons'
 import { useT } from '../../hooks/useT'
 import { useSetting } from '../../hooks/useSetting'
 import { SETTINGS_KEYS } from '../../lib/resources'
-import { DiffViewer } from './DiffViewer'
+import { GitStatusPanel } from './GitStatusPanel'
 import { WorkspaceModal } from './WorkspaceModal'
 import { BranchModal } from './BranchModal'
 import { buildWorkspaceUrl } from '../../lib/editor-link'
@@ -83,7 +83,7 @@ export function WorkspaceBranchSection({
         </div>
       </div>
 
-      <DiffViewer />
+      <GitStatusPanel />
 
       {!onEditWorkspace && (
         <WorkspaceModal
