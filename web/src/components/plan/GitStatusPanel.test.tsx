@@ -2,19 +2,16 @@
 import '@testing-library/jest-dom/vitest'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { act, cleanup, render, screen, fireEvent } from '@testing-library/react'
+import { cleanup, render, screen, fireEvent } from '@testing-library/react'
 import type { Mock } from 'vitest'
 import { GitStatusPanel } from './GitStatusPanel'
-import type { DiffModalCommit } from './DiffModal'
-import type { ReactNode } from 'react'
 
 /* ------------------------------------------------------------------ */
 /*  Mocks                                                             */
 /* ------------------------------------------------------------------ */
 
 const mockUseGitStatus = vi.fn() as Mock
-const mockAuthFetch = vi.fn() as Mock
-const diffModalProps: { path?: string; staged?: boolean; commit?: DiffModalCommit } = {}
+const diffModalProps: { path?: string; staged?: boolean } = {}
 
 vi.mock('../../hooks/useGitStatus', () => ({
   useGitStatus: () => mockUseGitStatus(),
@@ -25,10 +22,6 @@ vi.mock('../../stores/session/session-scope', () => ({
     sessionId: 's1',
     currentSession: { id: 's1', projectId: 'p1', workspace: '/tmp/proj', workdir: '/tmp/proj' },
   }),
-}))
-
-vi.mock('../../lib/api', () => ({
-  authFetch: (...args: unknown[]) => mockAuthFetch(...args),
 }))
 
 vi.mock('../../hooks/useSetting', () => ({
@@ -43,37 +36,11 @@ vi.mock('../../lib/resources', () => ({
 }))
 
 vi.mock('./DiffModal', () => ({
-  DiffModal: (props: { path: string; staged: boolean; isOpen: boolean; commit?: DiffModalCommit }) => {
+  DiffModal: (props: { path: string; staged: boolean; isOpen: boolean }) => {
     diffModalProps.path = props.path
     diffModalProps.staged = props.staged
-    diffModalProps.commit = props.commit
     return <div data-testid="diff-modal" />
   },
-}))
-
-vi.mock('../shared/ConfirmModal', () => ({
-  ConfirmModal: ({
-    isOpen,
-    onClose,
-    onConfirm,
-    message,
-  }: {
-    isOpen: boolean
-    onClose: () => void
-    onConfirm: () => void
-    message: ReactNode
-  }) =>
-    isOpen ? (
-      <div data-testid="confirm-modal">
-        {message}
-        <button onClick={onClose} aria-label="cancel-discard">
-          cancel
-        </button>
-        <button onClick={onConfirm} aria-label="confirm-discard">
-          confirm
-        </button>
-      </div>
-    ) : null,
 }))
 
 vi.mock('../shared/ScrollArea', () => ({
@@ -83,14 +50,7 @@ vi.mock('../shared/ScrollArea', () => ({
 vi.mock('../shared/icons', () => ({
   ArrowUpIcon: () => '[up]',
   ArrowDownIcon: () => '[down]',
-  CheckIcon: () => '[check]',
-  GitCommitIcon: () => '[commit]',
-  GitPullIcon: () => '[pull]',
-  GitPushIcon: () => '[push]',
-  MinusIcon: () => '[minus]',
-  PlusIcon: () => '[plus]',
-  ThinkingIcon: () => '[think]',
-  TrashIcon: () => '[trash]',
+  PencilIcon: () => '[pencil]',
 }))
 
 /* ------------------------------------------------------------------ */
@@ -130,15 +90,13 @@ beforeEach(() => {
   vi.clearAllMocks()
   diffModalProps.path = undefined
   diffModalProps.staged = undefined
-  diffModalProps.commit = undefined
   mockGitStatus()
-  mockAuthFetch.mockResolvedValue({ ok: true, json: async () => ({ success: true, output: '' }) })
 })
 
 afterEach(cleanup)
 
 /* ------------------------------------------------------------------ */
-/*  Static rendering                                                  */
+/*  Rendering                                                         */
 /* ------------------------------------------------------------------ */
 
 describe('GitStatusPanel — rendering', () => {
@@ -207,103 +165,17 @@ describe('GitStatusPanel — rendering', () => {
     expect(screen.getAllByText('src/a.ts')).toHaveLength(2)
   })
 
-  it('renders a check for staged-only files and a half marker for mixed files', () => {
-    mockGitStatus({
-      files: [
-        {
-          path: 'src/a.ts',
-          status: 'modified',
-          staged: true,
-          unstaged: false,
-          untracked: false,
-          additions: 1,
-          deletions: 1,
-        },
-        {
-          path: 'src/b.ts',
-          status: 'modified',
-          staged: true,
-          unstaged: true,
-          untracked: false,
-          additions: 1,
-          deletions: 1,
-        },
-      ],
-    })
-    const html = renderToStaticMarkup(<GitStatusPanel />)
-    expect(html).toContain('[check]')
-    expect(html).toContain('[minus]')
-  })
-
   it('shows additions in green and deletions in red', () => {
     const { container } = render(<GitStatusPanel />)
     expect(container.querySelector('.text-accent-success')).toHaveTextContent('+10')
     expect(container.querySelector('.text-accent-error')).toHaveTextContent('-2')
   })
 
-  it('renders the commit button with the staged count and a stage-all button', () => {
+  it('is read-only: no commit, stage, discard, push or pull controls', () => {
     const html = renderToStaticMarkup(<GitStatusPanel />)
-    expect(html).toContain('Commit')
-    expect(html).toContain('[plus]')
-  })
-
-  it('hides the stage-all button when every file is already staged', () => {
-    mockGitStatus({ files: [files[0]!] })
-    const html = renderToStaticMarkup(<GitStatusPanel />)
+    expect(html).not.toContain('Commit')
     expect(html).not.toContain('[plus]')
-  })
-
-  it('opens the diff modal for the first staged file when the commit button is clicked', () => {
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    expect(screen.getByTestId('diff-modal')).toBeInTheDocument()
-    expect(diffModalProps.path).toBe('src/a.ts')
-    expect(diffModalProps.staged).toBe(true)
-  })
-})
-
-/* ------------------------------------------------------------------ */
-/*  Interactions                                                      */
-/* ------------------------------------------------------------------ */
-
-describe('GitStatusPanel — git operations', () => {
-  it('stages an unstaged file when its checkbox is clicked', async () => {
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByLabelText('Stage src/b.ts'))
-    await vi.waitFor(() => {
-      expect(mockAuthFetch).toHaveBeenCalledWith(
-        '/api/git/stage',
-        expect.objectContaining({
-          body: JSON.stringify({ workdir: '/tmp/proj', paths: ['src/b.ts'] }),
-        }),
-      )
-    })
-  })
-
-  it('unstages a staged file when its checkbox is clicked', async () => {
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByLabelText('Unstage src/a.ts'))
-    await vi.waitFor(() => {
-      expect(mockAuthFetch).toHaveBeenCalledWith(
-        '/api/git/unstage',
-        expect.objectContaining({
-          body: JSON.stringify({ workdir: '/tmp/proj', paths: ['src/a.ts'] }),
-        }),
-      )
-    })
-  })
-
-  it('stages every unstaged and untracked file in one call', async () => {
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByLabelText('Stage all changes'))
-    await vi.waitFor(() => {
-      expect(mockAuthFetch).toHaveBeenCalledWith(
-        '/api/git/stage',
-        expect.objectContaining({
-          body: JSON.stringify({ workdir: '/tmp/proj', paths: ['src/b.ts', 'src/c.ts'] }),
-        }),
-      )
-    })
+    expect(html).not.toContain('[trash]')
   })
 
   it('resizes the file list within its bounds when the handle is dragged', () => {
@@ -323,118 +195,6 @@ describe('GitStatusPanel — git operations', () => {
 
     fireEvent.pointerUp(window)
   })
-
-  it('discards a file after confirming the dialog', async () => {
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByLabelText('Discard changes in src/c.ts'))
-    expect(screen.getByTestId('confirm-modal')).toBeInTheDocument()
-    fireEvent.click(screen.getByLabelText('confirm-discard'))
-    await vi.waitFor(() => {
-      expect(mockAuthFetch).toHaveBeenCalledWith(
-        '/api/git/discard',
-        expect.objectContaining({
-          body: JSON.stringify({ workdir: '/tmp/proj', paths: ['src/c.ts'] }),
-        }),
-      )
-    })
-  })
-
-  it('does not discard when the dialog is closed', async () => {
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByLabelText('Discard changes in src/c.ts'))
-    fireEvent.click(screen.getByLabelText('cancel-discard'))
-    expect(screen.queryByTestId('confirm-modal')).not.toBeInTheDocument()
-    expect(mockAuthFetch).not.toHaveBeenCalled()
-  })
-
-  it('commits with the entered message', async () => {
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    await act(async () => {
-      diffModalProps.commit?.onMessageChange('my commit')
-    })
-    await act(async () => {
-      await diffModalProps.commit?.onCommit()
-    })
-    expect(mockAuthFetch).toHaveBeenCalledWith(
-      '/api/git/commit',
-      expect.objectContaining({
-        body: JSON.stringify({ workdir: '/tmp/proj', message: 'my commit' }),
-      }),
-    )
-  })
-
-  it('closes the diff modal and clears the message after a successful commit', async () => {
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    await act(async () => {
-      diffModalProps.commit?.onMessageChange('my commit')
-    })
-    await act(async () => {
-      await diffModalProps.commit?.onCommit()
-    })
-    expect(screen.queryByTestId('diff-modal')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    expect(diffModalProps.commit?.message).toBe('')
-  })
-
-  it('disables the commit trigger when nothing is staged', () => {
-    mockGitStatus({ files: files.filter((f) => !f.staged) })
-    render(<GitStatusPanel />)
-    expect(screen.getByRole('button', { name: 'Commit' })).toBeDisabled()
-  })
-
-  it('generates a commit message into the shared state', async () => {
-    mockAuthFetch.mockImplementation(async (url: string) => {
-      if (url === '/api/git/commit-message') {
-        return { ok: true, json: async () => ({ success: true, message: 'feat: auto' }) }
-      }
-      return { ok: true, json: async () => ({ success: true, output: '' }) }
-    })
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    await act(async () => {
-      diffModalProps.commit?.onGenerate()
-    })
-    expect(mockAuthFetch).toHaveBeenCalledWith(
-      '/api/git/commit-message',
-      expect.objectContaining({
-        body: JSON.stringify({ workdir: '/tmp/proj' }),
-      }),
-    )
-    expect(diffModalProps.commit?.message).toBe('feat: auto')
-  })
-
-  it('pushes and pulls on demand', async () => {
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    await act(async () => {
-      diffModalProps.commit?.onPush()
-    })
-    expect(mockAuthFetch).toHaveBeenCalledWith('/api/git/push', expect.objectContaining({ method: 'POST' }))
-    await act(async () => {
-      diffModalProps.commit?.onPull()
-    })
-    expect(mockAuthFetch).toHaveBeenCalledWith('/api/git/pull', expect.objectContaining({ method: 'POST' }))
-  })
-
-  it('disables pull when the branch has no upstream but keeps push enabled', () => {
-    mockGitStatus({ sync: null })
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    expect(diffModalProps.commit?.pushDisabled).toBe(false)
-    expect(diffModalProps.commit?.pullDisabled).toBe(true)
-  })
-
-  it('passes the server error message to the commit feedback', async () => {
-    mockAuthFetch.mockResolvedValue({ ok: false, status: 400, json: async () => ({ success: false, error: 'boom' }) })
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    await act(async () => {
-      diffModalProps.commit?.onPush()
-    })
-    expect(diffModalProps.commit?.feedback).toEqual({ type: 'error', message: 'boom' })
-  })
 })
 
 /* ------------------------------------------------------------------ */
@@ -453,6 +213,7 @@ describe('GitStatusPanel — diff modal', () => {
   it('opens the diff modal in the unstaged view for an unstaged file', () => {
     render(<GitStatusPanel />)
     fireEvent.click(screen.getByText('src/b.ts'))
+    expect(screen.getByTestId('diff-modal')).toBeInTheDocument()
     expect(diffModalProps.path).toBe('src/b.ts')
     expect(diffModalProps.staged).toBe(false)
   })

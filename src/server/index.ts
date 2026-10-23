@@ -7,8 +7,6 @@ import { readFile } from 'node:fs/promises'
 import { createServer as createViteServer, type ViteDevServer } from 'vite'
 
 import type { Config, ModelConfig, ProviderBackend } from '../shared/types.js'
-import type { GitActionResult } from './git/actions.js'
-import { resolveSafePath } from './git/safe-path.js'
 import type { ServerHandle } from './context.js'
 import type { VisionBackend } from './llm/vision-fallback.js'
 import { initDatabase } from './db/index.js'
@@ -127,11 +125,6 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
     projectId: string,
     payload: import('../shared/protocol.js').TasksUpdatePayload,
   ) => void = () => {}
-
-  // Deferred git status refresh: git operation endpoints (stage/commit/push/…)
-  // must trigger a git.status broadcast, but the WebSocket server isn't
-  // created until later — this indirection bridges the gap.
-  let deferGitStatusRefresh: (workdir: string) => void = () => {}
 
   // Deferred workflow launcher for slash-workflow tasks and the MCP server.
   // Same rationale: the launcher needs the WebSocket broadcaster + LLM
@@ -794,74 +787,6 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
       res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to create branch' })
     }
   })
-
-  // Workdir-scoped git operation endpoints (stage, unstage, discard, commit, commit-message, push, pull)
-  const parseGitWorkdir = (body: unknown): string | null => {
-    const workdir = (body as { workdir?: unknown } | null)?.workdir
-    return typeof workdir === 'string' && workdir.length > 0 ? workdir : null
-  }
-  const parseGitPaths = (body: unknown): string[] | null => {
-    const paths = (body as { paths?: unknown } | null)?.paths
-    if (!Array.isArray(paths) || paths.length === 0) return null
-    if (paths.some((p) => typeof p !== 'string' || p.length === 0)) return null
-    return paths as string[]
-  }
-
-  const gitActionRoute = (
-    route: string,
-    opts: { needsPaths?: boolean; needsMessage?: boolean; refresh?: boolean },
-    action: (workdir: string, paths: string[], message: string) => Promise<GitActionResult>,
-  ) => {
-    app.post(route, async (req, res) => {
-      const workdir = parseGitWorkdir(req.body)
-      if (!workdir) return res.status(400).json({ error: 'workdir is required' })
-      let paths: string[] = []
-      if (opts.needsPaths) {
-        const parsedPaths = parseGitPaths(req.body)
-        if (!parsedPaths) return res.status(400).json({ error: 'paths is required' })
-        paths = parsedPaths
-        for (const p of paths) {
-          if (resolveSafePath(workdir, p) === null) {
-            return res.status(400).json({ error: `Invalid path: ${p}` })
-          }
-        }
-      }
-      let message = ''
-      if (opts.needsMessage) {
-        const parsedMessage = (req.body as { message?: unknown } | null)?.message
-        if (typeof parsedMessage !== 'string' || parsedMessage.trim().length === 0) {
-          return res.status(400).json({ error: 'message is required' })
-        }
-        message = parsedMessage
-      }
-      const { isGitRepository } = await import('./git/workspace.js')
-      if (!(await isGitRepository(workdir))) {
-        return res.status(400).json({ error: 'Not a git repository' })
-      }
-      const result = await action(workdir, paths, message)
-      if (!result.success) return res.status(400).json(result)
-      if (opts.refresh !== false) deferGitStatusRefresh(workdir)
-      res.json(result)
-    })
-  }
-
-  gitActionRoute('/api/git/stage', { needsPaths: true }, (w, p) =>
-    import('./git/actions.js').then((m) => m.gitStage(w, p)),
-  )
-  gitActionRoute('/api/git/unstage', { needsPaths: true }, (w, p) =>
-    import('./git/actions.js').then((m) => m.gitUnstage(w, p)),
-  )
-  gitActionRoute('/api/git/discard', { needsPaths: true }, (w, p) =>
-    import('./git/actions.js').then((m) => m.gitDiscard(w, p)),
-  )
-  gitActionRoute('/api/git/commit', { needsMessage: true }, (w, _p, msg) =>
-    import('./git/actions.js').then((m) => m.gitCommit(w, msg)),
-  )
-  gitActionRoute('/api/git/commit-message', { refresh: false }, (w) =>
-    import('./git/commit-message.js').then((m) => m.generateCommitMessage(w, { providerManager, getLLMClient })),
-  )
-  gitActionRoute('/api/git/push', {}, (w) => import('./git/actions.js').then((m) => m.gitPush(w)))
-  gitActionRoute('/api/git/pull', {}, (w) => import('./git/actions.js').then((m) => m.gitPull(w)))
 
   /** Get the unified diff for a single file (staged=1 → index view) */
   app.get('/api/git/diff', async (req, res) => {
@@ -3799,11 +3724,6 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
   // payload carries projectId; clients write through into their per-project
   // board cache, so unaffected boards are untouched.
   deferTasksBroadcast = (_projectId, payload) => wssExports.broadcastAll({ type: 'tasks.update', payload })
-
-  // Point the git endpoints at the live WebSocket git status refresher.
-  deferGitStatusRefresh = (workdir) => {
-    void wssExports.refreshGitStatus(workdir)
-  }
 
   // Point the tasks service at the workflow launcher. Task-seeded workflows run
   // through the same shared launcher as runner.launch (src/server/runner/launch.ts).

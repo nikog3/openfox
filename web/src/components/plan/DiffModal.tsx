@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNod
 import { Modal } from '../shared/Modal'
 import { Spinner } from '../shared/Spinner'
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon, ColumnsIcon, CopyIcon, MinusIcon } from '../shared/icons'
-import { CommitArea, type CommitAreaProps } from './CommitArea'
 import { useT } from '../../hooks/useT'
 import { useResourceWhen } from '../../hooks/useResource'
 import { gitFileDiffResource } from '../../lib/resources'
@@ -20,8 +19,6 @@ import type { GitDiffFile } from '../../stores/session/types'
 
 type ViewMode = 'split' | 'unified'
 
-export type DiffModalCommit = Omit<CommitAreaProps, 'className'>
-
 interface DiffModalProps {
   workdir: string
   path: string
@@ -29,7 +26,6 @@ interface DiffModalProps {
   isOpen: boolean
   onClose: () => void
   files?: GitDiffFile[]
-  commit?: DiffModalCommit
 }
 
 function extractShikiLines(html: string, count: number): string[] {
@@ -83,7 +79,7 @@ function SidebarFileRow({
   )
 }
 
-export function DiffModal({ workdir, path, staged, isOpen, onClose, files, commit }: DiffModalProps) {
+export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: DiffModalProps) {
   const t = useT()
   const [view, setView] = useState<ViewMode>('split')
   const [activeGroup, setActiveGroup] = useState(-1)
@@ -393,23 +389,6 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files, commi
         )}
         <div className="flex-1 min-w-0 p-3 flex flex-col min-h-0">{diffContent}</div>
       </div>
-      {commit && (
-        <div className="border-t border-border p-2 shrink-0">
-          <CommitArea
-            message={commit.message}
-            onMessageChange={commit.onMessageChange}
-            onCommit={commit.onCommit}
-            onGenerate={commit.onGenerate}
-            onPush={commit.onPush}
-            onPull={commit.onPull}
-            busy={commit.busy}
-            feedback={commit.feedback}
-            stagedCount={commit.stagedCount}
-            pushDisabled={commit.pushDisabled}
-            pullDisabled={commit.pullDisabled}
-          />
-        </div>
-      )}
     </div>
   )
 

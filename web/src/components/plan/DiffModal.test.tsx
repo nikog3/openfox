@@ -191,7 +191,7 @@ describe('DiffModal — toolbar', () => {
 })
 
 /* ------------------------------------------------------------------ */
-/*  File list + commit area                                           */
+/*  File list                                                         */
 /* ------------------------------------------------------------------ */
 
 const FILES: GitDiffFile[] = [
@@ -207,23 +207,6 @@ const FILES: GitDiffFile[] = [
   { path: 'src/b.ts', status: 'modified', staged: false, unstaged: true, untracked: false, additions: 3, deletions: 1 },
   { path: 'src/c.ts', status: 'added', staged: false, unstaged: false, untracked: true, additions: 5, deletions: 0 },
 ]
-
-function makeCommit(overrides: Record<string, unknown> = {}) {
-  return {
-    message: '',
-    onMessageChange: () => {},
-    onCommit: async () => {},
-    onGenerate: () => {},
-    onPush: () => {},
-    onPull: () => {},
-    busy: null,
-    feedback: null,
-    stagedCount: 1,
-    pushDisabled: false,
-    pullDisabled: false,
-    ...overrides,
-  }
-}
 
 describe('DiffModal — file list', () => {
   it('renders the grouped file list when files are provided', () => {
@@ -255,88 +238,5 @@ describe('DiffModal — file list', () => {
     )
     expect(container.querySelector('[data-file="src/a.ts"] .text-accent-success')).toHaveTextContent('+10')
     expect(container.querySelector('[data-file="src/a.ts"] .text-accent-error')).toHaveTextContent('-2')
-  })
-})
-
-describe('DiffModal — commit area', () => {
-  it('renders the commit controls in the sidebar when commit props are provided', () => {
-    render(
-      <DiffModal
-        workdir="/tmp/proj"
-        path="src/a.ts"
-        staged={true}
-        isOpen
-        onClose={() => {}}
-        files={FILES}
-        commit={makeCommit()}
-      />,
-    )
-    expect(screen.getByPlaceholderText('Commit message…')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Commit' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Generate commit message')).toBeInTheDocument()
-    expect(screen.getByLabelText('Push')).toBeInTheDocument()
-    expect(screen.getByLabelText('Pull')).toBeInTheDocument()
-  })
-
-  it('commits from the modal through the onCommit callback', () => {
-    const onCommit = vi.fn().mockResolvedValue(undefined)
-    render(
-      <DiffModal
-        workdir="/tmp/proj"
-        path="src/a.ts"
-        staged={true}
-        isOpen
-        onClose={() => {}}
-        files={FILES}
-        commit={makeCommit({ onCommit, message: 'msg' })}
-      />,
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    expect(onCommit).toHaveBeenCalled()
-  })
-
-  it('disables commit with an empty message', () => {
-    render(
-      <DiffModal
-        workdir="/tmp/proj"
-        path="src/a.ts"
-        staged={true}
-        isOpen
-        onClose={() => {}}
-        files={FILES}
-        commit={makeCommit()}
-      />,
-    )
-    expect(screen.getByRole('button', { name: 'Commit' })).toBeDisabled()
-  })
-
-  it('shows commit feedback messages in the commit area', () => {
-    render(
-      <DiffModal
-        workdir="/tmp/proj"
-        path="src/a.ts"
-        staged={true}
-        isOpen
-        onClose={() => {}}
-        files={FILES}
-        commit={makeCommit({ feedback: { type: 'success', message: 'Committed' } })}
-      />,
-    )
-    expect(screen.getByText('Committed')).toBeInTheDocument()
-  })
-
-  it('shares the commit message with the parent state', () => {
-    render(
-      <DiffModal
-        workdir="/tmp/proj"
-        path="src/a.ts"
-        staged={true}
-        isOpen
-        onClose={() => {}}
-        files={FILES}
-        commit={makeCommit({ message: 'shared message' })}
-      />,
-    )
-    expect(screen.getByPlaceholderText('Commit message…')).toHaveValue('shared message')
   })
 })
