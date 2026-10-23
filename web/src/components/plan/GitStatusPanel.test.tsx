@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { act, cleanup, render, screen, fireEvent } from '@testing-library/react'
 import type { Mock } from 'vitest'
 import { GitStatusPanel } from './GitStatusPanel'
+import type { DiffModalCommit } from './DiffModal'
 import type { ReactNode } from 'react'
 
 /* ------------------------------------------------------------------ */
@@ -13,7 +14,7 @@ import type { ReactNode } from 'react'
 
 const mockUseGitStatus = vi.fn() as Mock
 const mockAuthFetch = vi.fn() as Mock
-const diffModalProps: { path?: string; staged?: boolean } = {}
+const diffModalProps: { path?: string; staged?: boolean; commit?: DiffModalCommit } = {}
 
 vi.mock('../../hooks/useGitStatus', () => ({
   useGitStatus: () => mockUseGitStatus(),
@@ -42,9 +43,10 @@ vi.mock('../../lib/resources', () => ({
 }))
 
 vi.mock('./DiffModal', () => ({
-  DiffModal: (props: { path: string; staged: boolean; isOpen: boolean }) => {
+  DiffModal: (props: { path: string; staged: boolean; isOpen: boolean; commit?: DiffModalCommit }) => {
     diffModalProps.path = props.path
     diffModalProps.staged = props.staged
+    diffModalProps.commit = props.commit
     return <div data-testid="diff-modal" />
   },
 }))
@@ -126,6 +128,9 @@ function mockGitStatus(overrides?: {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  diffModalProps.path = undefined
+  diffModalProps.staged = undefined
+  diffModalProps.commit = undefined
   mockGitStatus()
   mockAuthFetch.mockResolvedValue({ ok: true, json: async () => ({ success: true, output: '' }) })
 })
@@ -248,31 +253,12 @@ describe('GitStatusPanel — rendering', () => {
     expect(html).not.toContain('[plus]')
   })
 
-  it('opens the commit panel showing the message, generate, commit, push and pull', () => {
+  it('opens the diff modal for the first staged file when the commit button is clicked', () => {
     render(<GitStatusPanel />)
     fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    expect(screen.getByTestId('commit-panel')).toBeInTheDocument()
-    expect(screen.getByPlaceholderText('Commit message…')).toBeInTheDocument()
-    expect(screen.getByLabelText('Generate commit message')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '[commit]Commit' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Push')).toBeInTheDocument()
-    expect(screen.getByLabelText('Pull')).toBeInTheDocument()
-  })
-
-  it('closes the commit panel on Escape', () => {
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    expect(screen.getByTestId('commit-panel')).toBeInTheDocument()
-    fireEvent.keyDown(document, { key: 'Escape' })
-    expect(screen.queryByTestId('commit-panel')).not.toBeInTheDocument()
-  })
-
-  it('closes the commit panel on an outside click', () => {
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    expect(screen.getByTestId('commit-panel')).toBeInTheDocument()
-    fireEvent.mouseDown(document.body)
-    expect(screen.queryByTestId('commit-panel')).not.toBeInTheDocument()
+    expect(screen.getByTestId('diff-modal')).toBeInTheDocument()
+    expect(diffModalProps.path).toBe('src/a.ts')
+    expect(diffModalProps.staged).toBe(true)
   })
 })
 
@@ -364,32 +350,32 @@ describe('GitStatusPanel — git operations', () => {
   it('commits with the entered message', async () => {
     render(<GitStatusPanel />)
     fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    fireEvent.change(screen.getByPlaceholderText('Commit message…'), { target: { value: 'my commit' } })
-    fireEvent.click(screen.getByRole('button', { name: '[commit]Commit' }))
-    await vi.waitFor(() => {
-      expect(mockAuthFetch).toHaveBeenCalledWith(
-        '/api/git/commit',
-        expect.objectContaining({
-          body: JSON.stringify({ workdir: '/tmp/proj', message: 'my commit' }),
-        }),
-      )
+    await act(async () => {
+      diffModalProps.commit?.onMessageChange('my commit')
     })
+    await act(async () => {
+      await diffModalProps.commit?.onCommit()
+    })
+    expect(mockAuthFetch).toHaveBeenCalledWith(
+      '/api/git/commit',
+      expect.objectContaining({
+        body: JSON.stringify({ workdir: '/tmp/proj', message: 'my commit' }),
+      }),
+    )
   })
 
-  it('closes the commit panel and clears the message after a successful commit', async () => {
+  it('closes the diff modal and clears the message after a successful commit', async () => {
     render(<GitStatusPanel />)
     fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    fireEvent.change(screen.getByPlaceholderText('Commit message…'), { target: { value: 'my commit' } })
-    fireEvent.click(screen.getByRole('button', { name: '[commit]Commit' }))
-    await vi.waitFor(() => {
-      expect(screen.queryByTestId('commit-panel')).not.toBeInTheDocument()
+    await act(async () => {
+      diffModalProps.commit?.onMessageChange('my commit')
     })
-  })
-
-  it('disables the commit button with an empty message', () => {
-    render(<GitStatusPanel />)
+    await act(async () => {
+      await diffModalProps.commit?.onCommit()
+    })
+    expect(screen.queryByTestId('diff-modal')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    expect(screen.getByRole('button', { name: '[commit]Commit' })).toBeDisabled()
+    expect(diffModalProps.commit?.message).toBe('')
   })
 
   it('disables the commit trigger when nothing is staged', () => {
@@ -398,13 +384,7 @@ describe('GitStatusPanel — git operations', () => {
     expect(screen.getByRole('button', { name: 'Commit' })).toBeDisabled()
   })
 
-  it('disables commit and generate when nothing is staged', () => {
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    expect(screen.getByRole('button', { name: '[commit]Commit' })).toBeDisabled()
-  })
-
-  it('generates a commit message and fills the textarea', async () => {
+  it('generates a commit message into the shared state', async () => {
     mockAuthFetch.mockImplementation(async (url: string) => {
       if (url === '/api/git/commit-message') {
         return { ok: true, json: async () => ({ success: true, message: 'feat: auto' }) }
@@ -413,60 +393,47 @@ describe('GitStatusPanel — git operations', () => {
     })
     render(<GitStatusPanel />)
     fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    fireEvent.click(screen.getByLabelText('Generate commit message'))
-    await vi.waitFor(() => {
-      expect(mockAuthFetch).toHaveBeenCalledWith(
-        '/api/git/commit-message',
-        expect.objectContaining({
-          body: JSON.stringify({ workdir: '/tmp/proj' }),
-        }),
-      )
+    await act(async () => {
+      diffModalProps.commit?.onGenerate()
     })
-    await vi.waitFor(() => {
-      expect(screen.getByPlaceholderText('Commit message…')).toHaveValue('feat: auto')
-    })
+    expect(mockAuthFetch).toHaveBeenCalledWith(
+      '/api/git/commit-message',
+      expect.objectContaining({
+        body: JSON.stringify({ workdir: '/tmp/proj' }),
+      }),
+    )
+    expect(diffModalProps.commit?.message).toBe('feat: auto')
   })
 
   it('pushes and pulls on demand', async () => {
     render(<GitStatusPanel />)
     fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    fireEvent.click(screen.getByLabelText('Push'))
-    await vi.waitFor(() => {
-      expect(mockAuthFetch).toHaveBeenCalledWith('/api/git/push', expect.objectContaining({ method: 'POST' }))
+    await act(async () => {
+      diffModalProps.commit?.onPush()
     })
-    await act(async () => {})
-    fireEvent.click(screen.getByLabelText('Pull'))
-    await vi.waitFor(() => {
-      expect(mockAuthFetch).toHaveBeenCalledWith('/api/git/pull', expect.objectContaining({ method: 'POST' }))
+    expect(mockAuthFetch).toHaveBeenCalledWith('/api/git/push', expect.objectContaining({ method: 'POST' }))
+    await act(async () => {
+      diffModalProps.commit?.onPull()
     })
+    expect(mockAuthFetch).toHaveBeenCalledWith('/api/git/pull', expect.objectContaining({ method: 'POST' }))
   })
 
   it('disables pull when the branch has no upstream but keeps push enabled', () => {
     mockGitStatus({ sync: null })
     render(<GitStatusPanel />)
     fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    expect(screen.getByLabelText('Push')).not.toBeDisabled()
-    expect(screen.getByLabelText('Pull')).toBeDisabled()
+    expect(diffModalProps.commit?.pushDisabled).toBe(false)
+    expect(diffModalProps.commit?.pullDisabled).toBe(true)
   })
 
-  it('shows the server error message on failure', async () => {
+  it('passes the server error message to the commit feedback', async () => {
     mockAuthFetch.mockResolvedValue({ ok: false, status: 400, json: async () => ({ success: false, error: 'boom' }) })
     render(<GitStatusPanel />)
     fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    fireEvent.click(screen.getByLabelText('Push'))
-    await vi.waitFor(() => {
-      expect(screen.getByText('boom')).toBeInTheDocument()
+    await act(async () => {
+      diffModalProps.commit?.onPush()
     })
-  })
-
-  it('shows a success message after a successful commit', async () => {
-    render(<GitStatusPanel />)
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    fireEvent.change(screen.getByPlaceholderText('Commit message…'), { target: { value: 'msg' } })
-    fireEvent.click(screen.getByRole('button', { name: '[commit]Commit' }))
-    await vi.waitFor(() => {
-      expect(screen.queryByText('Committed')).not.toBeInTheDocument()
-    })
+    expect(diffModalProps.commit?.feedback).toEqual({ type: 'error', message: 'boom' })
   })
 })
 

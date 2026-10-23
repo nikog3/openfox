@@ -362,52 +362,54 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files, commi
     )
 
   const body = (
-    <div className="flex h-[60vh]">
-      {groupedFiles && (
-        <div className="w-56 shrink-0 border-r border-border flex flex-col min-h-0">
-          <div className="flex-1 overflow-auto p-1 space-y-2">
-            {groupedFiles.map((group) => (
-              <div key={group.key}>
-                <div className="px-1.5 pt-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-text-muted">
-                  {group.label}
-                  <span className="font-mono">({group.items.length})</span>
+    <div className="flex flex-col h-[60vh]">
+      <div className="flex flex-1 min-h-0">
+        {groupedFiles && (
+          <div className="w-56 shrink-0 border-r border-border flex flex-col min-h-0">
+            <div className="flex-1 overflow-auto p-1 space-y-2">
+              {groupedFiles.map((group) => (
+                <div key={group.key}>
+                  <div className="px-1.5 pt-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-text-muted">
+                    {group.label}
+                    <span className="font-mono">({group.items.length})</span>
+                  </div>
+                  {group.items.map((item) => (
+                    <SidebarFileRow
+                      key={`${group.key}-${item.file.path}-${item.staged}`}
+                      label={item.file.path}
+                      additions={item.file.additions}
+                      deletions={item.file.deletions}
+                      active={activePath === item.file.path && activeStaged === item.staged}
+                      onClick={() => {
+                        setActivePath(item.file.path)
+                        setActiveStaged(item.staged)
+                      }}
+                    />
+                  ))}
                 </div>
-                {group.items.map((item) => (
-                  <SidebarFileRow
-                    key={`${group.key}-${item.file.path}-${item.staged}`}
-                    label={item.file.path}
-                    additions={item.file.additions}
-                    deletions={item.file.deletions}
-                    active={activePath === item.file.path && activeStaged === item.staged}
-                    onClick={() => {
-                      setActivePath(item.file.path)
-                      setActiveStaged(item.staged)
-                    }}
-                  />
-                ))}
-              </div>
-            ))}
-          </div>
-          {commit && (
-            <div className="border-t border-border p-2 shrink-0">
-              <CommitArea
-                message={commit.message}
-                onMessageChange={commit.onMessageChange}
-                onCommit={commit.onCommit}
-                onGenerate={commit.onGenerate}
-                onPush={commit.onPush}
-                onPull={commit.onPull}
-                busy={commit.busy}
-                feedback={commit.feedback}
-                stagedCount={commit.stagedCount}
-                pushDisabled={commit.pushDisabled}
-                pullDisabled={commit.pullDisabled}
-              />
+              ))}
             </div>
-          )}
+          </div>
+        )}
+        <div className="flex-1 min-w-0 p-3 flex flex-col min-h-0">{diffContent}</div>
+      </div>
+      {commit && (
+        <div className="border-t border-border p-2 shrink-0">
+          <CommitArea
+            message={commit.message}
+            onMessageChange={commit.onMessageChange}
+            onCommit={commit.onCommit}
+            onGenerate={commit.onGenerate}
+            onPush={commit.onPush}
+            onPull={commit.onPull}
+            busy={commit.busy}
+            feedback={commit.feedback}
+            stagedCount={commit.stagedCount}
+            pushDisabled={commit.pushDisabled}
+            pullDisabled={commit.pullDisabled}
+          />
         </div>
       )}
-      <div className="flex-1 min-w-0 p-3 flex flex-col min-h-0">{diffContent}</div>
     </div>
   )
 

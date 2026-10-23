@@ -251,7 +251,7 @@ describe('getGitSyncInfo', () => {
     })
 
     const sync = await getGitSyncInfo('/tmp/project')
-    expect(sync).toEqual({ ahead: 2, behind: 3 })
+    expect(sync).toEqual({ ahead: 3, behind: 2 })
   })
 
   it('returns null when the branch has no upstream', async () => {

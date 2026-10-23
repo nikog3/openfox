@@ -1,15 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { ScrollArea } from '../shared/ScrollArea'
 import { ConfirmModal } from '../shared/ConfirmModal'
-import { DropdownPanel } from '../shared/DropdownPanel'
 import { CheckIcon, GitCommitIcon, MinusIcon, PencilIcon, PlusIcon, TrashIcon } from '../shared/icons'
 import { Spinner } from '../shared/Spinner'
-import { CommitArea } from './CommitArea'
 import { DiffModal } from './DiffModal'
 import { SyncBadge } from './SyncBadge'
 import { useT } from '../../hooks/useT'
 import { useSetting } from '../../hooks/useSetting'
-import { useIsTouchDevice } from '../../hooks/useIsTouchDevice'
 import { useScopedContext } from '../../stores/session/session-scope'
 import { useGitStatus } from '../../hooks/useGitStatus'
 import { authFetch } from '../../lib/api'
@@ -123,29 +120,8 @@ export function GitStatusPanel() {
   const [commitMessage, setCommitMessage] = useState('')
   const [busy, setBusy] = useState<GitOp | null>(null)
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
-  const [commitOpen, setCommitOpen] = useState(false)
   const [listHeight, setListHeight] = useState(150)
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null)
-  const commitContainerRef = useRef<HTMLDivElement>(null)
-  const isTouch = useIsTouchDevice()
-
-  useEffect(() => {
-    if (!commitOpen) return
-    const onMouseDown = (e: MouseEvent) => {
-      if (commitContainerRef.current && !commitContainerRef.current.contains(e.target as Node)) {
-        setCommitOpen(false)
-      }
-    }
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setCommitOpen(false)
-    }
-    document.addEventListener('mousedown', onMouseDown)
-    document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('mousedown', onMouseDown)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [commitOpen])
 
   if (diff.loading) {
     return (
@@ -214,7 +190,7 @@ export function GitStatusPanel() {
     const ok = await callGit('commit', { message: commitMessage.trim() }, t({ en: 'Committed', fr: 'Commit effectué' }))
     if (ok) {
       setCommitMessage('')
-      setCommitOpen(false)
+      setDiffTarget(null)
     }
   }
 
@@ -296,46 +272,23 @@ export function GitStatusPanel() {
       </div>
 
       <div className="pt-1.5 border-t border-border">
-        <div className="relative inline-flex" ref={commitContainerRef}>
-          <button
-            onClick={() => setCommitOpen((v) => !v)}
-            disabled={stagedFiles.length === 0}
-            className="flex items-center gap-1.5 px-2 py-1 text-xs rounded bg-accent-primary text-white disabled:opacity-50 transition-opacity hover:opacity-90"
-            aria-label={t({ en: 'Commit', fr: 'Commit' })}
-          >
-            <GitCommitIcon className="w-3.5 h-3.5" />
-            {t({ en: 'Commit', fr: 'Commit' })}
-            {stagedFiles.length > 0 && (
-              <span className="min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-white/20 text-[10px] font-mono">
-                {stagedFiles.length}
-              </span>
-            )}
-          </button>
-          {commitOpen && (
-            <DropdownPanel
-              isModal={isTouch}
-              testId="commit-panel"
-              anchoredClassName="left-0 w-72"
-              onClose={() => setCommitOpen(false)}
-            >
-              <div className="p-2">
-                <CommitArea
-                  message={commitMessage}
-                  onMessageChange={setCommitMessage}
-                  onCommit={doCommit}
-                  onGenerate={() => void callGit('commit-message', {})}
-                  onPush={() => void callGit('push', {}, t({ en: 'Pushed', fr: 'Push effectué' }))}
-                  onPull={() => void callGit('pull', {}, t({ en: 'Pulled', fr: 'Pull effectué' }))}
-                  busy={busy}
-                  feedback={feedback}
-                  stagedCount={stagedFiles.length}
-                  pushDisabled={branch === null}
-                  pullDisabled={sync === null}
-                />
-              </div>
-            </DropdownPanel>
+        <button
+          onClick={() => {
+            const first = stagedFiles[0]
+            if (first) setDiffTarget({ path: first.path, staged: true })
+          }}
+          disabled={stagedFiles.length === 0}
+          className="flex items-center gap-1.5 px-2 py-1 text-xs rounded bg-accent-primary text-white disabled:opacity-50 transition-opacity hover:opacity-90"
+          aria-label={t({ en: 'Commit', fr: 'Commit' })}
+        >
+          <GitCommitIcon className="w-3.5 h-3.5" />
+          {t({ en: 'Commit', fr: 'Commit' })}
+          {stagedFiles.length > 0 && (
+            <span className="min-w-4 h-4 px-1 flex items-center justify-center rounded-full bg-white/20 text-[10px] font-mono">
+              {stagedFiles.length}
+            </span>
           )}
-        </div>
+        </button>
       </div>
 
       {workdir && diffTarget && (

@@ -245,9 +245,9 @@ export async function getGitBranch(
 export async function getGitSyncInfo(cwd: string): Promise<GitStatusSync | null> {
   const stdout = await gitOutput(cwd, ['rev-list', '--left-right', '--count', 'HEAD...@{u}'])
   const parts = stdout.trim().split(/\s+/)
-  const behind = parseInt(parts[0] ?? '', 10)
-  const ahead = parseInt(parts[1] ?? '', 10)
-  if (Number.isNaN(behind) || Number.isNaN(ahead)) return null
+  const ahead = parseInt(parts[0] ?? '', 10)
+  const behind = parseInt(parts[1] ?? '', 10)
+  if (Number.isNaN(ahead) || Number.isNaN(behind)) return null
   return { ahead, behind }
 }
 

@@ -295,6 +295,36 @@ describe('DiffModal — commit area', () => {
     expect(onCommit).toHaveBeenCalled()
   })
 
+  it('disables commit with an empty message', () => {
+    render(
+      <DiffModal
+        workdir="/tmp/proj"
+        path="src/a.ts"
+        staged={true}
+        isOpen
+        onClose={() => {}}
+        files={FILES}
+        commit={makeCommit()}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Commit' })).toBeDisabled()
+  })
+
+  it('shows commit feedback messages in the commit area', () => {
+    render(
+      <DiffModal
+        workdir="/tmp/proj"
+        path="src/a.ts"
+        staged={true}
+        isOpen
+        onClose={() => {}}
+        files={FILES}
+        commit={makeCommit({ feedback: { type: 'success', message: 'Committed' } })}
+      />,
+    )
+    expect(screen.getByText('Committed')).toBeInTheDocument()
+  })
+
   it('shares the commit message with the parent state', () => {
     render(
       <DiffModal
