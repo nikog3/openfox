@@ -39,6 +39,9 @@ vi.mock('../context/compactor.js', async (importOriginal) => {
   return {
     COMPACTION_SUMMARY_BUDGET_TOKENS: actual.COMPACTION_SUMMARY_BUDGET_TOKENS,
     COMPACTION_HEADROOM_TOKENS: actual.COMPACTION_HEADROOM_TOKENS,
+    MAX_COMPACTION_ATTEMPTS: actual.MAX_COMPACTION_ATTEMPTS,
+    MAX_COMPACTION_TOOLCALL_REJECTIONS: actual.MAX_COMPACTION_TOOLCALL_REJECTIONS,
+    MIN_COMPACTION_SUMMARY_LENGTH: actual.MIN_COMPACTION_SUMMARY_LENGTH,
     fitSummaryInput: actual.fitSummaryInput,
     shouldCompact: vi.fn().mockReturnValue(false),
     appendCompactionPrompt: vi.fn((_sessionId: string, append: (event: any) => void) => {
@@ -475,7 +478,12 @@ describe('agentLoop integration', () => {
     // First call: normal response. Second call: compaction summary. Third call: normal response after compaction.
     ;(consumeStreamGenerator as any)
       .mockResolvedValueOnce(makeStreamResult({ content: 'Normal response', finishReason: 'stop' }))
-      .mockResolvedValueOnce(makeStreamResult({ content: 'Compacted summary', finishReason: 'stop' }))
+      .mockResolvedValueOnce(
+        makeStreamResult({
+          content: 'A compacted summary of the conversation so far, capturing the key decisions and outcomes.',
+          finishReason: 'stop',
+        }),
+      )
       .mockResolvedValueOnce(makeStreamResult({ content: 'Final response after compaction', finishReason: 'stop' }))
 
     // Trigger compaction after first LLM call, then return false thereafter

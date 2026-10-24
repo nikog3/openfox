@@ -391,9 +391,16 @@ describe('chat orchestrator', () => {
         aborted: false,
       })
       .mockResolvedValueOnce({
-        content: 'Planned response',
+        content:
+          'Compacted summary of the session including all decisions, file changes, and current progress on tasks',
         toolCalls: [],
-        segments: [{ type: 'text', content: 'Planned response' }],
+        segments: [
+          {
+            type: 'text',
+            content:
+              'Compacted summary of the session including all decisions, file changes, and current progress on tasks',
+          },
+        ],
         usage: { promptTokens: 20000, completionTokens: 10 },
         timing: { ttft: 1, completionTime: 1, tps: 10, prefillTps: 20000 },
         aborted: false,
@@ -1784,9 +1791,15 @@ describe('chat orchestrator', () => {
           aborted: false,
         })
         .mockResolvedValueOnce({
-          content: 'Compacted summary',
+          content: 'Compacted summary of the session including all file modifications and current progress on tasks',
           toolCalls: [],
-          segments: [{ type: 'text', content: 'Compacted summary' }],
+          segments: [
+            {
+              type: 'text',
+              content:
+                'Compacted summary of the session including all file modifications and current progress on tasks',
+            },
+          ],
           usage: { promptTokens: 500, completionTokens: 50 },
           timing: { ttft: 1, completionTime: 1, tps: 50, prefillTps: 500 },
           aborted: false,

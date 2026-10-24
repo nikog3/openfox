@@ -57,6 +57,8 @@ import {
   COMPACTION_SUMMARY_BUDGET_TOKENS,
   COMPACTION_HEADROOM_TOKENS,
   MAX_COMPACTION_ATTEMPTS,
+  MAX_COMPACTION_TOOLCALL_REJECTIONS,
+  MIN_COMPACTION_SUMMARY_LENGTH,
   shouldCompact,
   appendCompactionPrompt,
   fitSummaryInput,
@@ -383,6 +385,10 @@ export async function runTopLevelAgentLoop(
   let compactionAttempts = 0
   let compactionBlocked = false
   let compactionPromptMsgId: string | undefined
+  // Tool-call rejections within the current compaction attempt. Bounded by
+  // MAX_COMPACTION_TOOLCALL_REJECTIONS so a model that keeps calling tools
+  // during compaction cannot loop the summary call forever.
+  let compactionToolCallRejections = 0
 
   for (;;) {
     if (signal?.aborted) throw new Error('Aborted')
@@ -555,6 +561,7 @@ export async function runTopLevelAgentLoop(
         compactionPromptMsgId = appendCompactionPrompt(sessionId, append, config.subAgentMetadata)
         compacting = true
         compactionAttempts += 1
+        compactionToolCallRejections = 0
         continue
       }
 
@@ -942,9 +949,21 @@ export async function runTopLevelAgentLoop(
             runtimeConfig.context.compactionThreshold,
         )
       ) {
+        // Finalize the assistant message that just completed so the frontend
+        // closes it — compaction takes over the turn and this message must
+        // not be left streaming.
+        const interimStats = turnMetrics.buildStats(statsIdentity, mode)
+        append(
+          createMessageDoneEvent(assistantMsgId, {
+            segments: result.segments,
+            stats: interimStats,
+          }),
+        )
+        onMessage?.(createChatMessageUpdatedMessage(assistantMsgId, { isStreaming: false }))
         compactionPromptMsgId = appendCompactionPrompt(sessionId, append, config.subAgentMetadata)
         compacting = true
         compactionAttempts += 1
+        compactionToolCallRejections = 0
         continue
       }
     }
@@ -1002,8 +1021,47 @@ export async function runTopLevelAgentLoop(
       }
     }
 
-    if (result.toolCalls.length > 0) {
+    // A complete (non-truncated) summary counts even when the model appends
+    // tool calls to it — many models end a summary with a habit tool call
+    // (e.g. step_done). Accepting it here is what makes compaction terminate:
+    // rejecting would discard a valid summary and re-ask forever.
+    const compactionSummaryCandidate = compacting ? result.content?.trim() || result.thinkingContent?.trim() || '' : ''
+    const acceptCompactionSummary =
+      compacting &&
+      compactionSummaryCandidate.length >= MIN_COMPACTION_SUMMARY_LENGTH &&
+      result.finishReason !== 'length'
+
+    if (result.toolCalls.length > 0 && !acceptCompactionSummary) {
       if (compacting) {
+        compactionToolCallRejections += 1
+        if (compactionToolCallRejections > MAX_COMPACTION_TOOLCALL_REJECTIONS) {
+          // Rejection cap exceeded: abort compaction and continue with the
+          // full context, mirroring the empty-summary path.
+          append({
+            type: 'chat.error',
+            data: {
+              error: serverT({
+                en: 'Compaction failed: the model kept emitting tool calls instead of a summary, continuing with full context',
+                fr: "La compaction a échoué : le modèle émet des appels d'outils au lieu d'un résumé, poursuite avec le contexte complet",
+              }),
+              recoverable: true,
+            },
+          })
+          logger.warn('Compaction aborted after repeated tool calls', {
+            sessionId,
+            compactionToolCallRejections,
+          })
+          tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? '', assistantMsgId])
+          compactionBlocked = true
+          compacting = false
+          if (config.initialCompacting) break
+          continue
+        }
+        // Tombstone the rejected tool-call-only message so it cannot pollute
+        // the next LLM request's context as an empty assistant turn (mirrors
+        // the empty-summary path). Live clients keep showing it until reload
+        // — there is no "message removed" event, same accepted divergence.
+        tombstoneMessageEvents(sessionId, [assistantMsgId])
         const rejectionMsgId = crypto.randomUUID()
         append(
           createMessageStartEvent(
@@ -1184,18 +1242,21 @@ ${COMPACTION_PROMPT}`,
 
     if (compacting) {
       const summary = result.content?.trim() || result.thinkingContent?.trim() || ''
-      if (!summary) {
+      if (summary.length < MIN_COMPACTION_SUMMARY_LENGTH) {
         append({
           type: 'chat.error',
           data: {
             error: serverT({
-              en: 'Compaction produced empty summary, continuing with full context',
-              fr: 'La compaction a produit un résumé vide, poursuite avec le contexte complet',
+              en: 'Compaction produced an empty or too short summary, continuing with full context',
+              fr: 'La compaction a produit un résumé vide ou trop court, poursuite avec le contexte complet',
             }),
             recoverable: true,
           },
         })
-        logger.warn('Compaction produced empty summary, continuing', { sessionId })
+        logger.warn('Compaction produced an empty or too short summary, continuing', {
+          sessionId,
+          summaryLength: summary.length,
+        })
         tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? '', assistantMsgId])
         if (compactionAttempts >= MAX_COMPACTION_ATTEMPTS) compactionBlocked = true
         compacting = false
@@ -1223,6 +1284,13 @@ ${COMPACTION_PROMPT}`,
         compacting = false
         if (config.initialCompacting) break
         continue
+      }
+
+      if (result.toolCalls.length > 0) {
+        logger.debug('Compaction summary accepted; dropping accompanying tool calls', {
+          sessionId,
+          toolCalls: result.toolCalls.map((tc) => ({ id: tc.id, name: tc.name })),
+        })
       }
 
       // The new context window starts fresh — apply the current system prompt

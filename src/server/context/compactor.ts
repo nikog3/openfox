@@ -70,6 +70,23 @@ export const COMPACTION_SUMMARY_BUDGET_TOKENS = 4_096
 export const MAX_COMPACTION_ATTEMPTS = 2
 
 /**
+ * Max tool-call rejections per compaction trigger. A model that keeps
+ * emitting tool calls during compaction (e.g. a habit step_done after the
+ * summary) must not loop the summary call forever: after this many
+ * rejections, compaction is aborted and the turn continues with the full
+ * context (mirroring the empty-summary path).
+ */
+export const MAX_COMPACTION_TOOLCALL_REJECTIONS = 3
+
+/**
+ * Minimum length for a summary to be allowed to replace the whole
+ * conversation context. A one-line non-summary ("OK") must never wipe a
+ * 130k-token context — below this floor the summary is treated as empty
+ * and the full context is kept.
+ */
+export const MIN_COMPACTION_SUMMARY_LENGTH = 50
+
+/**
  * Wire size of a message: content + thinking. convertMessages re-echoes prior
  * thinkingContent into the request (gated by sendReasoningInMessages, NOT by
  * the summary call's reasoningEffort:'none), so the fitted input must count

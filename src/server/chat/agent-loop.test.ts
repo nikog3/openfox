@@ -446,9 +446,14 @@ describe('runTopLevelAgentLoop compaction', () => {
     ;(getEnabledSkillMetadata as any).mockResolvedValue([])
 
     ;(consumeStreamGenerator as any).mockResolvedValue({
-      content: 'compaction summary',
+      content: 'A compaction summary of the whole conversation so far, with the key decisions and file changes.',
       toolCalls: [],
-      segments: [{ type: 'text', content: 'compaction summary' }],
+      segments: [
+        {
+          type: 'text',
+          content: 'A compaction summary of the whole conversation so far, with the key decisions and file changes.',
+        },
+      ],
       usage: { promptTokens: 10, completionTokens: 5 },
       timing: { ttft: 0.1, completionTime: 0.5, tps: 10, prefillTps: 100 },
       aborted: false,
@@ -2121,9 +2126,14 @@ describe('compaction under context overflow', () => {
 
     // Default: a complete summary, no truncation.
     ;(consumeStreamGenerator as any).mockResolvedValue({
-      content: 'compaction summary',
+      content: 'A compaction summary of the whole conversation so far, with the key decisions and file changes.',
       toolCalls: [],
-      segments: [{ type: 'text', content: 'compaction summary' }],
+      segments: [
+        {
+          type: 'text',
+          content: 'A compaction summary of the whole conversation so far, with the key decisions and file changes.',
+        },
+      ],
       usage: { promptTokens: 10, completionTokens: 5 },
       timing: { ttft: 0.1, completionTime: 0.5, tps: 10, prefillTps: 100 },
       aborted: false,
