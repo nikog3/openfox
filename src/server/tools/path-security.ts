@@ -852,6 +852,62 @@ function maskHeredocs(command: string): string {
 }
 
 /**
+ * Mask the quoted message bodies of every `git commit` in the command: all
+ * `-m`/`-am`/`--message` arguments, not just the first one. A segment runs
+ * from `git commit` to the next unquoted shell operator (or newline), so file
+ * operands of chained commands (`git commit -m "a" && cat /etc/passwd`) stay
+ * visible to path extraction.
+ */
+function maskGitCommitMessages(command: string): string {
+  const spans: Array<[number, number]> = []
+  const commitRe = /\bgit\s+commit\b/g
+  let lastEnd = -1
+  let m: RegExpExecArray | null
+  while ((m = commitRe.exec(command)) !== null) {
+    if (m.index < lastEnd) continue
+    let i = m.index + m[0].length
+    let quote: "'" | '"' | '`' | null = null
+    let end = command.length
+    while (i < command.length) {
+      const ch = command[i]!
+      if (quote !== null) {
+        if (ch === quote) quote = null
+        i += 1
+        continue
+      }
+      if (ch === "'" || ch === '"' || ch === '`') {
+        quote = ch
+        i += 1
+        continue
+      }
+      if (/[|&;()]/.test(ch) || ch === '\n' || ch === '\r') {
+        end = i
+        break
+      }
+      i += 1
+    }
+    spans.push([m.index, end])
+    lastEnd = end
+  }
+  if (spans.length === 0) return command
+
+  let out = command
+  for (const [start, end] of spans.sort((a, b) => b[0] - a[0])) {
+    const masked = command
+      .slice(start, end)
+      .replace(
+        /(^|\s)(-[a-zA-Z]*m|--message)(\s+)(["'])(?:(?!\4)[\s\S])*\4/g,
+        (full, pre: string, flag: string, space: string, quote: string) => {
+          const body = full.slice(pre.length + flag.length + space.length + 1, full.length - 1)
+          return `${pre}${flag}${space}${quote}${body.replace(/\/[^\s"'|&;<>`()]+/g, ' __COMMIT_MSG__ ')}${quote}`
+        },
+      )
+    out = out.slice(0, start) + masked + out.slice(end)
+  }
+  return out
+}
+
+/**
  * Mask non-path content in a shell command so path extraction ignores it:
  * heredoc bodies, URL schemes, sed substitution patterns, sed/awk/perl/ruby
  * regex addresses, and git commit -m/--message bodies (which may contain
@@ -882,13 +938,10 @@ function maskCommandForPathScan(command: string): string {
 
   sanitized = maskRegexAddresses(sanitized)
 
-  // Strip git commit -m/--message content to avoid treating commit message
-  // text as file paths (e.g. "/api/auto-update" in a commit message).
-  // The message argument is a quoted string that should not be scanned for paths.
-  sanitized = sanitized.replace(
-    /git\s+commit\b.*?(?:-(?:[a-zA-Z]*m)(?=\s)|--message)\s+(["'])(?:(?!\1).)*\1/g,
-    (match) => match.replace(/\/[^\s"'|&;<>`()]+/g, ' __COMMIT_MSG__ '),
-  )
+  // Strip git commit -m/--message content (every message argument, not just
+  // the first) to avoid treating commit message text as file paths (e.g.
+  // "/api/auto-update" in a commit message).
+  sanitized = maskGitCommitMessages(sanitized)
 
   return sanitized
 }

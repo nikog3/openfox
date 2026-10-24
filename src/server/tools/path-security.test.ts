@@ -609,6 +609,26 @@ describe('path-security', () => {
         expect(paths).not.toContain('/version/file')
       })
 
+      it('excludes paths in every -m message of a multi-message git commit', () => {
+        const paths = extractAbsolutePathsFromCommand(
+          'git commit -m "refactor(git): make git panel read-only" -m "Remove stage/unstage. The /api/git/diff endpoint remains."',
+        )
+        expect(paths).toEqual([])
+      })
+
+      it('excludes paths in a --message following a -m', () => {
+        const paths = extractAbsolutePathsFromCommand(
+          'git commit -m "subject /a/b" --message "body: /api/git/diff remains"',
+        )
+        expect(paths).toEqual([])
+      })
+
+      it('still detects real paths in a command chained after git commit', () => {
+        const paths = extractAbsolutePathsFromCommand('git commit -m "a /api/x" && cat /etc/passwd')
+        expect(paths).toContain('/etc/passwd')
+        expect(paths).not.toContain('/api/x')
+      })
+
       it('still extracts real paths from git commands outside -m', () => {
         const paths = extractAbsolutePathsFromCommand('git add /etc/passwd && git commit -m "add config"')
         expect(paths).toContain('/etc/passwd')
