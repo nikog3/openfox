@@ -135,7 +135,7 @@ async function countFileLines(absPath: string): Promise<number> {
 
 async function nativeGetGitDiffFiles(cwd: string): Promise<GitDiffFile[]> {
   const [statusOut, stagedOut, unstagedOut] = await Promise.all([
-    gitOutput(cwd, ['status', '--porcelain', '--ignore-submodules=none']),
+    gitOutput(cwd, ['status', '--porcelain', '-uall', '--ignore-submodules=none']),
     gitOutput(cwd, ['diff', '--numstat', '--cached', '--ignore-submodules=none']),
     gitOutput(cwd, ['diff', '--numstat', '--ignore-submodules=none']),
   ])

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getGitDiffFiles, formatGitDiffFiles, getGitBranch, getGitSyncInfo, getGitFileDiff } from './diff.js'
@@ -164,6 +164,48 @@ describe('getGitDiffFiles', () => {
       const files = await getGitDiffFiles(dir)
 
       expect(files[0]?.additions).toBe(2)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('expands untracked directories into individual files via -uall', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'openfox-git-diff-'))
+    try {
+      await mkdir(join(dir, 'src/bench'), { recursive: true })
+      await writeFile(join(dir, 'src/bench/a.ts'), 'line1\nline2\n', 'utf8')
+      await writeFile(join(dir, 'src/bench/b.ts'), 'x\n', 'utf8')
+      mockGitByArgs((args) => {
+        if (args[0] === 'status') {
+          expect(args).toContain('-uall')
+          return { stdout: '?? src/bench/a.ts\n?? src/bench/b.ts\n' }
+        }
+        return {}
+      })
+
+      const files = await getGitDiffFiles(dir)
+
+      expect(files).toEqual([
+        {
+          path: 'src/bench/a.ts',
+          status: 'added',
+          staged: false,
+          unstaged: false,
+          untracked: true,
+          additions: 2,
+          deletions: 0,
+        },
+        {
+          path: 'src/bench/b.ts',
+          status: 'added',
+          staged: false,
+          unstaged: false,
+          untracked: true,
+          additions: 1,
+          deletions: 0,
+        },
+      ])
+      expect(files.some((f) => f.path.endsWith('/'))).toBe(false)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
