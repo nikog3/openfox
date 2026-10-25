@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import '@testing-library/jest-dom/vitest'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { cleanup, render, screen, fireEvent } from '@testing-library/react'
+import { cleanup, render, screen, fireEvent, within } from '@testing-library/react'
 import type { Mock } from 'vitest'
 import { DiffModal } from './DiffModal'
 import type { ReactNode } from 'react'
@@ -13,6 +13,8 @@ import type { GitDiffFile } from '../../stores/session/types'
 
 const mockUseResourceWhen = vi.fn() as Mock
 const mockWriteText = vi.fn(async () => {})
+const mockAuthFetch = vi.fn() as Mock
+const mockRefreshDiff = vi.fn(() => Promise.resolve(undefined)) as Mock
 
 const DIFF = [
   '--- a/src/a.ts',
@@ -31,11 +33,13 @@ vi.mock('../shared/Modal', () => ({
     isOpen,
     title,
     headerRight,
+    footer,
     children,
   }: {
     isOpen: boolean
     title: ReactNode
     headerRight?: ReactNode
+    footer?: ReactNode
     children: ReactNode
   }) =>
     isOpen ? (
@@ -43,6 +47,7 @@ vi.mock('../shared/Modal', () => ({
         <div data-testid="modal-title">{title}</div>
         {headerRight}
         {children}
+        {footer}
       </div>
     ) : null,
 }))
@@ -52,7 +57,11 @@ vi.mock('../../hooks/useResource', () => ({
 }))
 
 vi.mock('../../lib/resources', () => ({
-  gitFileDiffResource: { keyOf: () => 'git-file-diff' },
+  gitFileDiffResource: { keyOf: () => 'git-file-diff', refresh: (...args: unknown[]) => mockRefreshDiff(...args) },
+}))
+
+vi.mock('../../lib/api', () => ({
+  authFetch: (...args: unknown[]) => mockAuthFetch(...args),
 }))
 
 vi.mock('../../lib/syntax-highlighter', () => ({
@@ -77,6 +86,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.stubGlobal('navigator', { clipboard: { writeText: mockWriteText } })
   mockUseResourceWhen.mockReturnValue({ data: { diff: DIFF }, loading: false, error: undefined })
+  mockAuthFetch.mockResolvedValue({ ok: true, json: async () => ({}) })
+  mockRefreshDiff.mockResolvedValue({ diff: '' })
 })
 
 afterEach(() => {
@@ -238,5 +249,58 @@ describe('DiffModal — file list', () => {
     )
     expect(container.querySelector('[data-file="src/a.ts"] .text-accent-success')).toHaveTextContent('+10')
     expect(container.querySelector('[data-file="src/a.ts"] .text-accent-error')).toHaveTextContent('-2')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Reset                                                             */
+/* ------------------------------------------------------------------ */
+
+describe('DiffModal — reset', () => {
+  it('renders the reset button in the toolbar', () => {
+    renderModal()
+    expect(screen.getByLabelText('Reset all changes')).toBeInTheDocument()
+  })
+
+  it('opens a confirmation dialog warning that everything is reset', () => {
+    renderModal()
+    fireEvent.click(screen.getByLabelText('Reset all changes'))
+    expect(screen.getAllByTestId('modal')).toHaveLength(2)
+    expect(screen.getByText('Reset all changes?')).toBeInTheDocument()
+    expect(screen.getByText(/All changes in the repository will be discarded/)).toBeInTheDocument()
+    expect(screen.getByText(/untracked files are deleted/)).toBeInTheDocument()
+  })
+
+  it('posts to /api/git/restore without a path and closes the modal on confirm', async () => {
+    const onClose = vi.fn()
+    render(<DiffModal workdir="/tmp/proj" path="src/a.ts" staged={false} isOpen onClose={onClose} />)
+    fireEvent.click(screen.getByLabelText('Reset all changes'))
+    const confirmDialog = screen.getAllByTestId('modal')[1]!
+    fireEvent.click(within(confirmDialog).getByText('Reset all'))
+    await vi.waitFor(() => {
+      expect(mockAuthFetch).toHaveBeenCalledWith(
+        '/api/git/restore',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ workdir: '/tmp/proj' }),
+        }),
+      )
+    })
+    await vi.waitFor(() => {
+      expect(onClose).toHaveBeenCalled()
+    })
+  })
+
+  it('shows the server error message when the restore request fails', async () => {
+    mockAuthFetch.mockResolvedValue({ ok: false, json: async () => ({ error: 'git clean failed' }) })
+    const onClose = vi.fn()
+    render(<DiffModal workdir="/tmp/proj" path="src/a.ts" staged={false} isOpen onClose={onClose} />)
+    fireEvent.click(screen.getByLabelText('Reset all changes'))
+    const confirmDialog = screen.getAllByTestId('modal')[1]!
+    fireEvent.click(within(confirmDialog).getByText('Reset all'))
+    await vi.waitFor(() => {
+      expect(screen.getByText('git clean failed')).toBeInTheDocument()
+    })
+    expect(onClose).not.toHaveBeenCalled()
   })
 })

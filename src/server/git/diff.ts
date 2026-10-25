@@ -36,16 +36,7 @@ export function gitOutput(cwd: string, args: string[]): Promise<string> {
 }
 
 function gitExitCode(cwd: string, args: string[]): Promise<number> {
-  return new Promise((resolve) => {
-    const proc = spawn('git', args, {
-      cwd,
-      env: gitSpawnEnv(),
-      stdio: ['ignore', 'ignore', 'ignore'],
-      windowsHide: true,
-    })
-    proc.on('close', (code) => resolve(code ?? 1))
-    proc.on('error', () => resolve(1))
-  })
+  return gitRun(cwd, args).then((r) => r.code)
 }
 
 function parsePorcelainLine(line: string): { x: string; y: string; path: string } | null {
@@ -279,4 +270,52 @@ export async function getGitFileDiff(cwd: string, path: string, staged = false):
   }
 
   return gitOutput(cwd, staged ? ['diff', '--cached', '--', path] : ['diff', '--', path])
+}
+
+function gitRun(cwd: string, args: string[]): Promise<{ code: number; stderr: string }> {
+  return new Promise((resolve) => {
+    const proc = spawn('git', args, {
+      cwd,
+      env: gitSpawnEnv(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+    let stderr = ''
+    proc.stderr?.on('data', (d: Buffer) => {
+      stderr += d.toString()
+    })
+    proc.on('close', (code) => resolve({ code: code ?? 1, stderr }))
+    proc.on('error', (err) => resolve({ code: 1, stderr: err.message }))
+  })
+}
+
+/**
+ * Restores a single file to its HEAD state. Tracked files get unstaged and
+ * their worktree changes discarded; untracked files are deleted. Throws with
+ * the git error message on failure.
+ */
+export async function restoreGitFile(cwd: string, path: string): Promise<void> {
+  if (resolveSafePath(cwd, path) === null) {
+    throw new Error(`Invalid path: ${path}`)
+  }
+  const inIndex = await gitExitCode(cwd, ['ls-files', '--error-unmatch', '--', path])
+  if (inIndex === 0) {
+    const { code, stderr } = await gitRun(cwd, ['restore', '--source=HEAD', '--staged', '--worktree', '--', path])
+    if (code !== 0) throw new Error(stderr.trim() || `git restore failed for ${path}`)
+  } else {
+    const { code, stderr } = await gitRun(cwd, ['clean', '-f', '--', path])
+    if (code !== 0) throw new Error(stderr.trim() || `git clean failed for ${path}`)
+  }
+}
+
+/**
+ * Resets the entire working tree to HEAD: discards all staged and unstaged
+ * changes to tracked files and deletes all untracked files/directories.
+ * Throws with the git error message on failure.
+ */
+export async function restoreGitAll(cwd: string): Promise<void> {
+  const reset = await gitRun(cwd, ['reset', '--hard', 'HEAD'])
+  if (reset.code !== 0) throw new Error(reset.stderr.trim() || 'git reset --hard failed')
+  const clean = await gitRun(cwd, ['clean', '-fd'])
+  if (clean.code !== 0) throw new Error(clean.stderr.trim() || 'git clean failed')
 }

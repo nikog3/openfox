@@ -811,6 +811,30 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
     }
   })
 
+  /**
+   * Restore files to their HEAD state. With a `path` it restores that single
+   * file (unstage + discard, or delete untracked); without one it resets the
+   * entire working tree (all changes discarded, untracked files deleted).
+   */
+  app.post('/api/git/restore', async (req, res) => {
+    const workdir = typeof req.body?.workdir === 'string' ? req.body.workdir : ''
+    if (!workdir) return res.status(400).json({ error: 'workdir is required' })
+    const path = typeof req.body?.path === 'string' ? req.body.path : ''
+    const { isGitRepository } = await import('./git/workspace.js')
+    if (!(await isGitRepository(workdir))) {
+      return res.status(400).json({ error: 'Not a git repository' })
+    }
+    const { restoreGitAll, restoreGitFile } = await import('./git/diff.js')
+    try {
+      if (path) await restoreGitFile(workdir, path)
+      else await restoreGitAll(workdir)
+      void wssExports.refreshGitStatus(workdir)
+      res.json({ ok: true })
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to restore' })
+    }
+  })
+
   /** List existing workspaces for a project (excluding the main repo) */
   app.get('/api/projects/:id/workspaces', async (req, res) => {
     const { getProject } = await import('./db/projects.js')

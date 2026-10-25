@@ -2,7 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { getGitDiffFiles, formatGitDiffFiles, getGitBranch, getGitSyncInfo, getGitFileDiff } from './diff.js'
+import {
+  getGitDiffFiles,
+  formatGitDiffFiles,
+  getGitBranch,
+  getGitSyncInfo,
+  getGitFileDiff,
+  restoreGitFile,
+  restoreGitAll,
+} from './diff.js'
 import { setPluginVcsProviders, clearPluginVcsProviders } from '../plugins/vcs-providers.js'
 import type { PluginVcsProvider } from '../../plugin/index.js'
 
@@ -376,5 +384,94 @@ describe('getGitFileDiff', () => {
   it('rejects paths that escape the workdir', async () => {
     await expect(getGitFileDiff('/tmp/project', '../outside.txt')).rejects.toThrow('Invalid path')
     expect(vi.mocked(spawn)).not.toHaveBeenCalled()
+  })
+})
+
+describe('restoreGitFile', () => {
+  it('restores tracked files from HEAD (staged + worktree)', async () => {
+    const calls: string[][] = []
+    mockGitByArgs((args) => {
+      calls.push(args)
+      return {}
+    })
+
+    await restoreGitFile('/tmp/project', 'src/a.ts')
+
+    expect(calls).toEqual([
+      ['ls-files', '--error-unmatch', '--', 'src/a.ts'],
+      ['restore', '--source=HEAD', '--staged', '--worktree', '--', 'src/a.ts'],
+    ])
+  })
+
+  it('deletes untracked files with git clean', async () => {
+    const calls: string[][] = []
+    mockGitByArgs((args) => {
+      calls.push(args)
+      if (args[0] === 'ls-files') return { code: 1 }
+      return {}
+    })
+
+    await restoreGitFile('/tmp/project', 'new.txt')
+
+    expect(calls).toContainEqual(['clean', '-f', '--', 'new.txt'])
+  })
+
+  it('throws with the fallback message when git restore fails', async () => {
+    mockGitByArgs((args) => {
+      if (args[0] === 'restore') return { code: 1 }
+      return {}
+    })
+
+    await expect(restoreGitFile('/tmp/project', 'src/a.ts')).rejects.toThrow('git restore failed for src/a.ts')
+  })
+
+  it('throws with the fallback message when git clean fails', async () => {
+    mockGitByArgs((args) => {
+      if (args[0] === 'ls-files') return { code: 1 }
+      if (args[0] === 'clean') return { code: 1 }
+      return {}
+    })
+
+    await expect(restoreGitFile('/tmp/project', 'new.txt')).rejects.toThrow('git clean failed for new.txt')
+  })
+
+  it('rejects paths that escape the workdir', async () => {
+    await expect(restoreGitFile('/tmp/project', '../outside.txt')).rejects.toThrow('Invalid path')
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled()
+  })
+})
+
+describe('restoreGitAll', () => {
+  it('resets the working tree hard and cleans untracked files', async () => {
+    const calls: string[][] = []
+    mockGitByArgs((args) => {
+      calls.push(args)
+      return {}
+    })
+
+    await restoreGitAll('/tmp/project')
+
+    expect(calls).toEqual([
+      ['reset', '--hard', 'HEAD'],
+      ['clean', '-fd'],
+    ])
+  })
+
+  it('throws when git reset --hard fails', async () => {
+    mockGitByArgs((args) => {
+      if (args[0] === 'reset') return { code: 1 }
+      return {}
+    })
+
+    await expect(restoreGitAll('/tmp/project')).rejects.toThrow('git reset --hard failed')
+  })
+
+  it('throws when git clean fails after a successful reset', async () => {
+    mockGitByArgs((args) => {
+      if (args[0] === 'clean') return { code: 1 }
+      return {}
+    })
+
+    await expect(restoreGitAll('/tmp/project')).rejects.toThrow('git clean failed')
   })
 })

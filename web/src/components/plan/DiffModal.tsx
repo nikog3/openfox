@@ -1,10 +1,20 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Modal } from '../shared/Modal'
+import { ConfirmModal } from '../shared/ConfirmModal'
 import { Spinner } from '../shared/Spinner'
-import { CheckIcon, ChevronDownIcon, ChevronUpIcon, ColumnsIcon, CopyIcon, MinusIcon } from '../shared/icons'
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  ColumnsIcon,
+  CopyIcon,
+  MinusIcon,
+  ReloadIcon,
+} from '../shared/icons'
 import { useT } from '../../hooks/useT'
 import { useResourceWhen } from '../../hooks/useResource'
 import { gitFileDiffResource } from '../../lib/resources'
+import { authFetch } from '../../lib/api'
 import { getLanguageFromPath, highlightCode, useShikiTheme } from '../../lib/syntax-highlighter'
 import { truncateMiddle } from '../../lib/path'
 import {
@@ -88,6 +98,9 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
   const [newLines, setNewLines] = useState<string[] | null>(null)
   const [activePath, setActivePath] = useState(path)
   const [activeStaged, setActiveStaged] = useState(staged)
+  const [confirmReset, setConfirmReset] = useState(false)
+  const [resetting, setResetting] = useState(false)
+  const [resetError, setResetError] = useState<string | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
 
   const { data, loading, error } = useResourceWhen(isOpen, gitFileDiffResource, workdir, activePath, activeStaged)
@@ -105,7 +118,31 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
   useEffect(() => {
     setActiveGroup(-1)
     setCopied(false)
+    setResetError(null)
   }, [activePath, activeStaged, isOpen])
+
+  const handleResetConfirm = async () => {
+    setConfirmReset(false)
+    setResetError(null)
+    setResetting(true)
+    try {
+      const res = await authFetch('/api/git/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workdir }),
+      })
+      if (!res.ok) {
+        const err = (await res.json().catch(() => null)) as { error?: string } | null
+        setResetError(err?.error ?? t({ en: 'Failed to reset changes', fr: 'Échec de la réinitialisation' }))
+        return
+      }
+      onClose()
+    } catch {
+      setResetError(t({ en: 'Failed to reset changes', fr: 'Échec de la réinitialisation' }))
+    } finally {
+      setResetting(false)
+    }
+  }
 
   useEffect(() => {
     if (!isOpen || splitRows.length === 0) {
@@ -327,6 +364,18 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
         </div>
       )}
       <button
+        onClick={() => {
+          setResetError(null)
+          setConfirmReset(true)
+        }}
+        disabled={resetting}
+        className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-border text-text-muted hover:text-accent-error hover:border-accent-error/40 hover:bg-bg-tertiary transition-colors disabled:opacity-50"
+        aria-label={t({ en: 'Reset all changes', fr: 'Tout réinitialiser' })}
+      >
+        <ReloadIcon className="w-3.5 h-3.5" />
+        {t({ en: 'Reset', fr: 'Réinitialiser' })}
+      </button>
+      <button
         onClick={() => void copyDiff()}
         className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-border text-text-muted hover:text-text-secondary hover:bg-bg-tertiary transition-colors"
         aria-label={t({ en: 'Copy diff', fr: 'Copier le diff' })}
@@ -359,6 +408,11 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
 
   const body = (
     <div className="flex flex-col h-[60vh]">
+      {resetError && (
+        <div className="mb-2 text-xs text-accent-error bg-accent-error/10 border border-accent-error/30 rounded px-2 py-1">
+          {resetError}
+        </div>
+      )}
       <div className="flex flex-1 min-h-0">
         {groupedFiles && (
           <div className="w-56 shrink-0 border-r border-border flex flex-col min-h-0">
@@ -393,14 +447,29 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
   )
 
   return (
-    <Modal
-      isOpen={isOpen}
-      onClose={onClose}
-      title={<span className="font-mono text-base">{activePath}</span>}
-      size={groupedFiles ? '2xl' : 'xl'}
-      headerRight={toolbar}
-    >
-      {body}
-    </Modal>
+    <>
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title={<span className="font-mono text-base">{activePath}</span>}
+        size={groupedFiles ? '2xl' : 'xl'}
+        headerRight={toolbar}
+      >
+        {body}
+      </Modal>
+      <ConfirmModal
+        isOpen={confirmReset}
+        onClose={() => setConfirmReset(false)}
+        onConfirm={() => void handleResetConfirm()}
+        title={t({ en: 'Reset all changes?', fr: 'Tout réinitialiser ?' })}
+        message={t({
+          en: 'All changes in the repository will be discarded: staged and unstaged changes are reset to the last commit, and untracked files are deleted. This cannot be undone.',
+          fr: 'Toutes les modifications du dépôt seront annulées : les changements staged et unstaged sont réinitialisés au dernier commit, et les fichiers non suivis sont supprimés. Cette action est irréversible.',
+        })}
+        confirmLabel={t({ en: 'Reset all', fr: 'Tout réinitialiser' })}
+        confirmVariant="danger"
+        disabled={resetting}
+      />
+    </>
   )
 }
