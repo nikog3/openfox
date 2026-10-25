@@ -79,8 +79,9 @@ async function fetchModelsFromBackend(
  * /v1/models never reports max_model_len, so the standard fetch falls back to
  * the conservative default — which under-budgets a large server. The /slots
  * endpoint reports each live slot's n_ctx; the minimum is the tightest real
- * limit. Falls back to /props main_gpu.context_size (total, pre-split) when
- * /slots is unavailable, and to undefined when neither works.
+ * limit. Falls back to /props default_generation_settings.n_ctx (older builds
+ * exposed main_gpu.context_size) when /slots is unavailable, and to undefined
+ * when neither works.
  */
 async function fetchLlamaCppSlotContext(baseUrl: string): Promise<number | undefined> {
   const base = baseUrl.replace(/\/v\d+\/?$/, '').replace(/\/+$/, '')
@@ -97,8 +98,11 @@ async function fetchLlamaCppSlotContext(baseUrl: string): Promise<number | undef
   try {
     const res = await fetch(`${base}/props`, { signal: AbortSignal.timeout(5000) })
     if (res.ok) {
-      const data = (await res.json()) as { main_gpu?: { context_size?: number } }
-      const ctx = data.main_gpu?.context_size
+      const data = (await res.json()) as {
+        default_generation_settings?: { n_ctx?: number }
+        main_gpu?: { context_size?: number }
+      }
+      const ctx = data.default_generation_settings?.n_ctx ?? data.main_gpu?.context_size
       if (typeof ctx === 'number' && ctx > 0) return ctx
     }
   } catch (error) {
@@ -224,11 +228,13 @@ function mergeModelsWithUserOverrides(
       // catalog's display name wins. Any other stored name is kept verbatim.
       const name = storedName !== undefined && storedName !== existingUserModel.id ? storedName : backendModel.name
       // A stored context window equal to the legacy hardcoded placeholder means
-      // "unknown", not a deliberate cap — let the catalog update it. The cascade
-      // keeps the user override supreme (detection never raises it) while letting
-      // a smaller detected window lower it (min downward), so a stale/too-large
-      // override can't blind the token budget to the model's real limit.
-      const windowResolution = resolveContextWindow(existingUserModel.contextWindow, backendModel.contextWindow)
+      // "unknown", not a deliberate cap — let the catalog update it. Only a
+      // genuinely detected window participates in the cascade: a model with
+      // source 'default' carries the conservative fallback (32k), not a real
+      // measurement, so feeding it in would silently clobber a larger override
+      // whenever detection is unavailable (e.g. llama.cpp still warming up).
+      const detectedWindow = backendModel.source === 'backend' ? backendModel.contextWindow : undefined
+      const windowResolution = resolveContextWindow(existingUserModel.contextWindow, detectedWindow)
       if (windowResolution.loweredToDetected) {
         logger.warn('User context-window override lowered to the detected backend window', {
           model: backendModel.id,

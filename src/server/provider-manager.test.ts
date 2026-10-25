@@ -767,6 +767,96 @@ describe('ProviderManager - Model Selection', () => {
       expect(modelA?.source).toBe('user')
     })
 
+    it('keeps a larger user override when the backend only reports its conservative default', async () => {
+      await providerManager.updateModelContext('provider-1', 'model-a', 150000)
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [{ id: 'model-a' }] }),
+      })
+
+      await providerManager.refreshProviderModels('provider-1')
+
+      const models = providerManager.getProviders().find((p) => p.id === 'provider-1')?.models
+      const modelA = models?.find((m) => m.id === 'model-a')
+      expect(modelA?.contextWindow).toBe(150000)
+      expect(modelA?.source).toBe('user')
+    })
+
+    it('lowers a larger user override to a genuinely detected backend window', async () => {
+      await providerManager.updateModelContext('provider-1', 'model-a', 150000)
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [{ id: 'model-a', max_model_len: 100000 }] }),
+      })
+
+      await providerManager.refreshProviderModels('provider-1')
+
+      const models = providerManager.getProviders().find((p) => p.id === 'provider-1')?.models
+      const modelA = models?.find((m) => m.id === 'model-a')
+      expect(modelA?.contextWindow).toBe(100000)
+    })
+
+    it('uses /props default_generation_settings.n_ctx when /slots is unavailable', async () => {
+      const llamaConfig: Config = {
+        ...config,
+        providers: [
+          {
+            id: 'llama',
+            name: 'Llama.cpp',
+            url: 'http://localhost:8080/v1',
+            backend: 'llamacpp',
+            models: [],
+            isActive: true,
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      }
+      const manager = createProviderManager(llamaConfig)
+
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ id: 'swift-27b' }] }) })
+        .mockResolvedValueOnce({ ok: false, json: async () => ({}) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ default_generation_settings: { n_ctx: 150016 } }) })
+
+      const result = await manager.refreshProviderModels('llama')
+
+      expect(result).toEqual({ success: true })
+      const model = manager.getProviders()[0]!.models.find((m) => m.id === 'swift-27b')
+      expect(model?.contextWindow).toBe(150016)
+      expect(model?.source).toBe('backend')
+    })
+
+    it('keeps a larger llama.cpp user override when /slots and /props are unavailable', async () => {
+      const llamaConfig: Config = {
+        ...config,
+        providers: [
+          {
+            id: 'llama',
+            name: 'Llama.cpp',
+            url: 'http://localhost:8080/v1',
+            backend: 'llamacpp',
+            models: [{ id: 'swift-27b', contextWindow: 150016, source: 'user' }],
+            isActive: true,
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      }
+      const manager = createProviderManager(llamaConfig)
+
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ id: 'swift-27b' }] }) })
+        .mockResolvedValueOnce({ ok: false, json: async () => ({}) })
+        .mockResolvedValueOnce({ ok: false, json: async () => ({}) })
+
+      await manager.refreshProviderModels('llama')
+
+      const model = manager.getProviders()[0]!.models.find((m) => m.id === 'swift-27b')
+      expect(model?.contextWindow).toBe(150016)
+      expect(model?.source).toBe('user')
+    })
+
     it('hides catalog variants claimed by a merged mode-chip user model', async () => {
       // Simulate a user who merged three suffixed catalog variants into a
       // single mode-chip model. On refresh, the raw catalog (still exposing the
