@@ -304,3 +304,66 @@ describe('DiffModal — reset', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 })
+
+/* ------------------------------------------------------------------ */
+/*  File revert                                                       */
+/* ------------------------------------------------------------------ */
+
+describe('DiffModal — file revert', () => {
+  it('renders the revert button in the toolbar', () => {
+    renderModal()
+    expect(screen.getByLabelText('Revert file')).toBeInTheDocument()
+  })
+
+  it('opens a confirmation dialog naming the file', () => {
+    renderModal()
+    fireEvent.click(screen.getByLabelText('Revert file'))
+    expect(screen.getAllByTestId('modal')).toHaveLength(2)
+    expect(screen.getByText('Revert file?')).toBeInTheDocument()
+    expect(screen.getByText(/All changes to src\/a\.ts will be discarded/)).toBeInTheDocument()
+  })
+
+  it('posts to /api/git/restore with the path and refreshes the diff on confirm', async () => {
+    const onClose = vi.fn()
+    render(<DiffModal workdir="/tmp/proj" path="src/a.ts" staged={false} isOpen onClose={onClose} />)
+    fireEvent.click(screen.getByLabelText('Revert file'))
+    const confirmDialog = screen.getAllByTestId('modal')[1]!
+    fireEvent.click(within(confirmDialog).getByText('Revert'))
+    await vi.waitFor(() => {
+      expect(mockAuthFetch).toHaveBeenCalledWith(
+        '/api/git/restore',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ workdir: '/tmp/proj', path: 'src/a.ts' }),
+        }),
+      )
+    })
+    expect(mockRefreshDiff).toHaveBeenCalledWith('/tmp/proj', 'src/a.ts', false)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('closes the modal when the post-revert diff refresh fails (untracked file deleted)', async () => {
+    mockRefreshDiff.mockResolvedValue(undefined)
+    const onClose = vi.fn()
+    render(<DiffModal workdir="/tmp/proj" path="src/a.ts" staged={false} isOpen onClose={onClose} />)
+    fireEvent.click(screen.getByLabelText('Revert file'))
+    const confirmDialog = screen.getAllByTestId('modal')[1]!
+    fireEvent.click(within(confirmDialog).getByText('Revert'))
+    await vi.waitFor(() => {
+      expect(onClose).toHaveBeenCalled()
+    })
+  })
+
+  it('shows the server error message when the revert request fails', async () => {
+    mockAuthFetch.mockResolvedValue({ ok: false, json: async () => ({ error: 'git restore failed' }) })
+    const onClose = vi.fn()
+    render(<DiffModal workdir="/tmp/proj" path="src/a.ts" staged={false} isOpen onClose={onClose} />)
+    fireEvent.click(screen.getByLabelText('Revert file'))
+    const confirmDialog = screen.getAllByTestId('modal')[1]!
+    fireEvent.click(within(confirmDialog).getByText('Revert'))
+    await vi.waitFor(() => {
+      expect(screen.getByText('git restore failed')).toBeInTheDocument()
+    })
+    expect(onClose).not.toHaveBeenCalled()
+  })
+})

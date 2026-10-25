@@ -99,6 +99,7 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
   const [activePath, setActivePath] = useState(path)
   const [activeStaged, setActiveStaged] = useState(staged)
   const [confirmReset, setConfirmReset] = useState(false)
+  const [confirmRevert, setConfirmRevert] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [resetError, setResetError] = useState<string | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -139,6 +140,30 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
       onClose()
     } catch {
       setResetError(t({ en: 'Failed to reset changes', fr: 'Échec de la réinitialisation' }))
+    } finally {
+      setResetting(false)
+    }
+  }
+
+  const handleRevertConfirm = async () => {
+    setConfirmRevert(false)
+    setResetError(null)
+    setResetting(true)
+    try {
+      const res = await authFetch('/api/git/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workdir, path: activePath }),
+      })
+      if (!res.ok) {
+        const err = (await res.json().catch(() => null)) as { error?: string } | null
+        setResetError(err?.error ?? t({ en: 'Failed to revert file', fr: 'Échec de la réinitialisation du fichier' }))
+        return
+      }
+      const data = await gitFileDiffResource.refresh(workdir, activePath, activeStaged)
+      if (data === undefined) onClose()
+    } catch {
+      setResetError(t({ en: 'Failed to revert file', fr: 'Échec de la réinitialisation du fichier' }))
     } finally {
       setResetting(false)
     }
@@ -366,6 +391,18 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
       <button
         onClick={() => {
           setResetError(null)
+          setConfirmRevert(true)
+        }}
+        disabled={resetting}
+        className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-border text-text-muted hover:text-accent-error hover:border-accent-error/40 hover:bg-bg-tertiary transition-colors disabled:opacity-50"
+        aria-label={t({ en: 'Revert file', fr: 'Réinitialiser le fichier' })}
+      >
+        <ReloadIcon className="w-3.5 h-3.5" />
+        {t({ en: 'Revert', fr: 'Réinitialiser' })}
+      </button>
+      <button
+        onClick={() => {
+          setResetError(null)
           setConfirmReset(true)
         }}
         disabled={resetting}
@@ -373,7 +410,7 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
         aria-label={t({ en: 'Reset all changes', fr: 'Tout réinitialiser' })}
       >
         <ReloadIcon className="w-3.5 h-3.5" />
-        {t({ en: 'Reset', fr: 'Réinitialiser' })}
+        {t({ en: 'Reset all', fr: 'Tout réinitialiser' })}
       </button>
       <button
         onClick={() => void copyDiff()}
@@ -457,6 +494,19 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
       >
         {body}
       </Modal>
+      <ConfirmModal
+        isOpen={confirmRevert}
+        onClose={() => setConfirmRevert(false)}
+        onConfirm={() => void handleRevertConfirm()}
+        title={t({ en: 'Revert file?', fr: 'Réinitialiser le fichier ?' })}
+        message={t({
+          en: `All changes to ${activePath} will be discarded and the file restored to the last commit. Untracked files will be deleted. This cannot be undone.`,
+          fr: `Toutes les modifications de ${activePath} seront annulées et le fichier restauré à la version du dernier commit. Les fichiers non suivis seront supprimés. Cette action est irréversible.`,
+        })}
+        confirmLabel={t({ en: 'Revert', fr: 'Réinitialiser' })}
+        confirmVariant="danger"
+        disabled={resetting}
+      />
       <ConfirmModal
         isOpen={confirmReset}
         onClose={() => setConfirmReset(false)}
