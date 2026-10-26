@@ -53,10 +53,25 @@ export interface LLMClientWithModel extends LLMClient {
   getProfile(): ModelProfile
   getBackend(): Backend
   setBackend(backend: Backend): void
+  /** The server base URL (with version prefix, e.g. http://host:8080/v1). */
+  getBaseUrl(): string
   /** True when the active model is routed to the OpenAI Responses API. */
   usesResponsesApi?(): boolean
   /** The reasoning effort this client was created with (if any). */
   getReasoningEffort?(): string | undefined
+}
+
+/**
+ * The server URL for live prefill progress, when the client's backend exposes
+ * it (llama.cpp's /slots endpoint). Returns null for other backends and for
+ * partial clients (test mocks cast via `as never`) that lack the accessors.
+ */
+export function getSlotProgressBaseUrl(client: LLMClientWithModel): string | null {
+  const getBackend = (client as Partial<LLMClientWithModel>).getBackend
+  const getBaseUrl = (client as Partial<LLMClientWithModel>).getBaseUrl
+  if (typeof getBackend !== 'function' || typeof getBaseUrl !== 'function') return null
+  if (!getBackendCapabilities(getBackend()).exposesSlotProgress) return null
+  return getBaseUrl()
 }
 
 /**
@@ -152,6 +167,10 @@ export function createLLMClient(
 
     getBackend() {
       return backend
+    },
+
+    getBaseUrl() {
+      return baseURL
     },
 
     setBackend(newBackend: Backend) {

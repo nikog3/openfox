@@ -298,6 +298,7 @@ export function applyEvents<
       }
       case 'session.initialized':
       case 'turn.snapshot':
+      case 'llm.call_start':
       case 'phase.changed':
       case 'mode.changed':
       case 'running.changed':

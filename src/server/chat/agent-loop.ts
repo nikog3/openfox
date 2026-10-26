@@ -11,6 +11,8 @@
 import type { InjectedFile, StatsIdentity, ToolCall, ToolMode, ToolResult } from '../../shared/types.js'
 import type { ServerMessage } from '../../shared/protocol.js'
 import type { LLMClientWithModel } from '../llm/client.js'
+import { getSlotProgressBaseUrl } from '../llm/client.js'
+import { estimatePromptTokens, startPrefillProgressPolling } from '../llm/prefill-progress.js'
 import { getModelProfile } from '../llm/profiles.js'
 import type { LLMToolDefinition } from '../llm/types.js'
 import type { ProviderManager } from '../provider-manager.js'
@@ -34,6 +36,7 @@ import {
 import { LiveEditContextTracker } from './edit-file-preview.js'
 import { preflightPathTool } from './tool-preflight.js'
 import { getCurrentContextWindowId, getCurrentWindowMessageOptions, getEventStore } from '../events/index.js'
+import { createEvent } from '../events/types.js'
 import { getAllInstructions } from '../context/instructions.js'
 import { getEnabledSkillMetadata } from '../skills/registry.js'
 import { getRuntimeConfig } from '../runtime-config.js'
@@ -44,6 +47,7 @@ import {
   createChatDoneMessage,
   createChatLLMRetryMessage,
   createChatLLMRetryFailedMessage,
+  createChatPrefillProgressMessage,
   createChatStatsMessage,
 } from '../ws/protocol.js'
 import { executeTools, type ToolBatchContext } from './execute-tools.js'
@@ -647,7 +651,41 @@ export async function runTopLevelAgentLoop(
       const editFileContentCache = new Map<string, string>()
       const liveEditTracker = new LiveEditContextTracker()
 
+      // The tracked context size is the best-known prompt total, but it is 0
+      // for the first call of a session (context state is only filled from
+      // real usage after a response completes) and after a server restart.
+      // Estimate from the outgoing request so prefill progress is meaningful
+      // from the very first call.
+      const expectedPromptTokens =
+        previousContextTokens > 0
+          ? previousContextTokens
+          : estimatePromptTokens(transformResult.messages, transformResult.systemPrompt)
+      // Prefill feedback: announce the LLM call (the assistant message.start is
+      // deliberately deferred until the first token, so without this event the
+      // client has nothing to render while the prompt is being processed) and,
+      // when the engine supports it, poll its live prefill progress (/slots).
+      append(
+        createEvent('llm.call_start', {
+          messageId: assistantMsgId,
+          contextTokens: expectedPromptTokens,
+          ...subAgentTags(),
+        }),
+      )
+      const slotProgressUrl = getSlotProgressBaseUrl(attemptClient)
+      const stopPrefillProgress = slotProgressUrl
+        ? startPrefillProgressPolling({
+            serverBaseUrl: slotProgressUrl,
+            expectedPromptTokens,
+            onProgress: (snapshot) => {
+              config.onMessage?.(createChatPrefillProgressMessage({ messageId: assistantMsgId, ...snapshot }))
+            },
+            ...(signal ? { signal } : {}),
+          })
+        : () => {}
+
       const attemptResult = await consumeStreamGenerator(streamGen, async (event) => {
+        // First streamed event: the prefill is over, stop reporting progress.
+        stopPrefillProgress()
         ensureAssistantMessage()
         // While the LLM streams an edit_file call, enrich its preparing events
         // with a live edit context (surrounding lines) computed from the file —
@@ -666,6 +704,9 @@ export async function runTopLevelAgentLoop(
         }
         append(event)
       })
+      // Covers the paths where the stream ends without any event (immediate
+      // failure/abort) — the consumer-side stop only fires on first event.
+      stopPrefillProgress()
 
       if (!attemptResult.error) {
         ensureAssistantMessage()

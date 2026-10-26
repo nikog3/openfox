@@ -829,6 +829,7 @@ export function createMockLLMClient(): LLMClientWithModel {
     setModel: () => {},
     getProfile: () => profile,
     getBackend: () => backend,
+    getBaseUrl: () => '',
     setBackend: (b: Backend) => {
       backend = b
     },

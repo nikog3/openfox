@@ -191,12 +191,14 @@ describe('agent loop retry history (real EventStore)', () => {
     expect(events).toEqual([
       'message.start',
       'message.done',
+      'llm.call_start',
+      'llm.call_start',
       'message.start',
       'message.delta',
       'message.done',
       'chat.done',
     ])
-    const delta = store.getEvents('session-1')[3]!
+    const delta = store.getEvents('session-1')[5]!
     expect((delta.data as { content: string }).content).toBe('ok')
   })
 
@@ -223,6 +225,7 @@ describe('agent loop retry history (real EventStore)', () => {
       'message.start',
       'message.done',
       // partial attempt: assistant start + delta + done(partial)
+      'llm.call_start',
       'message.start',
       'message.delta',
       'message.done',
@@ -230,18 +233,19 @@ describe('agent loop retry history (real EventStore)', () => {
       'message.start',
       'message.done',
       // successful retry
+      'llm.call_start',
       'message.start',
       'message.delta',
       'message.done',
       'chat.done',
     ])
-    const partialDone = events[4]!
+    const partialDone = events[5]!
     expect((partialDone.data as { partial?: boolean }).partial).toBe(true)
-    const continueMsg = events[5]!
+    const continueMsg = events[6]!
     expect((continueMsg.data as { content?: string }).content).toContain('interrupted')
     // No chat.error, nothing removed
     expect(types.includes('chat.error')).toBe(false)
-    const finalDelta = events[8]!
+    const finalDelta = events[10]!
     expect((finalDelta.data as { content: string }).content).toBe('final')
   })
 })

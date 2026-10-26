@@ -246,6 +246,7 @@ describe('ToolCallDisplay — PathConfirmationButtons placement', () => {
           error: null,
           llmRetry: null,
           nameGenerating: null,
+          prefill: null,
           liveTurnStats: null,
           sessionStats: null,
         },

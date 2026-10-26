@@ -23,6 +23,7 @@ function createClient(events: LLMStreamEvent[]) {
     getModel: () => 'test-model',
     getProfile: () => ({}) as never,
     getBackend: () => 'unknown' as const,
+    getBaseUrl: () => '',
     setBackend: () => {},
     setModel: () => {},
     stream: async function* () {

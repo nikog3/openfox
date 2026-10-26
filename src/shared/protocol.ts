@@ -121,6 +121,8 @@ export type ServerMessageType =
   | 'chat.tool_result' // Tool result
   | 'chat.todo' // Todo list update (displayed in chat)
   | 'chat.progress' // Progress update (e.g., "Generating summary...")
+  | 'chat.prefill' // LLM call started — prefill in progress, first token pending
+  | 'chat.prefill_progress' // Live prefill progress (engine-measured, llama.cpp /slots)
   | 'chat.format_retry' // Model used wrong format (XML tools), retrying
   | 'chat.message' // Full message added (system-generated, etc.)
   | 'chat.message_updated' // Message updated (e.g., isStreaming changed)
@@ -330,6 +332,28 @@ export interface ChatTodoPayload {
 export interface ChatProgressPayload {
   message: string
   phase?: 'summary' | 'mode_switch' | 'starting' | 'context_warning' | 'context_error'
+}
+
+export interface ChatPrefillPayload {
+  messageId: string
+  /** Tracked context size (tokens) being prefilled for this call. */
+  contextTokens: number
+  subAgentId?: string
+  subAgentType?: string
+}
+
+export interface ChatPrefillProgressPayload {
+  messageId: string
+  /** Total prompt tokens for the in-flight request (engine-reported). */
+  promptTokens: number
+  /** Prompt tokens processed so far (engine-reported). */
+  processedTokens: number
+  /** Prefill completion, 0-100 (engine-measured). */
+  percent: number
+  /** Remaining time in seconds (from the live prefill speed), when measurable. */
+  etaSeconds?: number
+  /** Live prefill speed in tokens/sec, when measurable. */
+  speedTps?: number
 }
 
 export interface ChatFormatRetryPayload {

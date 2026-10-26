@@ -64,6 +64,16 @@ export type TurnEvent =
   // Message lifecycle
   // ----------------------------------------------------------------------------
   | {
+      type: 'llm.call_start'
+      data: {
+        messageId: string
+        /** Tracked context size (tokens) being prefilled for this call. */
+        contextTokens: number
+        subAgentId?: string
+        subAgentType?: string
+      }
+    }
+  | {
       type: 'message.start'
       data: {
         messageId: string

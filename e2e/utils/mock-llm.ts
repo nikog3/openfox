@@ -526,6 +526,10 @@ export function createMockLLMClient(config: MockLLMConfig = {}): MockLLMClient {
       return backend as Backend
     },
 
+    getBaseUrl() {
+      return ''
+    },
+
     setBackend(newBackend: Backend) {
       logger.debug('Mock LLM: switching backend', { from: backend, to: newBackend })
     },

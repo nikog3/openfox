@@ -58,6 +58,30 @@ export interface NameGeneratingState {
   retryInMs?: number
 }
 
+/**
+ * Live prefill state: the LLM call is in flight and the first token has not
+ * arrived yet. Engine-measured progress fields are populated by
+ * `chat.prefill_progress` (llama.cpp /slots); they stay undefined on other
+ * backends, where the UI falls back to an estimate.
+ */
+export interface PrefillState {
+  messageId: string
+  /** Tracked context size (tokens) being prefilled for this call. */
+  contextTokens: number
+  /** Client timestamp when the prefill state was received. */
+  startedAt: number
+  /** Engine-reported total prompt tokens, when the backend exposes it. */
+  promptTokens?: number
+  /** Engine-reported prompt tokens processed so far, when the backend exposes it. */
+  processedTokens?: number
+  /** Engine-measured prefill completion 0-100, when the backend exposes it. */
+  percent?: number
+  /** Remaining time in seconds (engine-measured live speed), when available. */
+  etaSeconds?: number
+  /** Live prefill speed in tokens/sec, when available. */
+  speedTps?: number
+}
+
 export interface StreamingBuffer {
   messageId: string | null
   deltaContent: string
@@ -105,6 +129,8 @@ export interface SessionPane {
   llmRetry: LLMRetryState | null
   /** Automatic session name generation in progress; null when idle. */
   nameGenerating: NameGeneratingState | null
+  /** Live prefill state; null when no LLM call is awaiting its first token. */
+  prefill: PrefillState | null
   /** Cumulative turn stats streamed while a turn is running; null when idle. */
   liveTurnStats: MessageStats | null
   /** Server-computed headline stats for the whole session (all context windows). Null when no response has stats yet. */
@@ -139,6 +165,8 @@ export interface SessionState {
   llmRetry: LLMRetryState | null
   /** Automatic session name generation in progress; null when idle. */
   nameGenerating: NameGeneratingState | null
+  /** Live prefill state; null when no LLM call is awaiting its first token. */
+  prefill: PrefillState | null
   /** Cumulative turn stats streamed while a turn is running; null when idle. */
   liveTurnStats: MessageStats | null
   /** Server-computed headline stats for the whole session (all context windows). Null when no response has stats yet. */

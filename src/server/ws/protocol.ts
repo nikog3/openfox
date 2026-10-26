@@ -21,6 +21,8 @@ import type {
   ChatToolResultPayload,
   ChatTodoPayload,
   ChatProgressPayload,
+  ChatPrefillPayload,
+  ChatPrefillProgressPayload,
   ChatFormatRetryPayload,
   ChatMessagePayload,
   ChatMessageUpdatedPayload,
@@ -266,6 +268,26 @@ export function createChatProgressMessage(
   phase?: 'summary' | 'mode_switch' | 'starting' | 'context_warning' | 'context_error',
 ): ServerMessage<ChatProgressPayload> {
   return createServerMessage('chat.progress', { message, ...(phase ? { phase } : {}) })
+}
+
+export function createChatPrefillMessage(
+  messageId: string,
+  contextTokens: number,
+  subAgentId?: string,
+  subAgentType?: string,
+): ServerMessage<ChatPrefillPayload> {
+  return createServerMessage('chat.prefill', {
+    messageId,
+    contextTokens,
+    ...(subAgentId ? { subAgentId } : {}),
+    ...(subAgentType ? { subAgentType } : {}),
+  })
+}
+
+export function createChatPrefillProgressMessage(
+  payload: ChatPrefillProgressPayload,
+): ServerMessage<ChatPrefillProgressPayload> {
+  return createServerMessage('chat.prefill_progress', payload)
 }
 
 export function createChatFormatRetryMessage(
@@ -530,6 +552,11 @@ export function storedEventToServerMessage(event: StoredEvent): ServerMessage | 
         isStreaming: !isUserOrSystem,
       }
       return createChatMessageMessage(message)
+    }
+
+    case 'llm.call_start': {
+      const data = event.data as Extract<TurnEvent, { type: 'llm.call_start' }>['data']
+      return createChatPrefillMessage(data.messageId, data.contextTokens, data.subAgentId, data.subAgentType)
     }
 
     case 'message.delta': {

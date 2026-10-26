@@ -106,6 +106,7 @@ export function createTransportLLMClient(
     },
     getProfile: () => profile,
     getBackend: () => backend,
+    getBaseUrl: () => provider.url,
     setBackend(next) {
       backend = next
     },

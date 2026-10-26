@@ -1,4 +1,4 @@
-import { memo, useState, useRef, useCallback, useEffect, useLayoutEffect, type ReactNode } from 'react'
+import { memo, useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, type ReactNode } from 'react'
 import type { OverlayScrollbarsComponentRef } from 'overlayscrollbars-react'
 import { ScrollArea } from '../shared/ScrollArea'
 import type { ScrollbarGestureKind } from '../shared/ScrollArea'
@@ -10,6 +10,7 @@ import { useSessionWorkdir } from '../../hooks/useSessionWorkdir'
 import { SCOPE_LABELS } from '../../lib/workflow-scope'
 import { useDisplaySettings } from '../../hooks/useDisplaySettings'
 import { ChatFeedItems } from './ChatFeedItems'
+import { PrefillIndicator } from './PrefillIndicator'
 import { CloseButton } from '../shared/CloseButton'
 import { Modal } from '../shared/Modal'
 import { ChevronUpIcon, InfoIcon } from '../shared/icons'
@@ -167,8 +168,37 @@ export const MessageList = memo(function MessageList({
     (state) => state.llmRetry,
     null,
   )
+  const prefill = useScopedPaneState(
+    scopeId,
+    (pane) => pane.prefill ?? null,
+    (state) => state.prefill,
+    null,
+  )
+  const liveTurnStats = useScopedPaneState(
+    scopeId,
+    (pane) => pane.liveTurnStats ?? null,
+    (state) => state.liveTurnStats,
+    null,
+  )
+  const paneMessages = useScopedPaneState(
+    scopeId,
+    (pane) => pane.messages,
+    (state) => state.messages,
+    [],
+  )
   const retryLLMNow = useSessionStore((state) => state.retryLLMNow)
   const retryLLM = useSessionStore((state) => state.retryLLM)
+  // Warm-cache estimate input: tokens added since the previous call = current
+  // prefill context minus the context tracked after the last LLM call.
+  const lastContextAfter = useMemo(() => {
+    for (let i = paneMessages.length - 1; i >= 0; i--) {
+      const value = paneMessages[i]?.contextTokensAfter
+      if (value !== undefined) return value
+    }
+    return undefined
+  }, [paneMessages])
+  const prefillTokenIncrement =
+    prefill && lastContextAfter !== undefined ? Math.max(0, prefill.contextTokens - lastContextAfter) : undefined
   const [showRetryError, setShowRetryError] = useState(false)
   // The modal lives above the per-attempt keyed pill so it survives retries.
   // Close it once the retry state clears (call succeeded, bubble gone).
@@ -322,6 +352,16 @@ export const MessageList = memo(function MessageList({
                   retry={llmRetry}
                   onRetryNow={() => sessionId && retryLLMNow(sessionId)}
                   onShowError={() => setShowRetryError(true)}
+                />
+              </div>
+            )}
+
+            {prefill && isRunning && (
+              <div className="flex justify-center feed-item">
+                <PrefillIndicator
+                  prefill={prefill}
+                  lastPrefillSpeed={liveTurnStats?.prefillSpeed}
+                  tokenIncrement={prefillTokenIncrement}
                 />
               </div>
             )}

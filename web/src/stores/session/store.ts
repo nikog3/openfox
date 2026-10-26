@@ -281,6 +281,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
           sessionsWithPendingConfirmations: Object.keys(crossCleanup),
           llmRetry: null,
           nameGenerating: null,
+          prefill: null,
           pendingSessionCreate: false as boolean | string,
         }
       })
@@ -337,6 +338,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
           activeWorkflowExecution: (data.activeWorkflowExecution as WorkflowExecution | undefined) ?? null,
           llmRetry: null,
           nameGenerating: null,
+          prefill: null,
         }
         return {
           ...replacePane(s, sessionId, nextPane),
@@ -390,6 +392,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
     activeWorkflowExecution: null,
     llmRetry: null,
     nameGenerating: null,
+    prefill: null,
     liveTurnStats: null,
     sessionStats: null,
     sessionsHasMore: true,

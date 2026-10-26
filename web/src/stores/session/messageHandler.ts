@@ -15,6 +15,8 @@ import type {
   ChatToolOutputPayload,
   ChatToolResultPayload,
   ChatTodoPayload,
+  ChatPrefillPayload,
+  ChatPrefillProgressPayload,
   ChatMessagePayload,
   ChatMessageUpdatedPayload,
   ChatStatsPayload,
@@ -309,6 +311,15 @@ function dismissRetryPill(
   applyChat(set, get, sessionId, (p) => ({ ...p, llmRetry: null }))
 }
 
+/**
+ * Drop the prefill indicator once the first token of the awaited call
+ * arrives (assistant message start, text delta, or thinking chunk).
+ */
+function withPrefillCleared(pane: SessionPane, messageId: string | undefined): SessionPane {
+  if (!messageId || !pane.prefill || pane.prefill.messageId !== messageId) return pane
+  return { ...pane, prefill: null }
+}
+
 export function handleServerMessage(
   message: ServerMessage,
   set: (partial: Partial<SessionState> | ((state: SessionState) => Partial<SessionState>)) => void,
@@ -385,6 +396,7 @@ export function handleServerMessage(
             (payload.activeWorkflowExecution as import('@shared/types.js').WorkflowExecution | undefined) ?? null,
           queuedMessages: prior.queuedMessages,
           llmRetry: null,
+          prefill: null,
           liveTurnStats: null,
         }
         const base = replacePane(state, sessionId, nextPane)
@@ -467,6 +479,7 @@ export function handleServerMessage(
             abortInProgress: false,
             queuedMessages: [],
             liveTurnStats: null,
+            prefill: null,
           })),
         )
       }
@@ -493,13 +506,18 @@ export function handleServerMessage(
           if (pane.messages.some((m) => m.id === payload.message.id)) {
             return pane
           }
-          return {
-            ...pane,
-            messages: trimPaneMessages([...pane.messages, payload.message], getMaxVisibleItems()),
-            session: pane.session
-              ? { ...pane.session, messageCount: (pane.session.messageCount ?? 0) + 1 }
-              : pane.session,
-          }
+          // The assistant's message.start is the first-token anchor: the
+          // prefill of this call is over.
+          return withPrefillCleared(
+            {
+              ...pane,
+              messages: trimPaneMessages([...pane.messages, payload.message], getMaxVisibleItems()),
+              session: pane.session
+                ? { ...pane.session, messageCount: (pane.session.messageCount ?? 0) + 1 }
+                : pane.session,
+            },
+            payload.message.role === 'assistant' ? payload.message.id : undefined,
+          )
         })
       ) {
         markBackgroundSessionUnread(set, message)
@@ -580,7 +598,7 @@ export function handleServerMessage(
           buf.messageId = payload.messageId
           buf.deltaContent += payload.content
           scheduleStreamingFlush(sessionId ?? '')
-          return pane
+          return withPrefillCleared(pane, payload.messageId)
         })
       ) {
         markBackgroundSessionUnread(set, message)
@@ -598,7 +616,7 @@ export function handleServerMessage(
           buf.messageId = payload.messageId
           buf.thinkingContent += payload.content
           scheduleStreamingFlush(sessionId ?? '')
-          return pane
+          return withPrefillCleared(pane, payload.messageId)
         })
       ) {
         markBackgroundSessionUnread(set, message)
@@ -799,6 +817,54 @@ export function handleServerMessage(
       break
     }
 
+    case 'chat.prefill': {
+      // An LLM call is in flight and the first token is pending: the client
+      // can now show a "prefilling" indicator (it had nothing to anchor on
+      // before, because message.start is deferred until the first token).
+      // Sub-agent calls are excluded: the indicator is main-session only.
+      const payload = message.payload as ChatPrefillPayload
+      if (payload.subAgentId) break
+      if (
+        !applyChat(set, get, message.sessionId, (pane) => ({
+          ...pane,
+          prefill: {
+            messageId: payload.messageId,
+            contextTokens: payload.contextTokens,
+            startedAt: Date.now(),
+          },
+        }))
+      ) {
+        markBackgroundSessionUnread(set, message)
+      }
+      break
+    }
+
+    case 'chat.prefill_progress': {
+      // Engine-measured prefill progress (llama.cpp /slots). Liveness-only for
+      // background sessions; open panes update the indicator in place.
+      const payload = message.payload as ChatPrefillProgressPayload
+      if (
+        !applyChat(set, get, message.sessionId, (pane) => {
+          if (!pane.prefill || pane.prefill.messageId !== payload.messageId) return pane
+          return {
+            ...pane,
+            prefill: {
+              ...pane.prefill,
+              promptTokens: payload.promptTokens,
+              processedTokens: payload.processedTokens,
+              percent: payload.percent,
+              ...(payload.etaSeconds !== undefined ? { etaSeconds: payload.etaSeconds } : {}),
+              ...(payload.speedTps !== undefined ? { speedTps: payload.speedTps } : {}),
+            },
+          }
+        })
+      ) {
+        // No unread tick: the progress of a background session's call is not
+        // actionable information, and the turn will surface via chat.done.
+      }
+      break
+    }
+
     case 'chat.format_retry': {
       // Same treatment as progress: acknowledge, mark background sessions
       // unread, and carry no state of our own.
@@ -839,6 +905,7 @@ export function handleServerMessage(
           // top-level chat.stats / resumed streaming.
           ...(clearsLiveTurnStats(payload) ? { liveTurnStats: null } : {}),
           ...(payload.reason !== 'error' ? { llmRetry: null } : {}),
+          prefill: null,
         })),
       )
       break
@@ -910,6 +977,7 @@ export function handleServerMessage(
         updatePane(state, sessionId ?? '', (pane) => ({
           ...pane,
           error: { code: 'CHAT_ERROR', message: payload.error },
+          prefill: null,
         })),
       )
       break

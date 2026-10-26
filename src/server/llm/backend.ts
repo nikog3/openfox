@@ -33,6 +33,11 @@ export interface BackendCapabilities {
    * (OpenAI's newer models reject max_tokens outright).
    */
   usesMaxCompletionTokens: boolean
+  /**
+   * Whether the engine exposes live prefill progress via GET /slots
+   * (llama.cpp slot state: n_prompt_tokens_processed / n_prompt_tokens).
+   */
+  exposesSlotProgress: boolean
 }
 
 const BACKEND_CAPABILITIES: Record<Backend, BackendCapabilities> = {
@@ -42,6 +47,7 @@ const BACKEND_CAPABILITIES: Record<Backend, BackendCapabilities> = {
     supportsNumCtx: false,
     routesEffortViaChatTemplateKwargs: false,
     usesMaxCompletionTokens: false,
+    exposesSlotProgress: false,
   },
   sglang: {
     supportsChatTemplateKwargs: true,
@@ -49,6 +55,7 @@ const BACKEND_CAPABILITIES: Record<Backend, BackendCapabilities> = {
     supportsNumCtx: false,
     routesEffortViaChatTemplateKwargs: false,
     usesMaxCompletionTokens: false,
+    exposesSlotProgress: false,
   },
   openai: {
     supportsChatTemplateKwargs: false,
@@ -56,6 +63,7 @@ const BACKEND_CAPABILITIES: Record<Backend, BackendCapabilities> = {
     supportsNumCtx: false,
     routesEffortViaChatTemplateKwargs: false,
     usesMaxCompletionTokens: true,
+    exposesSlotProgress: false,
   },
   anthropic: {
     supportsChatTemplateKwargs: false,
@@ -63,6 +71,7 @@ const BACKEND_CAPABILITIES: Record<Backend, BackendCapabilities> = {
     supportsNumCtx: false,
     routesEffortViaChatTemplateKwargs: false,
     usesMaxCompletionTokens: false,
+    exposesSlotProgress: false,
   },
   ollama: {
     supportsChatTemplateKwargs: false,
@@ -70,6 +79,7 @@ const BACKEND_CAPABILITIES: Record<Backend, BackendCapabilities> = {
     supportsNumCtx: true,
     routesEffortViaChatTemplateKwargs: false,
     usesMaxCompletionTokens: false,
+    exposesSlotProgress: false,
   },
   llamacpp: {
     supportsChatTemplateKwargs: false,
@@ -77,6 +87,7 @@ const BACKEND_CAPABILITIES: Record<Backend, BackendCapabilities> = {
     supportsNumCtx: false,
     routesEffortViaChatTemplateKwargs: true,
     usesMaxCompletionTokens: false,
+    exposesSlotProgress: true,
   },
   lmstudio: {
     supportsChatTemplateKwargs: false,
@@ -84,6 +95,7 @@ const BACKEND_CAPABILITIES: Record<Backend, BackendCapabilities> = {
     supportsNumCtx: false,
     routesEffortViaChatTemplateKwargs: false,
     usesMaxCompletionTokens: false,
+    exposesSlotProgress: true,
   },
   // Unsloth Studio serves an OpenAI-compatible API on a local port.
   unsloth: {
@@ -92,6 +104,7 @@ const BACKEND_CAPABILITIES: Record<Backend, BackendCapabilities> = {
     supportsNumCtx: false,
     routesEffortViaChatTemplateKwargs: false,
     usesMaxCompletionTokens: false,
+    exposesSlotProgress: false,
   },
   'opencode-go': {
     supportsChatTemplateKwargs: false,
@@ -99,6 +112,7 @@ const BACKEND_CAPABILITIES: Record<Backend, BackendCapabilities> = {
     supportsNumCtx: false,
     routesEffortViaChatTemplateKwargs: false,
     usesMaxCompletionTokens: false,
+    exposesSlotProgress: false,
   },
   unknown: {
     supportsChatTemplateKwargs: true,
@@ -106,6 +120,7 @@ const BACKEND_CAPABILITIES: Record<Backend, BackendCapabilities> = {
     supportsNumCtx: false,
     routesEffortViaChatTemplateKwargs: false,
     usesMaxCompletionTokens: false,
+    exposesSlotProgress: false,
   },
 }
 

@@ -23,6 +23,7 @@ function createMockClient(events: LLMStreamEvent[]) {
     getModel: () => 'test-model',
     getProfile: () => ({}) as never,
     getBackend: () => 'unknown' as const,
+    getBaseUrl: () => '',
     setBackend: () => {},
     setModel: () => {},
     stream: async function* () {
@@ -471,6 +472,7 @@ describe('stream-pure', () => {
       getModel: () => 'test-model',
       getProfile: () => ({}) as never,
       getBackend: () => 'unknown' as const,
+      getBaseUrl: () => '',
       setBackend: () => {},
       setModel: () => {},
       stream: async function* (_request: { signal?: AbortSignal }) {

@@ -20,6 +20,7 @@ export function emptyPane(): SessionPane {
     error: null,
     llmRetry: null,
     nameGenerating: null,
+    prefill: null,
     liveTurnStats: null,
     sessionStats: null,
   }
@@ -45,6 +46,7 @@ export function paneFromFlat(state: SessionState): SessionPane {
     error: state.error,
     llmRetry: state.llmRetry,
     nameGenerating: state.nameGenerating,
+    prefill: state.prefill,
     liveTurnStats: state.liveTurnStats,
     sessionStats: state.sessionStats,
   }
@@ -70,6 +72,7 @@ export function mirror(pane: SessionPane): Partial<SessionState> {
     error: pane.error,
     llmRetry: pane.llmRetry,
     nameGenerating: pane.nameGenerating,
+    prefill: pane.prefill,
     liveTurnStats: pane.liveTurnStats,
     sessionStats: pane.sessionStats,
   }

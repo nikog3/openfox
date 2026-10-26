@@ -11,6 +11,8 @@ import {
   createChatMessageUpdatedMessage,
   createChatPathConfirmationMessage,
   createChatProgressMessage,
+  createChatPrefillMessage,
+  createChatPrefillProgressMessage,
   createChatTodoMessage,
   createChatToolOutputMessage,
   createChatToolPreparingMessage,
@@ -434,6 +436,34 @@ describe('ws/protocol', () => {
         type: 'chat.progress',
         payload: { message: 'summarizing', phase: 'summary' },
       })
+      expect(createChatPrefillMessage('m1', 45000)).toEqual({
+        type: 'chat.prefill',
+        payload: { messageId: 'm1', contextTokens: 45000 },
+      })
+      expect(createChatPrefillMessage('m1', 45000, 'sub-1', 'explorer')).toEqual({
+        type: 'chat.prefill',
+        payload: { messageId: 'm1', contextTokens: 45000, subAgentId: 'sub-1', subAgentType: 'explorer' },
+      })
+      expect(
+        createChatPrefillProgressMessage({
+          messageId: 'm1',
+          promptTokens: 45000,
+          processedTokens: 27000,
+          percent: 60,
+          etaSeconds: 8,
+          speedTps: 2250,
+        }),
+      ).toEqual({
+        type: 'chat.prefill_progress',
+        payload: {
+          messageId: 'm1',
+          promptTokens: 45000,
+          processedTokens: 27000,
+          percent: 60,
+          etaSeconds: 8,
+          speedTps: 2250,
+        },
+      })
       expect(createChatFormatRetryMessage(2, 10)).toEqual({
         type: 'chat.format_retry',
         payload: { attempt: 2, maxAttempts: 10 },
@@ -812,6 +842,32 @@ describe('ws/protocol', () => {
       expect(result).toEqual({
         type: 'chat.delta',
         payload: { messageId: 'm1', content: ' world', subAgentType: 'verifier' },
+      })
+    })
+
+    it('maps llm.call_start to chat.prefill', () => {
+      const event: StoredEvent = {
+        ...baseEvent,
+        type: 'llm.call_start',
+        data: { messageId: 'm1', contextTokens: 45000 },
+      }
+      const result = storedEventToServerMessage(event)
+      expect(result).toEqual({
+        type: 'chat.prefill',
+        payload: { messageId: 'm1', contextTokens: 45000 },
+      })
+    })
+
+    it('maps llm.call_start with sub-agent tags to chat.prefill payload', () => {
+      const event: StoredEvent = {
+        ...baseEvent,
+        type: 'llm.call_start',
+        data: { messageId: 'm1', contextTokens: 8000, subAgentId: 'sub-1', subAgentType: 'verifier' },
+      }
+      const result = storedEventToServerMessage(event)
+      expect(result).toEqual({
+        type: 'chat.prefill',
+        payload: { messageId: 'm1', contextTokens: 8000, subAgentId: 'sub-1', subAgentType: 'verifier' },
       })
     })
 
