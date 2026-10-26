@@ -1024,7 +1024,7 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
 
   app.get('/api/sessions/:id', async (req, res) => {
     const { getEventStore, combineEventsWithSnapshot } = await import('./events/index.js')
-    const { buildMessagesFromStoredEvents, buildSessionStatsMessages, foldPendingConfirmations } =
+    const { buildMessagesFromStoredEvents, buildSessionStatsMessages, foldPendingConfirmations, foldInFlightPrefill } =
       await import('./events/folding.js')
     const { computeSessionStatsSummary } = await import('../shared/stats.js')
     const { getPendingQuestionsForSession } = await import('./tools/index.js')
@@ -1050,6 +1050,10 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
     const pendingQuestions = getPendingQuestionsForSession(req.params.id)
     const pendingConfirmations = foldPendingConfirmations(events)
     const activeWorkflowExecution = sessionManager.getDisplayWorkflowExecution(req.params.id)
+    // Streaming/fetch parity: a session reloading mid-prefill (F5) must see the
+    // same "prefilling" indicator it had before the reload. The in-flight call
+    // is derived from the last llm.call_start whose first token has not landed.
+    const prefill = session!.isRunning ? foldInFlightPrefill(events) : null
 
     res.json({
       session: toClientSession(session!),
@@ -1061,6 +1065,7 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
       pendingQuestions,
       pendingConfirmations,
       activeWorkflowExecution,
+      prefill,
     })
   })
 

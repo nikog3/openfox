@@ -210,6 +210,41 @@ export function foldPendingConfirmations(events: EventLike[]): PendingPathConfir
   return pending
 }
 
+export interface InFlightPrefill {
+  messageId: string
+  contextTokens: number
+  startedAt: number
+}
+
+/**
+ * The LLM call currently being prefilled, if any. A call is "in flight" from
+ * its `llm.call_start` until the assistant `message.start` for that message
+ * arrives (the first token). Sub-agent calls are excluded — the indicator is
+ * main-session only, matching the live `chat.prefill` handler.
+ */
+export function foldInFlightPrefill(events: EventLike[]): InFlightPrefill | null {
+  let candidate: InFlightPrefill | null = null
+  for (const event of events) {
+    if (event.type === 'llm.call_start') {
+      const data = event.data as Extract<TurnEvent, { type: 'llm.call_start' }>['data']
+      if (data.subAgentId) continue
+      candidate = {
+        messageId: data.messageId,
+        contextTokens: data.contextTokens,
+        startedAt: event.timestamp ?? Date.now(),
+      }
+      continue
+    }
+    if (candidate && event.type === 'message.start') {
+      const data = event.data as Extract<TurnEvent, { type: 'message.start' }>['data']
+      if (data.role === 'assistant' && data.messageId === candidate.messageId) {
+        candidate = null
+      }
+    }
+  }
+  return candidate
+}
+
 export function foldSessionState(
   events: EventLike[],
   initialWindowId: string,

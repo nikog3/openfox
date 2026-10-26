@@ -10,6 +10,7 @@ import {
   buildSnapshotFromSessionState,
   buildSessionStatsMessages,
   foldContextState,
+  foldInFlightPrefill,
   foldSessionState,
   foldTurnEventsToSnapshotMessages,
   foldWaitingWorkflow,
@@ -3536,5 +3537,56 @@ describe('buildSessionStatsMessages', () => {
 
     expect(result).toHaveLength(1)
     expect(result[0]!.stats!.totalTime).toBe(99)
+  })
+})
+
+describe('foldInFlightPrefill', () => {
+  it('returns null when no llm.call_start events exist', () => {
+    const events: StoredEvent[] = [
+      { ...baseEvent, seq: 1, type: 'message.start', data: { messageId: 'm1', role: 'user', content: 'hi' } },
+    ]
+    expect(foldInFlightPrefill(events)).toBeNull()
+  })
+
+  it('returns the in-flight prefill while the assistant message is pending', () => {
+    const ts = Date.parse('2024-01-01T00:00:05.000Z')
+    const events: StoredEvent[] = [
+      { ...baseEvent, seq: 1, type: 'message.start', data: { messageId: 'm1', role: 'user', content: 'hi' } },
+      { ...baseEvent, seq: 2, timestamp: ts, type: 'llm.call_start', data: { messageId: 'a1', contextTokens: 27_000 } },
+    ]
+    expect(foldInFlightPrefill(events)).toEqual({ messageId: 'a1', contextTokens: 27_000, startedAt: ts })
+  })
+
+  it('returns null once the assistant message has started (first token arrived)', () => {
+    const events: StoredEvent[] = [
+      { ...baseEvent, seq: 1, type: 'llm.call_start', data: { messageId: 'a1', contextTokens: 1000 } },
+      { ...baseEvent, seq: 2, type: 'message.start', data: { messageId: 'a1', role: 'assistant' } },
+    ]
+    expect(foldInFlightPrefill(events)).toBeNull()
+  })
+
+  it('ignores sub-agent calls (the indicator is main-session only)', () => {
+    const events: StoredEvent[] = [
+      {
+        ...baseEvent,
+        seq: 1,
+        type: 'llm.call_start',
+        data: { messageId: 'a1', contextTokens: 1000, subAgentId: 'sub-1', subAgentType: 'planner' },
+      },
+    ]
+    expect(foldInFlightPrefill(events)).toBeNull()
+  })
+
+  it('tracks the latest in-flight call after an earlier one completed', () => {
+    const events: StoredEvent[] = [
+      { ...baseEvent, seq: 1, type: 'llm.call_start', data: { messageId: 'a1', contextTokens: 1000 } },
+      { ...baseEvent, seq: 2, type: 'message.start', data: { messageId: 'a1', role: 'assistant' } },
+      { ...baseEvent, seq: 3, type: 'llm.call_start', data: { messageId: 'a2', contextTokens: 2000 } },
+    ]
+    expect(foldInFlightPrefill(events)).toEqual({
+      messageId: 'a2',
+      contextTokens: 2000,
+      startedAt: baseEvent.timestamp,
+    })
   })
 })

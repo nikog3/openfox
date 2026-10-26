@@ -18,6 +18,8 @@ export type {
   MessageWithId,
 } from './fold-types.js'
 
+export type { InFlightPrefill } from './fold-state.js'
+
 export {
   spreadOptionalMessageFields,
   buildMessagesFromStoredEvents,
@@ -45,6 +47,7 @@ export {
   foldPhase,
   foldIsRunning,
   foldPendingConfirmations,
+  foldInFlightPrefill,
   foldSessionState,
   foldWaitingWorkflow,
   buildSnapshot,

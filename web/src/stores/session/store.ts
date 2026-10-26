@@ -16,7 +16,7 @@ import { useConfigStore } from '../config'
 import { projectsResource } from '../../lib/resources'
 import { useBackgroundProcessesStore } from '../background-processes'
 import { writeSplitLayout, isSplitRoute } from '../../lib/splitPersistence'
-import type { SessionState, SessionPane, PendingPathConfirmation } from './types'
+import type { SessionState, SessionPane, PendingPathConfirmation, PrefillState } from './types'
 import { getBuffer, setFlushFn, cancelStreamingFlush, releaseStreamingBuffer } from './streamingBuffer'
 import {
   handleServerMessage as handleMessage,
@@ -55,6 +55,7 @@ interface SessionLoadData {
   pendingConfirmations?: PendingPathConfirmation[]
   pendingQuestions?: PendingQuestionPayload[]
   activeWorkflowExecution?: WorkflowExecution | null
+  prefill?: PrefillState | null
 }
 
 function applyToolOutputs(
@@ -338,7 +339,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
           activeWorkflowExecution: (data.activeWorkflowExecution as WorkflowExecution | undefined) ?? null,
           llmRetry: null,
           nameGenerating: null,
-          prefill: null,
+          prefill: data.prefill ?? null,
         }
         return {
           ...replacePane(s, sessionId, nextPane),

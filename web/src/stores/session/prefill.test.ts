@@ -127,6 +127,39 @@ describe('prefill indicator store state', () => {
     expect(cleared.prefill).toBeNull()
   })
 
+  it('hydrates the pane prefill state from the session load payload (F5 parity)', async () => {
+    const useSessionStore = await loadSessionStore()
+    fetchMock.mockImplementation(((url: string | URL | Request) => {
+      const u = String(url)
+      if (u.includes('/background-processes')) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ processes: [] }) })
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            success: true,
+            session: makeSession('s1'),
+            messages: [],
+            contextState: null,
+            queueState: [],
+            pendingQuestions: [],
+            prefill: { messageId: 'm1', contextTokens: 42_000, startedAt: 1_700_000_000_000 },
+          }),
+      })
+    }) as never)
+
+    await useSessionStore.getState().openPane('s1', { focus: true })
+
+    const prefill = useSessionStore.getState().panes['s1']?.prefill
+    expect(prefill?.messageId).toBe('m1')
+    expect(prefill?.contextTokens).toBe(42_000)
+    expect(prefill?.startedAt).toBe(1_700_000_000_000)
+    // Focused pane mirrors to the flat alias
+    expect(useSessionStore.getState().prefill?.messageId).toBe('m1')
+  })
+
   it('keeps prefill state per pane: a sibling pane never sees it', async () => {
     const useSessionStore = await loadSessionStore()
     mockSessionApis()
