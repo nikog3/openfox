@@ -776,17 +776,33 @@ export interface WorkspaceInfo {
   path: string
   name: string
   branch: string | null
+  ahead: number | null
+  behind: number | null
 }
 
-export async function fetchWorkspaces(projectId: string): Promise<WorkspaceInfo[]> {
+export interface ProjectMainSync {
+  branch: string | null
+  ahead: number | null
+  behind: number | null
+}
+
+export interface WorkspacesData {
+  workspaces: WorkspaceInfo[]
+  main: ProjectMainSync
+}
+
+export async function fetchWorkspaces(projectId: string): Promise<WorkspacesData> {
   const res = await authFetch(`/api/projects/${projectId}/workspaces`)
   if (!res.ok) throw new Error(`Failed to load workspaces (${res.status})`)
-  const data = (await res.json()) as { workspaces?: WorkspaceInfo[] }
-  return data.workspaces ?? []
+  const data = (await res.json()) as { workspaces?: WorkspaceInfo[]; main?: ProjectMainSync }
+  return {
+    workspaces: data.workspaces ?? [],
+    main: data.main ?? { branch: null, ahead: null, behind: null },
+  }
 }
 
 /** Per-project workspace list (shared clones). Modal-scoped read, fresh on open. */
-export const workspacesResource = resource<WorkspaceInfo[], [string]>({
+export const workspacesResource = resource<WorkspacesData, [string]>({
   key: (projectId) => `project-workspaces:${projectId}`,
   fetch: fetchWorkspaces,
   maxAgeMs: 0,

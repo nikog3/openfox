@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { GitDiffFile, GitStatusSync } from '../../shared/protocol.js'
 import type { PluginVcsContext } from '../../plugin/index.js'
 import { gitSpawnEnv } from './env.js'
+import { parseAheadBehind } from './workspace.js'
 import { resolveSafePath } from './safe-path.js'
 import { resolveVcsBranch, resolveVcsDiffFiles, resolveVcsModifiedFiles } from '../plugins/vcs-providers.js'
 
@@ -235,11 +236,7 @@ export async function getGitBranch(
 /** Commits ahead of / behind the upstream. Null when the branch has no upstream. */
 export async function getGitSyncInfo(cwd: string): Promise<GitStatusSync | null> {
   const stdout = await gitOutput(cwd, ['rev-list', '--left-right', '--count', 'HEAD...@{u}'])
-  const parts = stdout.trim().split(/\s+/)
-  const ahead = parseInt(parts[0] ?? '', 10)
-  const behind = parseInt(parts[1] ?? '', 10)
-  if (Number.isNaN(ahead) || Number.isNaN(behind)) return null
-  return { ahead, behind }
+  return parseAheadBehind(stdout)
 }
 
 /**

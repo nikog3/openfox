@@ -38,6 +38,10 @@ vi.mock('../../hooks/useGitStatus', () => ({
   useGitStatus: (...args: unknown[]) => mockUseGitStatus(...args),
 }))
 
+vi.mock('../../hooks/useUpstreamSync', () => ({
+  useUpstreamSync: () => null,
+}))
+
 /* ------------------------------------------------------------------ */
 /*  Child component mocks                                             */
 /* ------------------------------------------------------------------ */

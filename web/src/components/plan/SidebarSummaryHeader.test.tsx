@@ -33,6 +33,10 @@ vi.mock('../../hooks/useGitStatus', () => ({
   useGitStatus: (...args: unknown[]) => mockUseGitStatus(...args),
 }))
 
+vi.mock('../../hooks/useUpstreamSync', () => ({
+  useUpstreamSync: () => null,
+}))
+
 vi.mock('../shared/MetadataEntries', () => ({
   MetadataSectionHeader: ({ title: t }: { title: string }) => `[MSH:${t}]`,
   MetadataEntries: () => null,

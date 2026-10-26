@@ -3,9 +3,12 @@ import { FolderIcon, BranchIcon } from '../shared/icons'
 import { useT } from '../../hooks/useT'
 import { useSetting } from '../../hooks/useSetting'
 import { SETTINGS_KEYS } from '../../lib/resources'
+import { useGitStatus } from '../../hooks/useGitStatus'
+import { useUpstreamSync } from '../../hooks/useUpstreamSync'
 import { GitStatusPanel } from './GitStatusPanel'
 import { WorkspaceModal } from './WorkspaceModal'
 import { BranchModal } from './BranchModal'
+import { SyncBadge } from './SyncBadge'
 import { buildWorkspaceUrl } from '../../lib/editor-link'
 
 interface WorkspaceBranchSectionProps {
@@ -31,10 +34,14 @@ export function WorkspaceBranchSection({
 }: WorkspaceBranchSectionProps) {
   const t = useT()
   const vscodeRemotePrefix = useSetting(SETTINGS_KEYS.VSCODE_REMOTE_PREFIX).value
+  const { sync } = useGitStatus()
+  const upstreamSync = useUpstreamSync(workspaceName, projectId)
   const [showWorkspaceModal, setShowWorkspaceModal] = useState(false)
   const [showBranchModal, setShowBranchModal] = useState(false)
 
   if (branch === null) return null
+
+  const badgeSync = upstreamSync ?? sync
 
   return (
     <>
@@ -71,6 +78,7 @@ export function WorkspaceBranchSection({
         <div className="flex items-center gap-2 text-sm">
           <BranchIcon />
           <span className="truncate text-text-secondary">{branch}</span>
+          {badgeSync && <SyncBadge sync={badgeSync} />}
           <button
             onClick={() => {
               if (onEditBranch) onEditBranch()

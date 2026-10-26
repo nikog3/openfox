@@ -5,6 +5,7 @@ import { homedir, platform } from 'node:os'
 import { logger } from '../utils/logger.js'
 import { isDirectoryEntry } from '../utils/fs.js'
 import { gitSpawnEnv } from './env.js'
+import type { GitStatusSync } from '../../shared/protocol.js'
 import { loadWorkspaceConfig } from './workspace-config.js'
 import { getProjectByWorkdir } from '../db/projects.js'
 
@@ -110,6 +111,40 @@ export async function getCommitsBehind(cwd: string, branch: string): Promise<num
   if (out === null) return null
   const count = parseInt(out.trim(), 10)
   return Number.isNaN(count) ? null : count
+}
+
+/** Parse `git rev-list --left-right --count` output ("A B\n") into counts. */
+export function parseAheadBehind(out: string): { ahead: number; behind: number } | null {
+  const parts = out.trim().split(/\s+/)
+  const ahead = parseInt(parts[0] ?? '', 10)
+  const behind = parseInt(parts[1] ?? '', 10)
+  if (Number.isNaN(ahead) || Number.isNaN(behind)) return null
+  return { ahead, behind }
+}
+
+/**
+ * Compare the HEAD of `headCwd` against the project dir's remote-tracking ref
+ * `refs/remotes/origin/<branch>` (the true upstream). Workspaces are
+ * --shared clones whose own origin points at the local project repo, so the
+ * comparison must run against the project's remote refs. Returns null when
+ * HEAD cannot be resolved or the branch has no remote-tracking ref.
+ */
+export async function getSyncWithUpstream(
+  headCwd: string,
+  projectDir: string,
+  branch: string,
+): Promise<GitStatusSync | null> {
+  const head = await captureStdout(headCwd, ['rev-parse', 'HEAD'])
+  const sha = head?.trim()
+  if (!sha) return null
+  const out = await captureStdout(projectDir, [
+    'rev-list',
+    '--left-right',
+    '--count',
+    `${sha}...refs/remotes/origin/${branch}`,
+  ])
+  if (out === null) return null
+  return parseAheadBehind(out)
 }
 
 export function validateRef(cwd: string, name: string): Promise<void> {
@@ -230,6 +265,8 @@ export interface WorkspaceInfo {
   path: string
   name: string
   branch: string | null
+  ahead: number | null
+  behind: number | null
 }
 
 export async function workspaceExists(projectName: string, name: string, projectDir: string): Promise<boolean> {
@@ -247,18 +284,60 @@ export async function listWorkspaces(projectName: string, projectDir: string): P
   try {
     const { readdir } = await import('node:fs/promises')
     const entries = await readdir(dir, { withFileTypes: true })
-    const workspaces: WorkspaceInfo[] = []
-    for (const entry of entries) {
-      if (await isDirectoryEntry(dir, entry)) {
-        const wsPath = resolve(dir, entry.name)
+    const names = (
+      await Promise.all(entries.map(async (entry) => ((await isDirectoryEntry(dir, entry)) ? entry.name : null)))
+    ).filter((name): name is string => name !== null)
+    const workspaces = await Promise.all(
+      names.map(async (name) => {
+        const wsPath = resolve(dir, name)
         const branch = await getGitBranch(wsPath)
-        workspaces.push({ path: wsPath, name: entry.name, branch })
-      }
-    }
+        const sync = branch ? await getSyncWithUpstream(wsPath, projectDir, branch) : null
+        return {
+          path: wsPath,
+          name,
+          branch,
+          ahead: sync?.ahead ?? null,
+          behind: sync?.behind ?? null,
+        }
+      }),
+    )
     return workspaces.sort((a, b) => a.name.localeCompare(b.name))
   } catch {
     return []
   }
+}
+
+export interface ProjectSyncInfo {
+  branch: string | null
+  ahead: number | null
+  behind: number | null
+}
+
+/** Sync state of the project repo itself (for the "original" workspace row). */
+export async function getProjectSync(projectDir: string): Promise<ProjectSyncInfo> {
+  const branch = await getGitBranch(projectDir)
+  const sync = branch ? await getSyncWithUpstream(projectDir, projectDir, branch) : null
+  return {
+    branch,
+    ahead: sync?.ahead ?? null,
+    behind: sync?.behind ?? null,
+  }
+}
+
+const refreshingRemoteRefs = new Set<string>()
+
+/**
+ * Fire-and-forget fetch so the project's remote-tracking refs stay fresh;
+ * ahead/behind counts read on the next workspace list are then accurate.
+ */
+export function refreshRemoteRefs(projectDir: string): void {
+  if (refreshingRemoteRefs.has(projectDir)) return
+  refreshingRemoteRefs.add(projectDir)
+  void runGit(projectDir, ['fetch', 'origin', '--prune', '--quiet'])
+    .catch(() => {})
+    .finally(() => {
+      refreshingRemoteRefs.delete(projectDir)
+    })
 }
 
 export interface WorkspaceResult {

@@ -840,11 +840,16 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
     const { getProject } = await import('./db/projects.js')
     const project = getProject(req.params.id)
     if (!project) return res.status(404).json({ error: 'Project not found' })
-    const { listWorkspaces } = await import('./git/workspace.js')
-    const all = await listWorkspaces(project.name, project.workdir)
+    const { listWorkspaces, getProjectSync, refreshRemoteRefs } = await import('./git/workspace.js')
+    // Keep remote-tracking refs fresh so ahead/behind counts stay accurate (non-blocking)
+    refreshRemoteRefs(project.workdir)
+    const [all, main] = await Promise.all([
+      listWorkspaces(project.name, project.workdir),
+      getProjectSync(project.workdir),
+    ])
     // Filter out the main workspace (the repo itself) — only show linked workspaces
     const workspacesList = all.filter((ws) => ws.path !== project.workdir)
-    res.json({ workspaces: workspacesList })
+    res.json({ workspaces: workspacesList, main })
   })
 
   // Session endpoints (REST)

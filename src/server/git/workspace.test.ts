@@ -12,6 +12,9 @@ import {
   getWorkspacesDir,
   isGitRepository,
   deleteWorkspace,
+  getSyncWithUpstream,
+  getProjectSync,
+  refreshRemoteRefs,
 } from './workspace.js'
 
 vi.mock('node:child_process', () => ({
@@ -457,5 +460,156 @@ describe('deleteWorkspace', () => {
     await expect(deleteWorkspace(PROJECT_NAME, 'nonexistent', CWD)).rejects.toThrow(
       'Workspace "nonexistent" does not exist',
     )
+  })
+})
+
+describe('getSyncWithUpstream', () => {
+  it('returns ahead/behind when the branch exists on the upstream remote', async () => {
+    vi.mocked(spawn)
+      .mockReturnValueOnce(makeMockProc('abc123\n') as any) // rev-parse HEAD in the workspace
+      .mockReturnValueOnce(makeMockProc('2 0\n') as any) // rev-list --left-right --count
+    const result = await getSyncWithUpstream('/tmp/ws', CWD, 'feature/x')
+    expect(result).toEqual({ ahead: 2, behind: 0 })
+  })
+
+  it('returns behind when the workspace lags the upstream', async () => {
+    vi.mocked(spawn)
+      .mockReturnValueOnce(makeMockProc('abc123\n') as any)
+      .mockReturnValueOnce(makeMockProc('0 3\n') as any)
+    const result = await getSyncWithUpstream('/tmp/ws', CWD, 'main')
+    expect(result).toEqual({ ahead: 0, behind: 3 })
+  })
+
+  it('returns 0/0 when the workspace is in sync with the upstream', async () => {
+    vi.mocked(spawn)
+      .mockReturnValueOnce(makeMockProc('abc123\n') as any)
+      .mockReturnValueOnce(makeMockProc('0 0\n') as any)
+    const result = await getSyncWithUpstream('/tmp/ws', CWD, 'main')
+    expect(result).toEqual({ ahead: 0, behind: 0 })
+  })
+
+  it('returns null when the branch has no remote-tracking ref', async () => {
+    vi.mocked(spawn)
+      .mockReturnValueOnce(makeMockProc('abc123\n') as any)
+      .mockReturnValueOnce(makeMockProc('', 'fatal: ambiguous argument', 128) as any)
+    const result = await getSyncWithUpstream('/tmp/ws', CWD, 'new-branch')
+    expect(result).toBeNull()
+  })
+
+  it('returns null when HEAD cannot be resolved', async () => {
+    vi.mocked(spawn).mockReturnValueOnce(makeMockProc('', 'fatal: not a git repository', 128) as any)
+    const result = await getSyncWithUpstream('/tmp/ws', CWD, 'main')
+    expect(result).toBeNull()
+    expect(spawn).toHaveBeenCalledTimes(1)
+  })
+
+  it('compares against the project dir remote-tracking ref, not the workspace origin', async () => {
+    vi.mocked(spawn)
+      .mockReturnValueOnce(makeMockProc('abc123\n') as any)
+      .mockReturnValueOnce(makeMockProc('1 1\n') as any)
+    await getSyncWithUpstream('/tmp/ws', CWD, 'main')
+    const headCall = vi.mocked(spawn).mock.calls[0]
+    expect(headCall?.[2]?.cwd).toBe('/tmp/ws')
+    const revListCall = vi.mocked(spawn).mock.calls[1]
+    expect(revListCall?.[2]?.cwd).toBe(CWD)
+    expect(revListCall?.[1]).toEqual(['rev-list', '--left-right', '--count', 'abc123...refs/remotes/origin/main'])
+  })
+})
+
+describe('getProjectSync', () => {
+  it('returns branch and sync for the project repo', async () => {
+    vi.mocked(spawn)
+      .mockReturnValueOnce(makeMockProc('main\n') as any) // branch
+      .mockReturnValueOnce(makeMockProc('def456\n') as any) // HEAD
+      .mockReturnValueOnce(makeMockProc('1 0\n') as any) // ahead 1
+    const result = await getProjectSync(CWD)
+    expect(result).toEqual({ branch: 'main', ahead: 1, behind: 0 })
+  })
+
+  it('returns nulls when the branch has no remote-tracking ref', async () => {
+    vi.mocked(spawn)
+      .mockReturnValueOnce(makeMockProc('main\n') as any)
+      .mockReturnValueOnce(makeMockProc('def456\n') as any)
+      .mockReturnValueOnce(makeMockProc('', 'fatal: ambiguous argument', 128) as any)
+    const result = await getProjectSync(CWD)
+    expect(result).toEqual({ branch: 'main', ahead: null, behind: null })
+  })
+
+  it('returns nulls when not on a branch', async () => {
+    vi.mocked(spawn).mockReturnValueOnce(makeMockProc('', '', 1) as any)
+    const result = await getProjectSync(CWD)
+    expect(result).toEqual({ branch: null, ahead: null, behind: null })
+  })
+})
+
+describe('refreshRemoteRefs', () => {
+  it('fires a background fetch of origin without throwing', async () => {
+    vi.mocked(spawn).mockReturnValue(makeMockProc('') as any)
+    refreshRemoteRefs(CWD)
+    await vi.waitFor(() => {
+      const fetchCall = vi.mocked(spawn).mock.calls.find((call) => Array.isArray(call[1]) && call[1]?.[0] === 'fetch')
+      expect(fetchCall).toBeDefined()
+      expect(fetchCall?.[2]?.cwd).toBe(CWD)
+      expect(fetchCall?.[1]).toEqual(['fetch', 'origin', '--prune', '--quiet'])
+    })
+  })
+
+  it('does not start a concurrent fetch for the same project dir', async () => {
+    const dir = '/tmp/project-concurrent'
+    let resolveFetch: (code: number) => void = () => {}
+    vi.mocked(spawn).mockImplementation(() => {
+      return {
+        stdout: { on: () => {} },
+        stderr: { on: () => {} },
+        on: (event: string, cb: (code: number) => void) => {
+          if (event === 'close') resolveFetch = cb
+        },
+      } as any
+    })
+    refreshRemoteRefs(dir)
+    expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1)
+    refreshRemoteRefs(dir)
+    expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1)
+    resolveFetch(0)
+    await vi.waitFor(() => {
+      refreshRemoteRefs(dir)
+      expect(vi.mocked(spawn)).toHaveBeenCalledTimes(2)
+    })
+  })
+})
+
+describe('listWorkspaces sync fields', () => {
+  it('fills ahead/behind from the upstream comparison', async () => {
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'feature-x', isDirectory: () => true, isSymbolicLink: () => false },
+    ] as any)
+    vi.mocked(spawn)
+      .mockReturnValueOnce(makeMockProc('feat/x\n') as any) // branch
+      .mockReturnValueOnce(makeMockProc('abc123\n') as any) // HEAD
+      .mockReturnValueOnce(makeMockProc('2 0\n') as any) // ahead 2, behind 0
+    const result = await listWorkspaces(PROJECT_NAME, CWD)
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({ name: 'feature-x', branch: 'feat/x', ahead: 2, behind: 0 })
+  })
+
+  it('leaves ahead/behind null when the branch has no upstream ref', async () => {
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'new-ws', isDirectory: () => true, isSymbolicLink: () => false },
+    ] as any)
+    vi.mocked(spawn)
+      .mockReturnValueOnce(makeMockProc('new-branch\n') as any)
+      .mockReturnValueOnce(makeMockProc('abc123\n') as any)
+      .mockReturnValueOnce(makeMockProc('', 'fatal: ambiguous argument', 128) as any)
+    const result = await listWorkspaces(PROJECT_NAME, CWD)
+    expect(result[0]).toMatchObject({ name: 'new-ws', branch: 'new-branch', ahead: null, behind: null })
+  })
+
+  it('leaves ahead/behind null for a workspace without a branch', async () => {
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'detached', isDirectory: () => true, isSymbolicLink: () => false },
+    ] as any)
+    vi.mocked(spawn).mockReturnValueOnce(makeMockProc('', '', 1) as any) // branch fails
+    const result = await listWorkspaces(PROJECT_NAME, CWD)
+    expect(result[0]).toMatchObject({ name: 'detached', branch: null, ahead: null, behind: null })
   })
 })

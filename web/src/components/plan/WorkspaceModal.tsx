@@ -3,10 +3,13 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'wouter'
 import { authFetch } from '../../lib/api'
 import { workspacesResource } from '../../lib/resources'
+import type { ProjectMainSync, WorkspaceInfo } from '../../lib/resources'
 import { useSessionModalState } from '../../hooks/useSessionModalState'
+import { toSync } from '../../hooks/useUpstreamSync'
 import { ModalShell } from '../shared/ModalShell'
 import { FolderIcon } from '../shared/icons'
 import { CreateInputSection } from '../shared/CreateInputSection'
+import { SyncBadge } from './SyncBadge'
 
 interface WorkspaceModalProps {
   isOpen: boolean
@@ -15,12 +18,6 @@ interface WorkspaceModalProps {
   sessionId: string
   currentWorkspace: string | null
   currentBranch: string | null
-}
-
-interface WorkspaceInfo {
-  path: string
-  name: string
-  branch: string | null
 }
 
 export function WorkspaceModal({
@@ -47,6 +44,7 @@ export function WorkspaceModal({
     resetState,
   } = useSessionModalState(onClose)
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([])
+  const [mainSync, setMainSync] = useState<ProjectMainSync | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [conflictingSessionIds, setConflictingSessionIds] = useState<string[] | null>(null)
   const [forceDeleting, setForceDeleting] = useState(false)
@@ -59,12 +57,14 @@ export function WorkspaceModal({
     setForceDeleting(false)
     workspacesResource
       .refresh(projectId)
-      .then((workspaces) => {
-        setWorkspaces(workspaces ?? [])
+      .then((data) => {
+        setWorkspaces(data?.workspaces ?? [])
+        setMainSync(data?.main ?? null)
         setLoading(false)
       })
       .catch(() => {
         setWorkspaces([])
+        setMainSync(null)
         setLoading(false)
       })
   }, [isOpen, projectId, resetState, setLoading])
@@ -130,8 +130,9 @@ export function WorkspaceModal({
         await refreshSession(sessionId, true)
         // Refresh the workspace list
         const listRes = await authFetch(`/api/projects/${projectId}/workspaces`)
-        const listData = await listRes.json()
-        setWorkspaces(listData.workspaces)
+        const listData = (await listRes.json()) as { workspaces?: WorkspaceInfo[]; main?: ProjectMainSync }
+        setWorkspaces(listData.workspaces ?? [])
+        setMainSync(listData.main ?? null)
         setBusy(false)
         setLoading(false)
       } catch (e) {
@@ -176,6 +177,8 @@ export function WorkspaceModal({
     }
   }, [newName, sessionId, refreshSession, onClose, setError, setBusy, t])
 
+  const originalSync = toSync(mainSync?.ahead ?? null, mainSync?.behind ?? null)
+
   return (
     <ModalShell
       isOpen={isOpen}
@@ -202,6 +205,7 @@ export function WorkspaceModal({
             <span className="font-mono truncate">original</span>
             <span className="text-xs text-text-muted ml-auto">
               {currentBranch ?? t({ en: 'unknown', fr: 'inconnue' })}
+              {originalSync && <SyncBadge sync={originalSync} className="ml-1.5" />}
             </span>
             {!currentWorkspace && (
               <span className="text-[10px] text-accent-primary ml-1">{t({ en: '(current)', fr: '(actuel)' })}</span>
@@ -215,70 +219,74 @@ export function WorkspaceModal({
               if (b.name === currentWorkspace) return 1
               return a.name.localeCompare(b.name)
             })
-            .map((ws) => (
-              <div key={ws.path} className="group relative">
-                {confirmDelete === ws.name ? (
-                  <div className="flex items-center gap-2 px-3 py-1.5 text-sm rounded bg-accent-error/10">
-                    <span className="text-xs text-accent-error">
-                      {t({ en: 'Delete {{name}}?', fr: 'Supprimer {{name}} ?' }, { name: ws.name })}
-                    </span>
-                    <button
-                      onClick={() => handleDelete(ws.name)}
-                      disabled={busy}
-                      className="ml-auto text-xs px-2 py-0.5 rounded bg-accent-error text-white hover:opacity-90"
-                    >
-                      {t({ en: 'Confirm', fr: 'Confirmer' })}
-                    </button>
-                    <button
-                      onClick={() => setConfirmDelete(null)}
-                      disabled={busy}
-                      className="text-xs px-2 py-0.5 rounded bg-bg-tertiary text-text-secondary hover:bg-bg-secondary"
-                    >
-                      {t({ en: 'Cancel', fr: 'Annuler' })}
-                    </button>
-                  </div>
-                ) : (
-                  <div className="relative">
-                    <button
-                      onClick={() => {
-                        if (!busy && ws.name !== currentWorkspace) handleSwitch(ws.name)
-                      }}
-                      disabled={busy || ws.name === currentWorkspace}
-                      className={`w-full text-left px-3 py-1.5 text-sm rounded transition-colors flex items-center gap-2 ${
-                        ws.name === currentWorkspace
-                          ? 'bg-accent-primary/10 text-accent-primary cursor-default'
-                          : 'hover:bg-bg-tertiary text-text-secondary'
-                      } ${busy ? 'opacity-70' : ''}`}
-                    >
-                      <FolderIcon className="w-4 h-4 shrink-0" />
-                      <span className="font-mono truncate">{ws.name}</span>
-                      <span className="text-xs text-text-muted ml-auto">
-                        {ws.branch ?? t({ en: 'unknown', fr: 'inconnue' })}
+            .map((ws) => {
+              const wsSync = toSync(ws.ahead, ws.behind)
+              return (
+                <div key={ws.path} className="group relative">
+                  {confirmDelete === ws.name ? (
+                    <div className="flex items-center gap-2 px-3 py-1.5 text-sm rounded bg-accent-error/10">
+                      <span className="text-xs text-accent-error">
+                        {t({ en: 'Delete {{name}}?', fr: 'Supprimer {{name}} ?' }, { name: ws.name })}
                       </span>
-                      {ws.name === currentWorkspace && (
-                        <span className="text-[10px] text-accent-primary ml-1">
-                          {t({ en: '(current)', fr: '(actuel)' })}
-                        </span>
-                      )}
-                    </button>
-                    {ws.name !== currentWorkspace && !busy && (
                       <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setError(null)
-                          setConflictingSessionIds(null)
-                          setConfirmDelete(ws.name)
-                        }}
-                        className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 text-xs text-text-muted hover:text-accent-error transition-opacity px-1 py-0.5 rounded"
-                        title={t({ en: 'Delete workspace', fr: 'Supprimer l’espace de travail' })}
+                        onClick={() => handleDelete(ws.name)}
+                        disabled={busy}
+                        className="ml-auto text-xs px-2 py-0.5 rounded bg-accent-error text-white hover:opacity-90"
                       >
-                        ✕
+                        {t({ en: 'Confirm', fr: 'Confirmer' })}
                       </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
+                      <button
+                        onClick={() => setConfirmDelete(null)}
+                        disabled={busy}
+                        className="text-xs px-2 py-0.5 rounded bg-bg-tertiary text-text-secondary hover:bg-bg-secondary"
+                      >
+                        {t({ en: 'Cancel', fr: 'Annuler' })}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <button
+                        onClick={() => {
+                          if (!busy && ws.name !== currentWorkspace) handleSwitch(ws.name)
+                        }}
+                        disabled={busy || ws.name === currentWorkspace}
+                        className={`w-full text-left px-3 py-1.5 text-sm rounded transition-colors flex items-center gap-2 ${
+                          ws.name === currentWorkspace
+                            ? 'bg-accent-primary/10 text-accent-primary cursor-default'
+                            : 'hover:bg-bg-tertiary text-text-secondary'
+                        } ${busy ? 'opacity-70' : ''}`}
+                      >
+                        <FolderIcon className="w-4 h-4 shrink-0" />
+                        <span className="font-mono truncate">{ws.name}</span>
+                        <span className="text-xs text-text-muted ml-auto">
+                          {ws.branch ?? t({ en: 'unknown', fr: 'inconnue' })}
+                          {wsSync && <SyncBadge sync={wsSync} className="ml-1.5" />}
+                        </span>
+                        {ws.name === currentWorkspace && (
+                          <span className="text-[10px] text-accent-primary ml-1">
+                            {t({ en: '(current)', fr: '(actuel)' })}
+                          </span>
+                        )}
+                      </button>
+                      {ws.name !== currentWorkspace && !busy && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setError(null)
+                            setConflictingSessionIds(null)
+                            setConfirmDelete(ws.name)
+                          }}
+                          className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 text-xs text-text-muted hover:text-accent-error transition-opacity px-1 py-0.5 rounded"
+                          title={t({ en: 'Delete workspace', fr: 'Supprimer l’espace de travail' })}
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
         </ScrollArea>
 
         <CreateInputSection

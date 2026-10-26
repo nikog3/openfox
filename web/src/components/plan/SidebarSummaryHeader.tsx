@@ -7,6 +7,7 @@ import { useSessionStore } from '../../stores/session'
 import { useDevServerStore } from '../../stores/dev-server'
 import { useDevServer } from '../../hooks/useDevServer'
 import { useGitStatus } from '../../hooks/useGitStatus'
+import { useUpstreamSync } from '../../hooks/useUpstreamSync'
 import { SETTINGS_KEYS } from '../../lib/resources'
 import { useSetting } from '../../hooks/useSetting'
 import { ProgressBar } from '../shared/ProgressBar'
@@ -206,9 +207,10 @@ export function SidebarSummaryHeader({ visible }: SidebarSummaryHeaderProps) {
   const metadataPopoverRef = useRef<PopoverHandle>(null)
   const workspacePopoverRef = useRef<PopoverHandle>(null)
   const showEditorLink = useSetting(SETTINGS_KEYS.DISPLAY_SHOW_OPEN_IN_EDITOR).value === 'true'
+  const workspaceName = pathBasename(session?.workspace ?? '') || 'original'
+  const upstreamSync = useUpstreamSync(workspaceName, session?.projectId ?? '')
+  const badgeSync = upstreamSync ?? sync
   if (!visible || !session) return null
-
-  const workspaceName = pathBasename(session.workspace ?? '') || 'original'
 
   /* ---- Metadata ---- */
   const allEntries = session.metadataEntries ?? {}
@@ -253,7 +255,7 @@ export function SidebarSummaryHeader({ visible }: SidebarSummaryHeaderProps) {
           <span className="text-text-muted">/</span>
           <BranchIcon className="w-3.5 h-3.5 text-text-muted flex-shrink-0" />
           <span className="truncate text-text-secondary max-w-[120px]">{branch ?? '-'}</span>
-          {sync && <SyncBadge sync={sync} className="gap-1 text-xs" />}
+          {badgeSync && <SyncBadge sync={badgeSync} className="gap-1 text-xs" />}
           {diffFiles.length > 0 ? (
             <span className="text-text-muted shrink-0 font-mono">{`+${totalAdditions} -${totalDeletions}`}</span>
           ) : (
