@@ -4,6 +4,21 @@
 
 Autonomous coding agent for local LLMs with contract-driven execution.
 
+## Fork Features
+
+Features added by this fork on top of upstream:
+
+| Feature                                                                        | Status   |
+| ------------------------------------------------------------------------------ | -------- |
+| Git panel — staging, diffs, commit flow, upstream sync badges, per-file revert | Unstable |
+| Live prefill progress indicator (llama.cpp `/slots` polling)                   | Unstable |
+| Local speech-to-text dictation (Whisper + Vosk, live VAD)                      | Unstable |
+| Zoomable image modal (wheel, drag/pinch pan, keyboard)                         | Stable   |
+| Context breakdown display + context-limit tool result truncation               | Unstable |
+| Sequential session naming with retry-progress UI                               | Unstable |
+| Dynamic output caps with measured backstop                                     | Unstable |
+| Session-aware "Open Folder" action                                             | Unstable |
+
 _Session — Criteria tracking, tool calls, and streaming responses_
 ![Session](docs/screenshots/session.png)
 
