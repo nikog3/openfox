@@ -1,3 +1,5 @@
+import { displayHost } from '../../utils/network.js'
+
 export interface OpenFoxMcpBootstrapInput {
   host: string
   port: number
@@ -12,12 +14,6 @@ export interface OpenFoxMcpBootstrapConfig {
   headers?: Record<string, string>
 }
 
-const WILDCARD_HOSTS = new Set(['0.0.0.0', '::', '*'])
-
-function normalizeHost(host: string): string {
-  return WILDCARD_HOSTS.has(host) ? '127.0.0.1' : host
-}
-
 export function buildOpenFoxMcpBootstrap(input: OpenFoxMcpBootstrapInput): OpenFoxMcpBootstrapConfig {
   if (input.authRequired && !input.sessionToken) {
     throw new Error('Session token could not be computed — cannot bootstrap an authenticated MCP endpoint')
@@ -26,7 +22,7 @@ export function buildOpenFoxMcpBootstrap(input: OpenFoxMcpBootstrapInput): OpenF
   const config: OpenFoxMcpBootstrapConfig = {
     name: 'openfox',
     transport: 'http',
-    url: `http://${normalizeHost(input.host)}:${input.port}/mcp`,
+    url: `http://${displayHost(input.host)}:${input.port}/mcp`,
   }
   if (input.authRequired && input.sessionToken) {
     config.headers = { Authorization: `Bearer ${input.sessionToken}` }

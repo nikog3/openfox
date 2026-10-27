@@ -5,6 +5,12 @@ import path from 'node:path'
 import { VERSION } from '../../constants.js'
 import { serverT } from '../i18n.js'
 
+const WILDCARD_HOSTS = new Set(['0.0.0.0', '::', '*'])
+
+export function displayHost(host: string): string {
+  return WILDCARD_HOSTS.has(host) ? 'localhost' : host
+}
+
 export interface NetworkInterface {
   ip: string
   family: 'IPv4' | 'IPv6'
@@ -137,7 +143,9 @@ export function displayStartupBanner(config: {
 
     if (ips.length === 0) {
       // eslint-disable-next-line no-console
-      console.log(`  🌐 ${serverT({ en: `Server: http://0.0.0.0:${port}`, fr: `Serveur : http://0.0.0.0:${port}` })}`)
+      console.log(
+        `  🌐 ${serverT({ en: `Server: http://${displayHost(host)}:${port}`, fr: `Serveur : http://${displayHost(host)}:${port}` })}`,
+      )
 
       console.warn(
         `  ⚠️  ${serverT({ en: 'Warning: No valid network interfaces detected', fr: 'Avertissement : aucune interface réseau valide détectée' })}`,

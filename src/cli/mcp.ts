@@ -6,15 +6,11 @@ import { loadAuthConfig } from './auth.js'
 import { loadGlobalConfig } from './config.js'
 import { getAuthKeyPath } from './paths.js'
 import { buildOpenFoxMcpBootstrap, type OpenFoxMcpBootstrapConfig } from '../server/mcp/server/bootstrap.js'
+import { displayHost } from '../server/utils/network.js'
 import { cliT } from './i18n.js'
 
 const MODE_DEFAULT_PORTS: Record<Mode, number> = { production: 10369, development: 10469, test: 10369 }
-const WILDCARD_HOSTS = new Set(['0.0.0.0', '::', '*'])
 const PROBE_INCREMENT = 15
-
-function probeHost(host: string): string {
-  return WILDCARD_HOSTS.has(host) ? '127.0.0.1' : host
-}
 
 /**
  * Candidate ports to probe for a live server: the preferred port (mode
@@ -102,7 +98,7 @@ export async function runMcpCommand(mode: Mode, options: { password?: string; po
   const configuredPort = config.server?.port ?? MODE_DEFAULT_PORTS[mode]
   const requestedPort = options.port ?? configuredPort
 
-  const livePort = await findLivePort(probeHost(host), portCandidates(MODE_DEFAULT_PORTS[mode], requestedPort))
+  const livePort = await findLivePort(displayHost(host), portCandidates(MODE_DEFAULT_PORTS[mode], requestedPort))
   const port = livePort ?? requestedPort
   if (!livePort) {
     console.warn(

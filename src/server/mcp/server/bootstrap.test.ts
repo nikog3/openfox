@@ -29,14 +29,14 @@ describe('buildOpenFoxMcpBootstrap', () => {
     expect(config.headers).toEqual({ Authorization: 'Bearer tok-123' })
   })
 
-  it('normalizes wildcard bind hosts to loopback', () => {
+  it('normalizes wildcard bind hosts to localhost', () => {
     const config = buildOpenFoxMcpBootstrap({
       host: '0.0.0.0',
       port: 10469,
       authRequired: false,
       sessionToken: null,
     })
-    expect(config.url).toBe('http://127.0.0.1:10469/mcp')
+    expect(config.url).toBe('http://localhost:10469/mcp')
   })
 
   it('refuses to emit a config when network mode lacks a token', () => {

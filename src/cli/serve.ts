@@ -1,7 +1,7 @@
 import { createServer } from '../server/index.js'
 import { loadConfig } from '../server/config.js'
 import { logger } from '../server/utils/logger.js'
-import { displayStartupBanner } from '../server/utils/network.js'
+import { displayStartupBanner, displayHost } from '../server/utils/network.js'
 import { detectProviderDefaultsFromUrl } from '../server/llm/backend.js'
 import { loadGlobalConfig, getActiveProvider, getDefaultModel } from './config.js'
 import { getDatabasePath, getGlobalConfigPath, ensureDataDirExists } from './paths.js'
@@ -117,10 +117,8 @@ export async function runServe(options: ServeOptions): Promise<void> {
   })
 
   if (merged.server.openBrowser) {
-    open(`http://${merged.server.host === '127.0.0.1' ? 'localhost' : merged.server.host}:${merged.server.port}`).catch(
-      () => {
-        logger.warn('Could not open browser automatically')
-      },
-    )
+    open(`http://${displayHost(merged.server.host)}:${merged.server.port}`).catch(() => {
+      logger.warn('Could not open browser automatically')
+    })
   }
 }

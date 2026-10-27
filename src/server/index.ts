@@ -71,6 +71,7 @@ import { createNotificationRoutes } from './routes/notifications.js'
 import { pluginAssetToken } from './plugins/asset-auth.js'
 import { registerSessionFavoriteRoute } from './routes/session-favorite.js'
 import { logger, setLogLevel } from './utils/logger.js'
+import { displayHost } from './utils/network.js'
 import { VERSION } from '../constants.js'
 import {
   loadServerAuthConfig,
@@ -3965,10 +3966,11 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
             })
           })
           const client = getLLMClient()
-          logger.info(`OpenFox server running at http://${host}:${actualPort}`)
-          logger.info(`WebSocket available at ws://${host}:${actualPort}/ws`)
+          const display = displayHost(host ?? '127.0.0.1')
+          logger.info(`OpenFox server running at http://${display}:${actualPort}`)
+          logger.info(`WebSocket available at ws://${display}:${actualPort}/ws`)
           logger.info(
-            `MCP endpoint available at http://${host}:${actualPort}/mcp — run 'openfox mcp' for a paste-ready client config`,
+            `MCP endpoint available at http://${display}:${actualPort}/mcp — run 'openfox mcp' for a paste-ready client config`,
           )
           logger.info(`LLM backend: ${client.getBackend()}, model: ${client.getModel()}, url: ${config.llm.baseUrl}`)
           resolve({ port: actualPort })

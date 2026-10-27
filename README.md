@@ -18,6 +18,7 @@ Features added by this fork on top of upstream:
 | Sequential session naming with retry-progress UI                               | Unstable |
 | Dynamic output caps with measured backstop                                     | Unstable |
 | Session-aware "Open Folder" action                                             | Unstable |
+| Network-mode URLs use localhost (browsers refuse 0.0.0.0)                      | Stable   |
 
 _Session — Criteria tracking, tool calls, and streaming responses_
 ![Session](docs/screenshots/session.png)
