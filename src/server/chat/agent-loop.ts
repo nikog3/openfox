@@ -12,7 +12,7 @@ import type { InjectedFile, StatsIdentity, ToolCall, ToolMode, ToolResult } from
 import type { ServerMessage } from '../../shared/protocol.js'
 import type { LLMClientWithModel } from '../llm/client.js'
 import { getSlotProgressBaseUrl } from '../llm/client.js'
-import { estimatePromptTokens, startPrefillProgressPolling } from '../llm/prefill-progress.js'
+import { estimatePromptTokens, fetchKnownTaskIds, startPrefillProgressPolling } from '../llm/prefill-progress.js'
 import { getModelProfile } from '../llm/profiles.js'
 import type { LLMToolDefinition } from '../llm/types.js'
 import type { ProviderManager } from '../provider-manager.js'
@@ -672,16 +672,23 @@ export async function runTopLevelAgentLoop(
         }),
       )
       const slotProgressUrl = getSlotProgressBaseUrl(attemptClient)
-      const stopPrefillProgress = slotProgressUrl
-        ? startPrefillProgressPolling({
-            serverBaseUrl: slotProgressUrl,
-            expectedPromptTokens,
-            onProgress: (snapshot) => {
-              config.onMessage?.(createChatPrefillProgressMessage({ messageId: assistantMsgId, ...snapshot }))
-            },
-            ...(signal ? { signal } : {}),
-          })
-        : () => {}
+      let stopPrefillProgress = () => {}
+      if (slotProgressUrl) {
+        // Snapshot the engine's known task ids BEFORE the request is sent:
+        // the slot that gains a new id_task afterwards is ours. Identity
+        // tracking replaces the prompt-size guess, which is ambiguous with
+        // multiple parallel slots (llama.cpp --parallel >= 2).
+        const knownTaskIds = await fetchKnownTaskIds(slotProgressUrl, signal)
+        stopPrefillProgress = startPrefillProgressPolling({
+          serverBaseUrl: slotProgressUrl,
+          expectedPromptTokens,
+          ...(knownTaskIds ? { knownTaskIds } : {}),
+          onProgress: (snapshot) => {
+            config.onMessage?.(createChatPrefillProgressMessage({ messageId: assistantMsgId, ...snapshot }))
+          },
+          ...(signal ? { signal } : {}),
+        })
+      }
 
       const attemptResult = await consumeStreamGenerator(streamGen, async (event) => {
         // First streamed event: the prefill is over, stop reporting progress.

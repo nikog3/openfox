@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, afterEach } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { PrefillIndicator } from './PrefillIndicator'
 
 describe('PrefillIndicator', () => {
@@ -88,5 +88,124 @@ describe('PrefillIndicator', () => {
     const text = document.body.textContent ?? ''
     expect(text).toContain('41 234')
     expect(text).toContain('92%')
+  })
+
+  it('shows the info toggle only when the engine measures progress (slot id known)', () => {
+    render(<PrefillIndicator prefill={{ messageId: 'm1', contextTokens: 40000, startedAt: Date.now() - 1000 }} />)
+    expect(screen.queryByTestId('prefill-details-toggle')).toBeNull()
+
+    render(
+      <PrefillIndicator
+        prefill={{
+          messageId: 'm1',
+          contextTokens: 40000,
+          startedAt: Date.now() - 1000,
+          promptTokens: 40000,
+          processedTokens: 30000,
+          percent: 75,
+          slotId: 1,
+        }}
+      />,
+    )
+    expect(screen.getByTestId('prefill-details-toggle')).toBeTruthy()
+  })
+
+  it('shows the tracked slot id in the main line without opening the details panel', () => {
+    render(
+      <PrefillIndicator
+        prefill={{
+          messageId: 'm1',
+          contextTokens: 40000,
+          startedAt: Date.now() - 1000,
+          promptTokens: 40000,
+          processedTokens: 30000,
+          percent: 75,
+          slotId: 1,
+        }}
+      />,
+    )
+    expect(screen.getByTestId('prefill-slot-id').textContent).toBe('#1')
+    expect(screen.queryByTestId('prefill-details-panel')).toBeNull()
+  })
+
+  it('hides the slot id in the main line when the engine does not measure progress', () => {
+    render(<PrefillIndicator prefill={{ messageId: 'm1', contextTokens: 40000, startedAt: Date.now() - 1200 }} />)
+    expect(screen.queryByTestId('prefill-slot-id')).toBeNull()
+  })
+
+  it('shows the tracked slot id in the main line without opening the details panel', () => {
+    render(
+      <PrefillIndicator
+        prefill={{
+          messageId: 'm1',
+          contextTokens: 40000,
+          startedAt: Date.now() - 1000,
+          promptTokens: 40000,
+          processedTokens: 30000,
+          percent: 75,
+          slotId: 1,
+        }}
+      />,
+    )
+    expect(screen.getByTestId('prefill-slot-id').textContent).toBe('#1')
+    expect(screen.queryByTestId('prefill-details-panel')).toBeNull()
+  })
+
+  it('hides the slot id in the main line when the engine does not measure progress', () => {
+    render(<PrefillIndicator prefill={{ messageId: 'm1', contextTokens: 40000, startedAt: Date.now() - 1200 }} />)
+    expect(screen.queryByTestId('prefill-slot-id')).toBeNull()
+  })
+
+  it('toggles the details panel on click and lists the tracked slot identity', () => {
+    render(
+      <PrefillIndicator
+        prefill={{
+          messageId: 'm1',
+          contextTokens: 40000,
+          startedAt: Date.now() - 1000,
+          promptTokens: 40000,
+          processedTokens: 30000,
+          percent: 75,
+          speedTps: 120,
+          etaSeconds: 150,
+          cachedTokens: 35000,
+          slotId: 1,
+          taskId: 15247,
+        }}
+      />,
+    )
+    const toggle = screen.getByTestId('prefill-details-toggle')
+    expect(screen.queryByTestId('prefill-details-panel')).toBeNull()
+
+    fireEvent.click(toggle)
+    const panel = screen.getByTestId('prefill-details-panel')
+    const text = panel.textContent ?? ''
+    expect(text).toContain('#1')
+    expect(text).toContain('15247')
+    expect(text).toContain('35 000')
+    expect(text).toContain('30 000')
+
+    fireEvent.click(toggle)
+    expect(screen.queryByTestId('prefill-details-panel')).toBeNull()
+  })
+
+  it('omits detail rows for values the engine did not report', () => {
+    render(
+      <PrefillIndicator
+        prefill={{
+          messageId: 'm1',
+          contextTokens: 40000,
+          startedAt: Date.now() - 1000,
+          promptTokens: 40000,
+          processedTokens: 30000,
+          percent: 75,
+          slotId: 0,
+        }}
+      />,
+    )
+    fireEvent.click(screen.getByTestId('prefill-details-toggle'))
+    const text = screen.getByTestId('prefill-details-panel').textContent ?? ''
+    expect(text).toContain('#0')
+    expect(text).not.toContain('15247')
   })
 })

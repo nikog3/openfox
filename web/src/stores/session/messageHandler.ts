@@ -855,6 +855,9 @@ export function handleServerMessage(
               percent: payload.percent,
               ...(payload.etaSeconds !== undefined ? { etaSeconds: payload.etaSeconds } : {}),
               ...(payload.speedTps !== undefined ? { speedTps: payload.speedTps } : {}),
+              ...(payload.slotId !== undefined ? { slotId: payload.slotId } : {}),
+              ...(payload.taskId !== undefined ? { taskId: payload.taskId } : {}),
+              ...(payload.cachedTokens !== undefined ? { cachedTokens: payload.cachedTokens } : {}),
             },
           }
         })

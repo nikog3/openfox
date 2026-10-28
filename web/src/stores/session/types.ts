@@ -80,6 +80,12 @@ export interface PrefillState {
   etaSeconds?: number
   /** Live prefill speed in tokens/sec, when available. */
   speedTps?: number
+  /** The engine slot handling the request (llama.cpp slot id), when measured. */
+  slotId?: number
+  /** The engine task id of the request (llama.cpp id_task), when reported. */
+  taskId?: number
+  /** Prompt tokens served from the KV cache, when reported by the engine. */
+  cachedTokens?: number
 }
 
 export interface StreamingBuffer {

@@ -4,6 +4,7 @@ import {
   computePrefillSnapshot,
   startPrefillProgressPolling,
   estimatePromptTokens,
+  fetchKnownTaskIds,
   type SlotInfo,
 } from './prefill-progress.js'
 
@@ -93,10 +94,147 @@ describe('selectPrefillSlot', () => {
   })
 })
 
+describe('selectPrefillSlot with known task ids', () => {
+  const taskSlot = (id: number, prompt: number, processed: number, idTask: number): SlotInfo => ({
+    id,
+    is_processing: true,
+    n_prompt_tokens: prompt,
+    n_prompt_tokens_processed: processed,
+    id_task: idTask,
+  })
+
+  it('picks the slot with a fresh task even when two busy slots are size-ambiguous', () => {
+    const slots = [taskSlot(0, 40000, 1000, 100), taskSlot(1, 42000, 1000, 101)]
+    // Without identity these two are indistinguishable (40k vs 42k, 15% guard).
+    expect(selectPrefillSlot(slots, 40000)).toBeNull()
+    // Task 100 predates the request → slot 1 (task 101) is ours.
+    expect(selectPrefillSlot(slots, 40000, new Set([100]))?.id).toBe(1)
+  })
+
+  it('returns null when every busy slot carries a known task', () => {
+    const slots = [taskSlot(0, 40000, 1000, 100), taskSlot(1, 42000, 1000, 101)]
+    expect(selectPrefillSlot(slots, 40000, new Set([100, 101]))).toBeNull()
+  })
+
+  it('disambiguates several fresh tasks with the size heuristic', () => {
+    const slots = [taskSlot(0, 40000, 1000, 100), taskSlot(1, 80000, 1000, 101), taskSlot(2, 41000, 1000, 102)]
+    // Tasks 101 and 102 are fresh; slot 2 (41k) is closest to 40k.
+    expect(selectPrefillSlot(slots, 40000, new Set([100]))?.id).toBe(2)
+  })
+
+  it('falls back to the size heuristic when slots do not report id_task', () => {
+    const slots = [busySlot(0, 40000, 1000), busySlot(1, 80000, 1000)]
+    expect(selectPrefillSlot(slots, 40000, new Set([100]))?.id).toBe(0)
+  })
+
+  it('does not adopt a single fresh slot whose size is far from the estimate', () => {
+    const slots = [taskSlot(0, 40000, 1000, 100), taskSlot(1, 90000, 2000, 101)]
+    expect(selectPrefillSlot(slots, 40000, new Set([100]))).toBeNull()
+  })
+
+  it('adopts a single fresh slot whose size is within the tolerance band', () => {
+    const slots = [taskSlot(0, 40000, 1000, 100), taskSlot(1, 48000, 2000, 101)]
+    expect(selectPrefillSlot(slots, 40000, new Set([100]))?.id).toBe(1)
+  })
+
+  it('adopts no fresh slot when all fresh sizes are outside the tolerance band', () => {
+    const slots = [taskSlot(0, 40000, 1000, 100), taskSlot(1, 90000, 2000, 101), taskSlot(2, 95000, 2000, 102)]
+    expect(selectPrefillSlot(slots, 40000, new Set([100]))).toBeNull()
+  })
+})
+
+describe('selectPrefillSlot with claimed task ids', () => {
+  const taskSlot = (id: number, prompt: number, processed: number, idTask: number): SlotInfo => ({
+    id,
+    is_processing: true,
+    n_prompt_tokens: prompt,
+    n_prompt_tokens_processed: processed,
+    id_task: idTask,
+  })
+
+  it('excludes tasks claimed by other pollers from the fresh set', () => {
+    const slots = [taskSlot(0, 41000, 1000, 101), taskSlot(1, 42000, 1000, 102)]
+    // Both tasks are fresh, but task 101 is claimed by another poller → slot 1 is ours.
+    expect(selectPrefillSlot(slots, 41000, new Set([100]), new Set([101]))?.id).toBe(1)
+  })
+
+  it('returns null when the only fresh task is claimed', () => {
+    const slots = [taskSlot(0, 40000, 1000, 100), taskSlot(1, 48000, 2000, 101)]
+    expect(selectPrefillSlot(slots, 40000, new Set([100]), new Set([101]))).toBeNull()
+  })
+})
+
+describe('fetchKnownTaskIds', () => {
+  it('returns the set of task ids reported by the engine', async () => {
+    const fetchImpl = (async () =>
+      Response.json([
+        { id: 0, is_processing: true, n_prompt_tokens: 100, n_prompt_tokens_processed: 50, id_task: 41 },
+        { id: 1, is_processing: false, n_prompt_tokens: 0, n_prompt_tokens_processed: 0, id_task: 42 },
+      ])) as unknown as typeof fetch
+    const ids = await fetchKnownTaskIds('http://localhost:8080/v1', undefined, fetchImpl)
+    expect(ids).toEqual(new Set([41, 42]))
+  })
+
+  it('returns null when the /slots endpoint fails', async () => {
+    const fetchImpl = (async () => {
+      throw new Error('connection refused')
+    }) as unknown as typeof fetch
+    expect(await fetchKnownTaskIds('http://localhost:8080', undefined, fetchImpl)).toBeNull()
+  })
+
+  it('returns null when the build does not report id_task', async () => {
+    const fetchImpl = (async () =>
+      Response.json([
+        { id: 0, is_processing: false, n_prompt_tokens: 0, n_prompt_tokens_processed: 0 },
+      ])) as unknown as typeof fetch
+    expect(await fetchKnownTaskIds('http://localhost:8080', undefined, fetchImpl)).toBeNull()
+  })
+
+  it('returns null for a non-array payload', async () => {
+    const fetchImpl = (async () => Response.json({ error: 'not found' })) as unknown as typeof fetch
+    expect(await fetchKnownTaskIds('http://localhost:8080', undefined, fetchImpl)).toBeNull()
+  })
+
+  it('returns null when the signal is already aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    // Mirrors real fetch: an aborted signal rejects the request.
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      if (init?.signal?.aborted) throw new Error('aborted')
+      return Response.json([
+        { id: 0, is_processing: false, n_prompt_tokens: 0, n_prompt_tokens_processed: 0, id_task: 41 },
+      ])
+    }) as unknown as typeof fetch
+    expect(await fetchKnownTaskIds('http://localhost:8080', controller.signal, fetchImpl)).toBeNull()
+  })
+
+  it('aborts the /slots fetch through the passed signal', async () => {
+    const controller = new AbortController()
+    const fetchImpl = (async (_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      })) as unknown as typeof fetch
+    const pending = fetchKnownTaskIds('http://localhost:8080', controller.signal, fetchImpl)
+    controller.abort()
+    expect(await pending).toBeNull()
+  })
+
+  it('gives up on a hung /slots endpoint after the snapshot timeout', async () => {
+    const fetchImpl = (async (_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('timed out')), { once: true })
+      })) as unknown as typeof fetch
+    const start = Date.now()
+    expect(await fetchKnownTaskIds('http://localhost:8080', undefined, fetchImpl)).toBeNull()
+    // The snapshot is an optimization, never a blocker for the LLM call.
+    expect(Date.now() - start).toBeLessThan(5000)
+  })
+})
+
 describe('computePrefillSnapshot', () => {
   it('computes percent from processed over the known total', () => {
     const snapshot = computePrefillSnapshot(busySlot(0, 40000, 20000), 40000, undefined, Date.now())
-    expect(snapshot).toEqual({ promptTokens: 40000, processedTokens: 20000, percent: 50 })
+    expect(snapshot).toEqual({ promptTokens: 40000, processedTokens: 20000, percent: 50, slotId: 0, cachedTokens: 0 })
   })
 
   it('ignores the rolling engine total and measures over the known total', () => {
@@ -121,7 +259,7 @@ describe('computePrefillSnapshot', () => {
 
   it('falls back to the engine total when no known total is available', () => {
     const snapshot = computePrefillSnapshot(busySlot(0, 40000, 20000), 0, undefined, Date.now())
-    expect(snapshot).toEqual({ promptTokens: 40000, processedTokens: 20000, percent: 50 })
+    expect(snapshot).toEqual({ promptTokens: 40000, processedTokens: 20000, percent: 50, slotId: 0, cachedTokens: 0 })
   })
 
   it('computes percent over the uncached work on a warm prefill', () => {
@@ -150,6 +288,37 @@ describe('computePrefillSnapshot', () => {
     const stalled = computePrefillSnapshot(busySlot(0, 40000, 1000), 40000, { processedTokens: 1000, at: 1000 }, 2000)
     expect(stalled.speedTps).toBeUndefined()
     expect(stalled.etaSeconds).toBeUndefined()
+  })
+
+  it('carries the tracked slot identity and the KV cache split when the engine reports them', () => {
+    const snapshot = computePrefillSnapshot(
+      {
+        id: 1,
+        is_processing: true,
+        n_prompt_tokens: 40000,
+        n_prompt_tokens_processed: 20000,
+        n_prompt_tokens_cache: 35000,
+        id_task: 15247,
+      },
+      40000,
+      undefined,
+      Date.now(),
+    )
+    expect(snapshot.slotId).toBe(1)
+    expect(snapshot.taskId).toBe(15247)
+    expect(snapshot.cachedTokens).toBe(35000)
+  })
+
+  it('leaves task id and cache undefined when the engine does not report them', () => {
+    const snapshot = computePrefillSnapshot(
+      { id: 0, is_processing: true, n_prompt_tokens: 40000, n_prompt_tokens_processed: 20000 },
+      40000,
+      undefined,
+      Date.now(),
+    )
+    expect(snapshot.slotId).toBe(0)
+    expect(snapshot.taskId).toBeUndefined()
+    expect(snapshot.cachedTokens).toBeUndefined()
   })
 })
 
@@ -294,6 +463,42 @@ describe('startPrefillProgressPolling', () => {
     }
   })
 
+  it('tracks the fresh-task slot among two busy slots (identity, not size)', async () => {
+    vi.useFakeTimers()
+    try {
+      let processed = 0
+      const fetchImpl = (async () =>
+        Response.json([
+          { id: 0, is_processing: true, n_prompt_tokens: 40000, n_prompt_tokens_processed: 5000, id_task: 100 },
+          {
+            id: 1,
+            is_processing: true,
+            n_prompt_tokens: 41000,
+            n_prompt_tokens_processed: (processed += 10250),
+            id_task: 101,
+          },
+        ])) as unknown as typeof fetch
+      const onProgress = vi.fn()
+      const stop = startPrefillProgressPolling({
+        serverBaseUrl: 'http://localhost:8080/v1',
+        expectedPromptTokens: 41000,
+        knownTaskIds: new Set([100]),
+        onProgress,
+        fetchImpl,
+        intervalMs: 100,
+      })
+      await vi.advanceTimersByTimeAsync(100)
+      // Slot 1 (our fresh task) at 10250/41000 = 25% — not slot 0's numbers,
+      // even though slot 0's size (40k) is closer to the 41k estimate.
+      expect(onProgress).toHaveBeenCalledTimes(1)
+      expect(onProgress.mock.calls[0]?.[0].percent).toBe(25)
+      expect(onProgress.mock.calls[0]?.[0].processedTokens).toBe(10250)
+      stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('emits nothing when the ambiguity guard triggers', async () => {
     vi.useFakeTimers()
     try {
@@ -357,6 +562,146 @@ describe('startPrefillProgressPolling', () => {
       stop()
       await vi.advanceTimersByTimeAsync(500)
       expect(onProgress).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('two simultaneous pollers each track their own task (no cross-adoption)', async () => {
+    vi.useFakeTimers()
+    try {
+      const slots = [
+        { id: 0, is_processing: true, n_prompt_tokens: 56720, n_prompt_tokens_processed: 1000, id_task: 24 },
+        { id: 1, is_processing: true, n_prompt_tokens: 26974, n_prompt_tokens_processed: 500, id_task: 25 },
+      ]
+      const fetchImpl = (async () => Response.json(slots)) as unknown as typeof fetch
+      const known = new Set([23])
+      const a = vi.fn()
+      const b = vi.fn()
+      const stopA = startPrefillProgressPolling({
+        serverBaseUrl: 'http://localhost:9101/v1',
+        expectedPromptTokens: 56720,
+        knownTaskIds: known,
+        onProgress: a,
+        fetchImpl,
+        intervalMs: 100,
+      })
+      const stopB = startPrefillProgressPolling({
+        serverBaseUrl: 'http://localhost:9102/v1',
+        expectedPromptTokens: 26974,
+        knownTaskIds: known,
+        onProgress: b,
+        fetchImpl,
+        intervalMs: 100,
+      })
+      for (let i = 0; i < 4; i++) {
+        await vi.advanceTimersByTimeAsync(100)
+      }
+      expect(a).toHaveBeenCalledTimes(4)
+      expect(b).toHaveBeenCalledTimes(4)
+      expect(a.mock.calls[0]?.[0].slotId).toBe(0)
+      expect(a.mock.calls[0]?.[0].taskId).toBe(24)
+      expect(b.mock.calls[0]?.[0].slotId).toBe(1)
+      expect(b.mock.calls[0]?.[0].taskId).toBe(25)
+      stopA()
+      stopB()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps polling without emitting while only a neighbor task is visible', async () => {
+    vi.useFakeTimers()
+    try {
+      let landed = false
+      const fetchImpl = (async () =>
+        Response.json(
+          landed
+            ? [
+                {
+                  id: 0,
+                  is_processing: true,
+                  n_prompt_tokens: 56720,
+                  n_prompt_tokens_processed: 1000,
+                  id_task: 24,
+                },
+                {
+                  id: 1,
+                  is_processing: true,
+                  n_prompt_tokens: 26974,
+                  n_prompt_tokens_processed: 500,
+                  id_task: 25,
+                },
+              ]
+            : [
+                {
+                  id: 0,
+                  is_processing: true,
+                  n_prompt_tokens: 56720,
+                  n_prompt_tokens_processed: 1000,
+                  id_task: 24,
+                },
+                { id: 1, is_processing: false, n_prompt_tokens: 0, n_prompt_tokens_processed: 0, id_task: 23 },
+              ],
+        )) as unknown as typeof fetch
+      const onProgress = vi.fn()
+      const stop = startPrefillProgressPolling({
+        serverBaseUrl: 'http://localhost:9103/v1',
+        expectedPromptTokens: 26974,
+        knownTaskIds: new Set([23]),
+        onProgress,
+        fetchImpl,
+        intervalMs: 100,
+      })
+      // The own request has not landed yet: the only fresh task (56k) does
+      // not match the 26.9k estimate → no adoption, no emission.
+      await vi.advanceTimersByTimeAsync(300)
+      expect(onProgress).not.toHaveBeenCalled()
+      landed = true
+      await vi.advanceTimersByTimeAsync(100)
+      expect(onProgress).toHaveBeenCalledTimes(1)
+      expect(onProgress.mock.calls[0]?.[0].taskId).toBe(25)
+      stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('releases the claimed task when the poller stops', async () => {
+    vi.useFakeTimers()
+    try {
+      const slots = [
+        { id: 0, is_processing: true, n_prompt_tokens: 56720, n_prompt_tokens_processed: 1000, id_task: 24 },
+      ]
+      const fetchImpl = (async () => Response.json(slots)) as unknown as typeof fetch
+      const known = new Set([23])
+      const first = vi.fn()
+      const stopFirst = startPrefillProgressPolling({
+        serverBaseUrl: 'http://localhost:9104/v1',
+        expectedPromptTokens: 56720,
+        knownTaskIds: known,
+        onProgress: first,
+        fetchImpl,
+        intervalMs: 100,
+      })
+      await vi.advanceTimersByTimeAsync(100)
+      expect(first).toHaveBeenCalledTimes(1)
+      stopFirst()
+      // After the first poller stops, a new poller for the same server can
+      // adopt the same task again (the next call of the same session).
+      const second = vi.fn()
+      const stopSecond = startPrefillProgressPolling({
+        serverBaseUrl: 'http://localhost:9104/v1',
+        expectedPromptTokens: 56720,
+        knownTaskIds: known,
+        onProgress: second,
+        fetchImpl,
+        intervalMs: 100,
+      })
+      await vi.advanceTimersByTimeAsync(100)
+      expect(second).toHaveBeenCalledTimes(1)
+      expect(second.mock.calls[0]?.[0].taskId).toBe(24)
+      stopSecond()
     } finally {
       vi.useRealTimers()
     }

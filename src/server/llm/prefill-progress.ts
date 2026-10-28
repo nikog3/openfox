@@ -10,6 +10,19 @@ import { stripVersionPrefix } from './url-utils.js'
  * uncached remainder of that known total; n_prompt_tokens is a rolling value
  * in some builds (it lags n_prompt_tokens_processed) and is only used as a
  * fallback when no known total is available.
+ *
+ * Slot identity: with multiple parallel slots (llama.cpp --parallel >= 2),
+ * matching by prompt size alone is ambiguous (two busy slots of similar size,
+ * or a stale estimate pointing at the wrong slot). llama.cpp reports a
+ * unique, monotonically-increasing id_task per request in /slots, so the
+ * caller snapshots the known task ids BEFORE sending the request and the
+ * poller tracks the slot whose id_task is new. Two concurrent sessions on
+ * the same server would each see the other's fresh task, so a fresh task is
+ * only adopted when its prompt size is plausible (within ADOPTION_TOLERANCE
+ * of the expected size) and task ids adopted by other pollers of the same
+ * server are excluded via a per-server claim registry. The size heuristic
+ * remains the fallback for builds that do not report id_task.
+ *
  * The poller runs for the duration of ONE LLM call and degrades silently
  * (no emission) when it cannot reliably identify the request's slot.
  */
@@ -25,6 +38,12 @@ export interface PrefillProgressSnapshot {
   etaSeconds?: number
   /** Live prefill speed in tokens/sec, when measurable. */
   speedTps?: number
+  /** The engine slot handling the request (llama.cpp slot id). */
+  slotId: number
+  /** The engine task id of the request (llama.cpp id_task), when reported. */
+  taskId?: number
+  /** Prompt tokens served from the KV cache, when reported by the engine. */
+  cachedTokens?: number
 }
 
 export interface SlotInfo {
@@ -34,12 +53,14 @@ export interface SlotInfo {
   n_prompt_tokens_processed: number
   /** Prompt tokens served from the KV cache (done without compute). */
   n_prompt_tokens_cache?: number
+  /** Unique, monotonically-increasing task id assigned by llama.cpp when a request lands. */
+  id_task?: number
 }
 
 export interface PrefillProgressOptions {
   /** LLM server base URL (version prefix stripped internally), e.g. http://host:8080/v1. */
   serverBaseUrl: string
-  /** Expected prompt size in tokens — the progress denominator and the slot disambiguator. */
+  /** Expected prompt size in tokens — the progress denominator (and size-heuristic tiebreaker). */
   expectedPromptTokens: number
   onProgress: (snapshot: PrefillProgressSnapshot) => void
   signal?: AbortSignal
@@ -49,10 +70,18 @@ export interface PrefillProgressOptions {
   maxConsecutiveFailures?: number
   /** Fetch implementation override (tests). */
   fetchImpl?: typeof fetch
+  /**
+   * Task ids the engine already knew about before the request was sent.
+   * The slot whose id_task is NOT in this set is the one handling our
+   * request — identity tracking that replaces the size heuristic.
+   */
+  knownTaskIds?: Set<number>
 }
 
 const DEFAULT_INTERVAL_MS = 350
 const MAX_CONSECUTIVE_FAILURES = 4
+/** The pre-request /slots snapshot is an optimization, never a blocker for the LLM call. */
+const KNOWN_TASKS_TIMEOUT_MS = 2000
 /** ~4 chars per token — same heuristic as the tool-definition budget (chat/token-budget.ts). */
 const CHARS_PER_TOKEN = 4
 
@@ -89,6 +118,31 @@ export function estimatePromptTokens(messages: ReadonlyArray<EstimatableMessage>
  * the best slot's distance — in that case we cannot tell which slot is ours.
  */
 const MATCH_TOLERANCE = 0.15
+/**
+ * A fresh task is adopted as the request's own only when its prompt size is
+ * within this fraction of the expected size — the pre-request snapshot and
+ * the request landing are not atomic, so a lone fresh task may belong to a
+ * concurrent request of another session.
+ */
+const ADOPTION_TOLERANCE = 0.5
+
+/**
+ * Task ids already adopted by other pollers of the same server (module-level
+ * registry, keyed by version-stripped server root). A claim is released when
+ * its poller stops; stale claims are harmless because id_task is monotonic
+ * and finished tasks are no longer reported as busy.
+ */
+const claimedTaskIdsByServer = new Map<string, Set<number>>()
+
+function claimedTaskIdsFor(serverBaseUrl: string): Set<number> {
+  const key = stripVersionPrefix(serverBaseUrl).replace(/\/+$/, '')
+  let claims = claimedTaskIdsByServer.get(key)
+  if (!claims) {
+    claims = new Set()
+    claimedTaskIdsByServer.set(key, claims)
+  }
+  return claims
+}
 
 /**
  * Prompt tokens served from the KV cache (done without compute).
@@ -124,19 +178,96 @@ function slotDone(slot: SlotInfo, expectedPromptTokens: number): number {
 }
 
 /**
- * Pick the busy slot that matches the expected prompt size.
- * Returns null when no slot is busy, or when two busy slots are both close
- * enough to the expected size to be indistinguishable (fail-safe: the caller
- * emits nothing rather than a confidently-wrong number).
+ * A fresh task is a plausible candidate for the request's own slot when its
+ * prompt size is within ADOPTION_TOLERANCE of the expected size — a lone
+ * fresh task whose size is far off is most likely a concurrent request from
+ * another session, not ours.
  */
-export function selectPrefillSlot(slots: SlotInfo[], expectedPromptTokens: number): SlotInfo | null {
+function slotIsPlausible(slot: SlotInfo, expectedPromptTokens: number): boolean {
+  if (expectedPromptTokens <= 0) return true
+  return Math.abs(slot.n_prompt_tokens - expectedPromptTokens) <= expectedPromptTokens * ADOPTION_TOLERANCE
+}
+
+/**
+ * Snapshot the task ids the engine already knows about (one GET /slots).
+ * Used to identify the new request's slot: the slot whose id_task is absent
+ * from this set is ours. Returns null when the endpoint is unreachable, the
+ * fetch is aborted or times out, the payload is not an array, or the build
+ * does not report id_task — the caller then falls back to the prompt-size
+ * heuristic. The fetch is bounded (KNOWN_TASKS_TIMEOUT_MS) so a wedged engine
+ * degrades to the heuristic instead of stalling the LLM call.
+ */
+export async function fetchKnownTaskIds(
+  serverBaseUrl: string,
+  signal?: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Set<number> | null> {
+  try {
+    const url = `${stripVersionPrefix(serverBaseUrl).replace(/\/+$/, '')}/slots`
+    const res = await fetchImpl(url, {
+      signal: AbortSignal.any([AbortSignal.timeout(KNOWN_TASKS_TIMEOUT_MS), ...(signal ? [signal] : [])]),
+    })
+    if (!res.ok) return null
+    const data = (await res.json()) as SlotInfo[]
+    if (!Array.isArray(data)) return null
+    const ids = data.map((s) => s.id_task).filter((id): id is number => typeof id === 'number')
+    return ids.length > 0 ? new Set(ids) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Pick the request's slot by identity (fresh id_task) when known task ids are
+ * available and the build reports them; otherwise by prompt-size proximity.
+ * A fresh task is only adopted when its prompt size is plausible for the
+ * expected prompt (a lone fresh task of a very different size is most likely
+ * a concurrent request of another session). claimedTaskIds are task ids
+ * already adopted by other pollers of the same server and are excluded from
+ * the fresh set. Returns null when no slot is busy, when no fresh task has
+ * landed yet, or when the size heuristic cannot disambiguate (fail-safe: the
+ * caller emits nothing rather than a confidently-wrong number).
+ */
+export function selectPrefillSlot(
+  slots: SlotInfo[],
+  expectedPromptTokens: number,
+  knownTaskIds?: Set<number>,
+  claimedTaskIds?: Set<number>,
+): SlotInfo | null {
   const busy = slots.filter(
     (s) =>
       s.is_processing && s.n_prompt_tokens > 0 && slotDone(s, expectedPromptTokens) < slotWork(s, expectedPromptTokens),
   )
   if (busy.length === 0) return null
-  if (busy.length === 1) return busy[0] ?? null
-  const scored = busy
+  if (knownTaskIds && busy.some((s) => s.id_task !== undefined)) {
+    const fresh = busy.filter(
+      (s) => s.id_task !== undefined && !knownTaskIds.has(s.id_task) && !claimedTaskIds?.has(s.id_task),
+    )
+    if (fresh.length === 1) {
+      const slot = fresh[0] ?? null
+      return slot && slotIsPlausible(slot, expectedPromptTokens) ? slot : null
+    }
+    if (fresh.length > 1) {
+      // Several fresh tasks (concurrent external requests) — disambiguate
+      // among the fresh candidates only, with the size heuristic.
+      const slot = selectByPromptSize(fresh, expectedPromptTokens)
+      return slot && slotIsPlausible(slot, expectedPromptTokens) ? slot : null
+    }
+    // Every busy slot carries a pre-existing task: our request has not
+    // landed yet (or prefill already finished between polls).
+    return null
+  }
+  return selectByPromptSize(busy, expectedPromptTokens)
+}
+
+/**
+ * Pick the candidate slot closest to the expected prompt size.
+ * Returns null when two candidates are both close enough to the expected
+ * size to be indistinguishable.
+ */
+function selectByPromptSize(candidates: SlotInfo[], expectedPromptTokens: number): SlotInfo | null {
+  if (candidates.length === 1) return candidates[0] ?? null
+  const scored = candidates
     .map((slot) => ({ slot, distance: Math.abs(slot.n_prompt_tokens - expectedPromptTokens) }))
     .sort((a, b) => a.distance - b.distance)
   const best = scored[0]
@@ -180,6 +311,9 @@ export function computePrefillSnapshot(
     percent,
     ...(speedTps !== undefined ? { speedTps: Math.round(speedTps) } : {}),
     ...(etaSeconds !== undefined ? { etaSeconds: Math.ceil(etaSeconds) } : {}),
+    slotId: slot.id,
+    ...(slot.id_task !== undefined ? { taskId: slot.id_task } : {}),
+    ...(slot.n_prompt_tokens_cache !== undefined ? { cachedTokens: slot.n_prompt_tokens_cache } : {}),
   }
 }
 
@@ -197,10 +331,13 @@ export function startPrefillProgressPolling(options: PrefillProgressOptions): ()
   let timer: ReturnType<typeof setTimeout> | null = null
   let failures = 0
   let prev: { processedTokens: number; at: number } | undefined
+  let myTaskId: number | undefined
+  const claims = claimedTaskIdsFor(options.serverBaseUrl)
 
   const stop = (): void => {
     if (stopped) return
     stopped = true
+    if (myTaskId !== undefined) claims.delete(myTaskId)
     if (timer) {
       clearTimeout(timer)
       timer = null
@@ -216,8 +353,19 @@ export function startPrefillProgressPolling(options: PrefillProgressOptions): ()
       if (!res.ok) throw new Error(`slots endpoint returned ${res.status}`)
       const data = (await res.json()) as SlotInfo[]
       failures = 0
-      const slot = selectPrefillSlot(Array.isArray(data) ? data : [], options.expectedPromptTokens)
+      const otherClaims = new Set(claims)
+      if (myTaskId !== undefined) otherClaims.delete(myTaskId)
+      const slot = selectPrefillSlot(
+        Array.isArray(data) ? data : [],
+        options.expectedPromptTokens,
+        options.knownTaskIds,
+        otherClaims,
+      )
       if (slot) {
+        if (slot.id_task !== undefined && myTaskId !== slot.id_task) {
+          myTaskId = slot.id_task
+          claims.add(slot.id_task)
+        }
         const now = Date.now()
         const snapshot = computePrefillSnapshot(slot, options.expectedPromptTokens, prev, now)
         prev = { processedTokens: slotDone(slot, options.expectedPromptTokens), at: now }
