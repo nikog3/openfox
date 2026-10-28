@@ -35,15 +35,17 @@ vi.mock('../shared/Modal', () => ({
     headerRight,
     footer,
     children,
+    size,
   }: {
     isOpen: boolean
     title: ReactNode
     headerRight?: ReactNode
     footer?: ReactNode
     children: ReactNode
+    size?: string
   }) =>
     isOpen ? (
-      <div role="dialog" data-testid="modal">
+      <div role="dialog" data-testid="modal" data-size={size}>
         <div data-testid="modal-title">{title}</div>
         {headerRight}
         {children}
@@ -107,13 +109,44 @@ describe('DiffModal — views', () => {
   it('renders the split view by default with both sides', () => {
     const { container } = renderModal()
     expect(screen.getByTestId('modal-title')).toHaveTextContent('src/a.ts')
-    const changedRow = container.querySelector('[data-split="1"]')!
-    const pres = Array.from(changedRow.querySelectorAll('pre'))
-    expect(pres[0]?.textContent).toBe('old line')
-    expect(pres[1]?.textContent).toBe('new line')
+    const changedRows = container.querySelectorAll('[data-split="1"]')
+    expect(changedRows).toHaveLength(2)
+    expect(changedRows[0]?.querySelector('pre')?.textContent).toBe('old line')
+    expect(changedRows[1]?.querySelector('pre')?.textContent).toBe('new line')
     expect(screen.getAllByText('ctx1')).toHaveLength(2)
-    expect(container.querySelectorAll('[data-split="1"] .bg-accent-error\\/10')).toHaveLength(1)
-    expect(container.querySelectorAll('[data-split="1"] .bg-accent-success\\/10')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-split="1"].bg-accent-error\\/10')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-split="1"].bg-accent-success\\/10')).toHaveLength(1)
+  })
+
+  it('renders each split pane as its own scrollable zone', () => {
+    const { container } = renderModal()
+    const panes = container.querySelectorAll('[data-diff-pane]')
+    expect(panes).toHaveLength(2)
+    for (const pane of panes) {
+      expect(pane.className).toContain('overflow-auto')
+    }
+    for (const pre of container.querySelectorAll('pre')) {
+      expect(pre.className).not.toContain('overflow-hidden')
+    }
+  })
+
+  it('keeps the two split panes scrolled in sync', () => {
+    const { container } = renderModal()
+    const oldPane = container.querySelector('[data-diff-pane="old"]') as HTMLElement
+    const newPane = container.querySelector('[data-diff-pane="new"]') as HTMLElement
+    Object.defineProperty(oldPane, 'scrollTop', { value: 34, configurable: true, writable: true })
+    Object.defineProperty(oldPane, 'scrollLeft', { value: 120, configurable: true, writable: true })
+    fireEvent.scroll(oldPane)
+    expect(newPane.scrollTop).toBe(34)
+    expect(newPane.scrollLeft).toBe(120)
+  })
+
+  it('uses a wider modal size (2xl single file, 3xl with file list)', () => {
+    renderModal()
+    expect(screen.getAllByTestId('modal')[0]).toHaveAttribute('data-size', '2xl')
+    cleanup()
+    render(<DiffModal workdir="/tmp/proj" path="src/a.ts" staged={false} isOpen onClose={() => {}} files={FILES} />)
+    expect(screen.getAllByTestId('modal')[0]).toHaveAttribute('data-size', '3xl')
   })
 
   it('shows line numbers on both sides of the split view', () => {

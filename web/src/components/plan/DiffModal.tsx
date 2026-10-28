@@ -103,6 +103,9 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
   const [resetting, setResetting] = useState(false)
   const [resetError, setResetError] = useState<string | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
+  const oldPaneRef = useRef<HTMLDivElement>(null)
+  const newPaneRef = useRef<HTMLDivElement>(null)
+  const paneSyncing = useRef(false)
 
   const { data, loading, error } = useResourceWhen(isOpen, gitFileDiffResource, workdir, activePath, activeStaged)
   const theme = useShikiTheme()
@@ -230,8 +233,24 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
     ].filter((g) => g.items.length > 0)
   }, [files, t])
 
+  const syncPaneScroll = (
+    sourceRef: { current: HTMLDivElement | null },
+    targetRef: { current: HTMLDivElement | null },
+  ) => {
+    const source = sourceRef.current
+    const target = targetRef.current
+    if (!source || !target || paneSyncing.current) return
+    paneSyncing.current = true
+    target.scrollTop = source.scrollTop
+    target.scrollLeft = source.scrollLeft
+    requestAnimationFrame(() => {
+      paneSyncing.current = false
+    })
+  }
+
   const scrollRowIntoView = (splitIdx: number) => {
-    bodyRef.current?.querySelector(`[data-split="${splitIdx}"]`)?.scrollIntoView({ block: 'center' })
+    const scope = view === 'split' ? oldPaneRef.current : bodyRef.current
+    scope?.querySelector(`[data-split="${splitIdx}"]`)?.scrollIntoView({ block: 'center' })
   }
 
   const goNext = () => {
@@ -295,27 +314,29 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
     return <>{content}</>
   }
 
-  const renderSplit = () =>
+  const renderSplitPane = (side: 'old' | 'new') =>
     splitRows.map((sr, i) => {
-      const oldRemoved = sr.old?.type === 'removed'
-      const newAdded = sr.new?.type === 'added'
-      const oldBg = oldRemoved ? 'bg-accent-error/10' : sr.old == null ? 'bg-bg-tertiary/40' : ''
-      const newBg = newAdded ? 'bg-accent-success/10' : sr.new == null ? 'bg-bg-tertiary/40' : ''
+      const row = side === 'old' ? sr.old : sr.new
+      const bg =
+        side === 'old'
+          ? row?.type === 'removed'
+            ? 'bg-accent-error/10'
+            : row == null
+              ? 'bg-bg-tertiary/40'
+              : ''
+          : row?.type === 'added'
+            ? 'bg-accent-success/10'
+            : row == null
+              ? 'bg-bg-tertiary/40'
+              : ''
       const inline = inlineMap[i] ?? null
+      const ranges = side === 'old' ? inline?.oldRanges : inline?.newRanges
+      const lineHtml = side === 'old' ? oldLines?.[i] : newLines?.[i]
+      const lineNumber = side === 'old' ? row?.oldLine : row?.newLine
       return (
-        <div key={i} data-split={i} className="flex text-xs font-mono leading-5">
-          <div className={`flex-1 min-w-0 flex ${oldBg}`}>
-            <span className="w-10 shrink-0 text-right pr-2 text-text-muted select-none">{sr.old?.oldLine ?? ''}</span>
-            <pre className="flex-1 min-w-0 overflow-hidden whitespace-pre">
-              {sr.old ? renderContent(sr.old.content, oldLines?.[i], inline?.oldRanges) : ''}
-            </pre>
-          </div>
-          <div className={`flex-1 min-w-0 flex ${newBg}`}>
-            <span className="w-10 shrink-0 text-right pr-2 text-text-muted select-none">{sr.new?.newLine ?? ''}</span>
-            <pre className="flex-1 min-w-0 overflow-hidden whitespace-pre">
-              {sr.new ? renderContent(sr.new.content, newLines?.[i], inline?.newRanges) : ''}
-            </pre>
-          </div>
+        <div key={i} data-split={i} className={`flex text-xs font-mono leading-5 ${bg}`}>
+          <span className="w-10 shrink-0 text-right pr-2 text-text-muted select-none">{lineNumber ?? ''}</span>
+          <pre className="flex-1 whitespace-pre">{row ? renderContent(row.content, lineHtml, ranges) : ''}</pre>
         </div>
       )
     })
@@ -336,9 +357,7 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
             {row.newLine ?? ''}
           </span>
           <span className="w-4 shrink-0 text-center text-text-muted">{marker}</span>
-          <pre className="flex-1 min-w-0 overflow-hidden whitespace-pre">
-            {renderContent(row.content, lineHtml, ranges)}
-          </pre>
+          <pre className="flex-1 whitespace-pre">{renderContent(row.content, lineHtml, ranges)}</pre>
         </div>
       )
     })
@@ -432,6 +451,30 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
       <p className="text-sm text-accent-error">{t({ en: 'Failed to load diff', fr: 'Échec du chargement du diff' })}</p>
     ) : splitRows.length === 0 ? (
       <p className="text-sm text-text-muted text-center py-8">{t({ en: 'No changes', fr: 'Aucun changement' })}</p>
+    ) : view === 'split' ? (
+      <div
+        ref={bodyRef}
+        tabIndex={0}
+        onKeyDown={handleKeyDown}
+        className="h-full rounded border border-border overflow-hidden outline-none focus:ring-1 focus:ring-accent-primary flex"
+      >
+        <div
+          ref={oldPaneRef}
+          data-diff-pane="old"
+          onScroll={() => syncPaneScroll(oldPaneRef, newPaneRef)}
+          className="flex-1 min-w-0 overflow-auto"
+        >
+          <div className="w-max min-w-full">{renderSplitPane('old')}</div>
+        </div>
+        <div
+          ref={newPaneRef}
+          data-diff-pane="new"
+          onScroll={() => syncPaneScroll(newPaneRef, oldPaneRef)}
+          className="flex-1 min-w-0 overflow-auto"
+        >
+          <div className="w-max min-w-full">{renderSplitPane('new')}</div>
+        </div>
+      </div>
     ) : (
       <div
         ref={bodyRef}
@@ -439,7 +482,7 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
         onKeyDown={handleKeyDown}
         className="h-full rounded border border-border overflow-auto outline-none focus:ring-1 focus:ring-accent-primary"
       >
-        {view === 'split' ? renderSplit() : renderUnified()}
+        {renderUnified()}
       </div>
     )
 
@@ -489,7 +532,7 @@ export function DiffModal({ workdir, path, staged, isOpen, onClose, files }: Dif
         isOpen={isOpen}
         onClose={onClose}
         title={<span className="font-mono text-base">{activePath}</span>}
-        size={groupedFiles ? '2xl' : 'xl'}
+        size={groupedFiles ? '3xl' : '2xl'}
         headerRight={toolbar}
       >
         {body}
