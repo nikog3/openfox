@@ -354,6 +354,8 @@ export interface ChatPrefillProgressPayload {
   etaSeconds?: number
   /** Live prefill speed in tokens/sec, when measurable. */
   speedTps?: number
+  /** Cumulative average prefill speed in tokens/sec over the work done since the first observation, when measurable. */
+  avgTps?: number
   /** The engine slot handling the request (llama.cpp slot id). */
   slotId?: number
   /** The engine task id of the request (llama.cpp id_task), when reported. */

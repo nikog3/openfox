@@ -625,6 +625,60 @@ describe('stream-pure', () => {
     })
   })
 
+  describe('engine-measured prefill (prefillMeasurement)', () => {
+    it('uses the engine measurement over the context-diff heuristic when available', () => {
+      const metrics = new TurnMetrics()
+      // Engine measured 12k uncached tokens processed in 1.2s (heuristic would say 2k / 0.5s)
+      metrics.addLLMCall(
+        { ttft: 0.5, completionTime: 2, tps: 15, prefillTps: 0 },
+        80_000,
+        500,
+        78_000,
+        undefined,
+        undefined,
+        { processedTokens: 12_000, prefillTimeMs: 1_200 },
+      )
+
+      const stats = metrics.buildStats(
+        { providerId: 'p', providerName: 'vLLM', backend: 'vllm', model: 'm' },
+        'builder',
+      )
+
+      expect(stats.prefillTokens).toBe(80_000)
+      // Heuristic still recorded per call for reference
+      expect(stats.llmCalls?.[0]?.prefTokenIncrement).toBe(2_000)
+      // ...but speed comes from the engine measurement
+      expect(stats.prefTokenIncrement).toBe(12_000)
+      expect(stats.prefillSpeed).toBe(10_000) // 12000 / 1.2
+      expect(stats.llmCalls?.[0]?.prefillSpeed).toBe(10_000)
+      // ttft stays the wall-clock fact
+      expect(stats.llmCalls?.[0]?.ttft).toBe(0.5)
+    })
+
+    it('aggregates mixed measured and heuristic calls', () => {
+      const metrics = new TurnMetrics()
+      metrics.addLLMCall(
+        { ttft: 0.5, completionTime: 2, tps: 15, prefillTps: 0 },
+        80_000,
+        500,
+        78_000,
+        undefined,
+        undefined,
+        { processedTokens: 12_000, prefillTimeMs: 1_200 },
+      )
+      metrics.addLLMCall({ ttft: 0.4, completionTime: 1.5, tps: 20, prefillTps: 0 }, 83_000, 400, 80_000)
+
+      const stats = metrics.buildStats(
+        { providerId: 'p', providerName: 'vLLM', backend: 'vllm', model: 'm' },
+        'builder',
+      )
+
+      // 12k measured + 3k heuristic = 15k over 1.2s + 0.4s = 1.6s
+      expect(stats.prefTokenIncrement).toBe(15_000)
+      expect(stats.prefillSpeed).toBe(9_375) // 15000 / 1.6
+    })
+  })
+
   it('aggregates turn metrics across llm calls and tool time', () => {
     const nowSpy = vi.spyOn(performance, 'now')
     nowSpy.mockReturnValueOnce(1_000).mockReturnValueOnce(7_000)

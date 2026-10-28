@@ -189,6 +189,51 @@ describe('PrefillIndicator', () => {
     expect(screen.queryByTestId('prefill-details-panel')).toBeNull()
   })
 
+  it('shows both the live and the average prefill speed in the details panel', () => {
+    render(
+      <PrefillIndicator
+        prefill={{
+          messageId: 'm1',
+          contextTokens: 40000,
+          startedAt: Date.now() - 1000,
+          promptTokens: 40000,
+          processedTokens: 30000,
+          percent: 75,
+          speedTps: 120,
+          avgTps: 85,
+          slotId: 1,
+        }}
+      />,
+    )
+    fireEvent.click(screen.getByTestId('prefill-details-toggle'))
+    const text = screen.getByTestId('prefill-details-panel').textContent ?? ''
+    expect(text).toContain('Speed')
+    expect(text).toContain('120 t/s')
+    expect(text).toContain('Avg speed')
+    expect(text).toContain('85 t/s')
+  })
+
+  it('omits the average speed row when the engine did not report it', () => {
+    render(
+      <PrefillIndicator
+        prefill={{
+          messageId: 'm1',
+          contextTokens: 40000,
+          startedAt: Date.now() - 1000,
+          promptTokens: 40000,
+          processedTokens: 30000,
+          percent: 75,
+          speedTps: 120,
+          slotId: 1,
+        }}
+      />,
+    )
+    fireEvent.click(screen.getByTestId('prefill-details-toggle'))
+    const text = screen.getByTestId('prefill-details-panel').textContent ?? ''
+    expect(text).toContain('120 t/s')
+    expect(text).not.toContain('Avg speed')
+  })
+
   it('omits detail rows for values the engine did not report', () => {
     render(
       <PrefillIndicator

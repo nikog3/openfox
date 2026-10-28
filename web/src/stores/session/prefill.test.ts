@@ -209,6 +209,7 @@ describe('prefill indicator store state', () => {
         percent: 50,
         etaSeconds: 1,
         speedTps: 20000,
+        avgTps: 15000,
         slotId: 1,
         taskId: 15247,
         cachedTokens: 35000,
@@ -220,6 +221,7 @@ describe('prefill indicator store state', () => {
     expect(prefill?.processedTokens).toBe(20000)
     expect(prefill?.etaSeconds).toBe(1)
     expect(prefill?.speedTps).toBe(20000)
+    expect(prefill?.avgTps).toBe(15000)
     expect(prefill?.slotId).toBe(1)
     expect(prefill?.taskId).toBe(15247)
     expect(prefill?.cachedTokens).toBe(35000)

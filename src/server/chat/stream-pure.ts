@@ -24,6 +24,7 @@ import type { LLMClientWithModel } from '../llm/client.js'
 import type { LLMToolDefinition, ReasoningEffort } from '../llm/types.js'
 import { buildModelParams } from '../llm/client-pure.js'
 import type { StreamTiming } from '../llm/streaming.js'
+import type { PrefillProgressFinal } from '../llm/prefill-progress.js'
 import type { TurnEvent } from '../events/types.js'
 import type { RetryPatternConfig, RetryPatternMatch } from './auto-patterns.js'
 import { matchRetryPatterns } from './auto-patterns.js'
@@ -811,6 +812,7 @@ export class TurnMetrics {
 
   /** Add metrics from an LLM call.
    * @param previousContextTokens - context size BEFORE this LLM call (for computing the non-cached increment)
+   * @param prefillMeasurement - engine-measured prefill work (authoritative over the context-diff heuristic when present)
    */
   addLLMCall(
     timing: StreamTiming,
@@ -819,10 +821,10 @@ export class TurnMetrics {
     previousContextTokens?: number,
     modelParams?: ModelParams,
     providerUsage?: Partial<TokenUsage>,
+    prefillMeasurement?: PrefillProgressFinal,
   ): void {
     const callIndex = this.llmCalls.length + 1
     this.totalPrefillTokens += promptTokens
-    this.totalPrefillTime += timing.ttft
     this.totalGenTokens += completionTokens
     this.totalGenTime += timing.completionTime
     if (modelParams) {
@@ -837,11 +839,16 @@ export class TurnMetrics {
           ? promptTokens - previousContextTokens
           : promptTokens
         : undefined
-    if (prefTokenIncrement !== undefined) {
+    const prefillSource = prefillMeasurement?.processedTokens ?? prefTokenIncrement ?? promptTokens
+    const prefillTime = prefillMeasurement ? prefillMeasurement.prefillTimeMs / 1000 : timing.ttft
+    this.totalPrefillTime += prefillTime
+    if (prefillMeasurement !== undefined) {
+      this.totalPrefillIncrement += prefillMeasurement.processedTokens
+      this.hasPrefillIncrement = true
+    } else if (prefTokenIncrement !== undefined) {
       this.totalPrefillIncrement += prefTokenIncrement
       this.hasPrefillIncrement = true
     }
-    const prefillSource = prefTokenIncrement ?? promptTokens
     this.llmCalls = [
       ...this.llmCalls,
       {
@@ -860,7 +867,7 @@ export class TurnMetrics {
         }),
         ttft: timing.ttft,
         completionTime: timing.completionTime,
-        prefillSpeed: timing.ttft > 0 ? Math.round((prefillSource / timing.ttft) * 10) / 10 : 0,
+        prefillSpeed: prefillTime > 0 ? Math.round((prefillSource / prefillTime) * 10) / 10 : 0,
         generationSpeed:
           timing.completionTime > 0 ? Math.round((completionTokens / timing.completionTime) * 10) / 10 : 0,
         totalTime: Math.round((timing.ttft + timing.completionTime) * 10) / 10,

@@ -38,12 +38,33 @@ export interface PrefillProgressSnapshot {
   etaSeconds?: number
   /** Live prefill speed in tokens/sec, when measurable. */
   speedTps?: number
+  /** Cumulative average prefill speed in tokens/sec over the work done since the first observation, when measurable. */
+  avgTps?: number
   /** The engine slot handling the request (llama.cpp slot id). */
   slotId: number
   /** The engine task id of the request (llama.cpp id_task), when reported. */
   taskId?: number
   /** Prompt tokens served from the KV cache, when reported by the engine. */
   cachedTokens?: number
+}
+
+/**
+ * A single observation of the slot's processed tokens. The poller keeps a
+ * sliding window of these to derive a stable live speed.
+ */
+export interface PrefillProgressSample {
+  processedTokens: number
+  at: number
+}
+
+/**
+ * Engine-measured prefill result for one LLM call, reported when the poller
+ * observes the slot finish. Authoritative input for session metrics
+ * (replaces the context-diff heuristic).
+ */
+export interface PrefillProgressFinal {
+  processedTokens: number
+  prefillTimeMs: number
 }
 
 export interface SlotInfo {
@@ -76,10 +97,20 @@ export interface PrefillProgressOptions {
    * request — identity tracking that replaces the size heuristic.
    */
   knownTaskIds?: Set<number>
+  /** Timestamp (ms) the LLM call started — reference for the final duration (default: now). */
+  startedAtMs?: number
+  /**
+   * Called with the engine-measured result when the poller observes the
+   * tracked slot finish prefilling. Fired only on observed completion,
+   * never on the other stop paths.
+   */
+  onComplete?: (final: PrefillProgressFinal) => void
 }
 
 const DEFAULT_INTERVAL_MS = 350
 const MAX_CONSECUTIVE_FAILURES = 4
+/** Sliding window for the live speed: samples older than this are ignored. */
+const SPEED_WINDOW_MS = 3000
 /** The pre-request /slots snapshot is an optimization, never a blocker for the LLM call. */
 const KNOWN_TASKS_TIMEOUT_MS = 2000
 /** ~4 chars per token — same heuristic as the tool-definition budget (chat/token-budget.ts). */
@@ -284,26 +315,36 @@ function selectByPromptSize(candidates: SlotInfo[], expectedPromptTokens: number
  * uncached remainder of the caller-known prompt total, so warm prefills
  * advance 0→100 over the real work and the engine's rolling n_prompt_tokens
  * never inflates the number. The live speed (and thus the ETA) is derived
- * from the delta between this poll and the previous one, so the first
- * snapshot of a call carries no speed/ETA.
+ * from a sliding window of samples — the oldest sample within
+ * SPEED_WINDOW_MS is the baseline — so a single stalled poll cannot spike
+ * the number, and the first snapshot of a call carries no speed/ETA.
+ * avgTps is the cumulative average over the work done since the first
+ * observation (not the call start), so a warm prefill's instantly-done
+ * KV-cached head does not inflate it.
  */
 export function computePrefillSnapshot(
   slot: SlotInfo,
   expectedPromptTokens: number,
-  prev: { processedTokens: number; at: number } | undefined,
+  samples: readonly PrefillProgressSample[],
   now: number,
+  firstSample?: PrefillProgressSample,
 ): PrefillProgressSnapshot {
   const work = slotWork(slot, expectedPromptTokens)
   const done = slotDone(slot, expectedPromptTokens)
   const percent = work > 0 ? Math.min(100, Math.round((done / work) * 100)) : 100
   let speedTps: number | undefined
   let etaSeconds: number | undefined
-  if (prev && now > prev.at && done > prev.processedTokens) {
-    speedTps = (done - prev.processedTokens) / ((now - prev.at) / 1000)
+  const baseline = samples.find((s) => s.at >= now - SPEED_WINDOW_MS)
+  if (baseline && done > baseline.processedTokens && now > baseline.at) {
+    speedTps = (done - baseline.processedTokens) / ((now - baseline.at) / 1000)
     const remaining = work - done
     if (speedTps > 0 && remaining > 0) {
       etaSeconds = remaining / speedTps
     }
+  }
+  let avgTps: number | undefined
+  if (firstSample && done > firstSample.processedTokens && now > firstSample.at) {
+    avgTps = Math.round((done - firstSample.processedTokens) / ((now - firstSample.at) / 1000))
   }
   return {
     promptTokens: slotTotal(slot, expectedPromptTokens),
@@ -311,6 +352,7 @@ export function computePrefillSnapshot(
     percent,
     ...(speedTps !== undefined ? { speedTps: Math.round(speedTps) } : {}),
     ...(etaSeconds !== undefined ? { etaSeconds: Math.ceil(etaSeconds) } : {}),
+    ...(avgTps !== undefined ? { avgTps } : {}),
     slotId: slot.id,
     ...(slot.id_task !== undefined ? { taskId: slot.id_task } : {}),
     ...(slot.n_prompt_tokens_cache !== undefined ? { cachedTokens: slot.n_prompt_tokens_cache } : {}),
@@ -327,11 +369,14 @@ export function startPrefillProgressPolling(options: PrefillProgressOptions): ()
   const maxFailures = options.maxConsecutiveFailures ?? MAX_CONSECUTIVE_FAILURES
   const fetchImpl = options.fetchImpl ?? fetch
   const url = `${stripVersionPrefix(options.serverBaseUrl).replace(/\/+$/, '')}/slots`
+  const startedAt = options.startedAtMs ?? Date.now()
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | null = null
   let failures = 0
-  let prev: { processedTokens: number; at: number } | undefined
+  const samples: PrefillProgressSample[] = []
+  let lastSlotId: number | undefined
   let myTaskId: number | undefined
+  let firstSample: PrefillProgressSample | undefined
   const claims = claimedTaskIdsFor(options.serverBaseUrl)
 
   const stop = (): void => {
@@ -353,24 +398,43 @@ export function startPrefillProgressPolling(options: PrefillProgressOptions): ()
       if (!res.ok) throw new Error(`slots endpoint returned ${res.status}`)
       const data = (await res.json()) as SlotInfo[]
       failures = 0
+      const slots = Array.isArray(data) ? data : []
       const otherClaims = new Set(claims)
       if (myTaskId !== undefined) otherClaims.delete(myTaskId)
-      const slot = selectPrefillSlot(
-        Array.isArray(data) ? data : [],
-        options.expectedPromptTokens,
-        options.knownTaskIds,
-        otherClaims,
-      )
+      const slot = selectPrefillSlot(slots, options.expectedPromptTokens, options.knownTaskIds, otherClaims)
       if (slot) {
         if (slot.id_task !== undefined && myTaskId !== slot.id_task) {
           myTaskId = slot.id_task
           claims.add(slot.id_task)
         }
+        lastSlotId = slot.id
         const now = Date.now()
-        const snapshot = computePrefillSnapshot(slot, options.expectedPromptTokens, prev, now)
-        prev = { processedTokens: slotDone(slot, options.expectedPromptTokens), at: now }
-        options.onProgress(snapshot)
-        if (slotDone(slot, options.expectedPromptTokens) >= slotWork(slot, options.expectedPromptTokens)) {
+        const done = slotDone(slot, options.expectedPromptTokens)
+        if (firstSample === undefined) firstSample = { processedTokens: done, at: now }
+        samples.push({ processedTokens: done, at: now })
+        while (samples.length > 0 && (samples[0]?.at ?? now) < now - SPEED_WINDOW_MS) {
+          samples.shift()
+        }
+        options.onProgress(computePrefillSnapshot(slot, options.expectedPromptTokens, samples, now, firstSample))
+      } else {
+        // A tracked slot that is no longer busy has finished prefilling (the
+        // busy filter drops slots whose work is done) — report the measured
+        // result. Task-id matching is exact; the slot-id fallback (builds
+        // without id_task) is best-effort — a reused slot whose work happens
+        // to be done can be misattributed.
+        const finished = slots.find(
+          (s) =>
+            s.n_prompt_tokens > 0 &&
+            slotDone(s, options.expectedPromptTokens) >= slotWork(s, options.expectedPromptTokens) &&
+            (myTaskId !== undefined ? s.id_task === myTaskId : s.id === lastSlotId),
+        )
+        if (finished && (myTaskId !== undefined || lastSlotId !== undefined)) {
+          const done = slotDone(finished, options.expectedPromptTokens)
+          // The slot finished somewhere between the last busy sample and this
+          // poll — estimate completion at the midpoint.
+          const now = Date.now()
+          const completedAt = ((samples[samples.length - 1]?.at ?? startedAt) + now) / 2
+          options.onComplete?.({ processedTokens: done, prefillTimeMs: Math.max(0, completedAt - startedAt) })
           stop()
           return
         }

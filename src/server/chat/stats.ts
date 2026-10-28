@@ -140,9 +140,9 @@ export function computeAggregatedStats(input: {
   identity: StatsIdentity
   mode: ToolMode
   totalPrefillTokens: number
-  totalPrefillIncrement?: number // sum of prefTokenIncrement across all calls; used for accurate prefillSpeed
+  totalPrefillIncrement?: number // sum of prefill work across all calls (engine-measured where available, else context-diff); used for accurate prefillSpeed
   totalGenTokens: number
-  totalPrefillTime: number // sum of ttft across all calls
+  totalPrefillTime: number // sum of prefill time across all calls (engine-measured where available, else ttft)
   totalGenTime: number // sum of completionTime across all calls
   totalToolTime: number // seconds
   totalTime: number // wall clock seconds

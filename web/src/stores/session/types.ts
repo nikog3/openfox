@@ -80,6 +80,8 @@ export interface PrefillState {
   etaSeconds?: number
   /** Live prefill speed in tokens/sec, when available. */
   speedTps?: number
+  /** Cumulative average prefill speed in tokens/sec over the work done since the first observation, when available. */
+  avgTps?: number
   /** The engine slot handling the request (llama.cpp slot id), when measured. */
   slotId?: number
   /** The engine task id of the request (llama.cpp id_task), when reported. */

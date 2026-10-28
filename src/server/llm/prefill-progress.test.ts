@@ -233,59 +233,65 @@ describe('fetchKnownTaskIds', () => {
 
 describe('computePrefillSnapshot', () => {
   it('computes percent from processed over the known total', () => {
-    const snapshot = computePrefillSnapshot(busySlot(0, 40000, 20000), 40000, undefined, Date.now())
+    const snapshot = computePrefillSnapshot(busySlot(0, 40000, 20000), 40000, [], Date.now())
     expect(snapshot).toEqual({ promptTokens: 40000, processedTokens: 20000, percent: 50, slotId: 0, cachedTokens: 0 })
   })
 
   it('ignores the rolling engine total and measures over the known total', () => {
-    const snapshot = computePrefillSnapshot(busySlot(0, 1536, 1152), 9620, undefined, Date.now())
+    const snapshot = computePrefillSnapshot(busySlot(0, 1536, 1152), 9620, [], Date.now())
     expect(snapshot.promptTokens).toBe(9620)
     expect(snapshot.processedTokens).toBe(1152)
     expect(snapshot.percent).toBe(12)
   })
 
   it('reports the real prompt size while the engine total is still a rolling window', () => {
-    const snapshot = computePrefillSnapshot(busySlot(0, 3456, 3070), 34560, undefined, Date.now())
+    const snapshot = computePrefillSnapshot(busySlot(0, 3456, 3070), 34560, [], Date.now())
     expect(snapshot.promptTokens).toBe(34560)
     expect(snapshot.processedTokens).toBe(3070)
     expect(snapshot.percent).toBe(9)
   })
 
   it('caps percent at 100 and clamps processed to the known work', () => {
-    const snapshot = computePrefillSnapshot(busySlot(0, 1536, 2000), 1000, undefined, Date.now())
+    const snapshot = computePrefillSnapshot(busySlot(0, 1536, 2000), 1000, [], Date.now())
     expect(snapshot.processedTokens).toBe(1000)
     expect(snapshot.percent).toBe(100)
   })
 
   it('falls back to the engine total when no known total is available', () => {
-    const snapshot = computePrefillSnapshot(busySlot(0, 40000, 20000), 0, undefined, Date.now())
+    const snapshot = computePrefillSnapshot(busySlot(0, 40000, 20000), 0, [], Date.now())
     expect(snapshot).toEqual({ promptTokens: 40000, processedTokens: 20000, percent: 50, slotId: 0, cachedTokens: 0 })
   })
 
   it('computes percent over the uncached work on a warm prefill', () => {
-    const snapshot = computePrefillSnapshot(busySlot(0, 1620, 1152, 8000), 9620, undefined, Date.now())
+    const snapshot = computePrefillSnapshot(busySlot(0, 1620, 1152, 8000), 9620, [], Date.now())
     expect(snapshot.promptTokens).toBe(9620)
     expect(snapshot.processedTokens).toBe(1152)
     expect(snapshot.percent).toBe(71)
   })
 
   it('derives live speed and eta from the delta over the real remaining work', () => {
-    const prev = { processedTokens: 6040, at: 1000 }
-    const snapshot = computePrefillSnapshot(busySlot(0, 6424, 6140), 34560, prev, 2000)
+    const samples = [
+      { processedTokens: 6040, at: 1000 },
+      { processedTokens: 6140, at: 2000 },
+    ]
+    const snapshot = computePrefillSnapshot(busySlot(0, 6424, 6140), 34560, samples, 2000)
     expect(snapshot.speedTps).toBe(100)
     expect(snapshot.etaSeconds).toBe(285)
   })
 
   it('never reports a 0s ETA while work remains', () => {
-    const prev = { processedTokens: 39000, at: 1000 }
-    const snapshot = computePrefillSnapshot(busySlot(0, 40000, 39900), 40000, prev, 2000)
+    const samples = [
+      { processedTokens: 39000, at: 1000 },
+      { processedTokens: 39900, at: 2000 },
+    ]
+    const snapshot = computePrefillSnapshot(busySlot(0, 40000, 39900), 40000, samples, 2000)
     expect(snapshot.speedTps).toBe(900)
     expect(snapshot.etaSeconds).toBe(1)
   })
 
   it('carries no speed/eta on the first poll or when nothing advanced', () => {
-    expect(computePrefillSnapshot(busySlot(0, 40000, 1000), 40000, undefined, 1000).speedTps).toBeUndefined()
-    const stalled = computePrefillSnapshot(busySlot(0, 40000, 1000), 40000, { processedTokens: 1000, at: 1000 }, 2000)
+    expect(computePrefillSnapshot(busySlot(0, 40000, 1000), 40000, [], 1000).speedTps).toBeUndefined()
+    const stalled = computePrefillSnapshot(busySlot(0, 40000, 1000), 40000, [{ processedTokens: 1000, at: 1000 }], 2000)
     expect(stalled.speedTps).toBeUndefined()
     expect(stalled.etaSeconds).toBeUndefined()
   })
@@ -301,7 +307,7 @@ describe('computePrefillSnapshot', () => {
         id_task: 15247,
       },
       40000,
-      undefined,
+      [],
       Date.now(),
     )
     expect(snapshot.slotId).toBe(1)
@@ -313,12 +319,40 @@ describe('computePrefillSnapshot', () => {
     const snapshot = computePrefillSnapshot(
       { id: 0, is_processing: true, n_prompt_tokens: 40000, n_prompt_tokens_processed: 20000 },
       40000,
-      undefined,
+      [],
       Date.now(),
     )
     expect(snapshot.slotId).toBe(0)
     expect(snapshot.taskId).toBeUndefined()
     expect(snapshot.cachedTokens).toBeUndefined()
+  })
+
+  it('derives the speed from the oldest sample inside the window only', () => {
+    const samples = [
+      { processedTokens: 1000, at: 0 },
+      { processedTokens: 5000, at: 2000 },
+      { processedTokens: 8000, at: 4000 },
+    ]
+    const snapshot = computePrefillSnapshot(busySlot(0, 40000, 8000), 40000, samples, 4000)
+    expect(snapshot.speedTps).toBe(1500)
+  })
+
+  it('computes the cumulative average speed over the work done since the first observation', () => {
+    const first = { processedTokens: 0, at: 1000 }
+    const snapshot = computePrefillSnapshot(busySlot(0, 40000, 10000), 40000, [first], 5000, first)
+    expect(snapshot.avgTps).toBe(2500)
+  })
+
+  it('ignores the KV-cached head when averaging a warm prefill', () => {
+    const first = { processedTokens: 1152, at: 1000 }
+    const snapshot = computePrefillSnapshot(busySlot(0, 1620, 2000, 800), 9620, [first], 2000, first)
+    expect(snapshot.avgTps).toBe(848)
+  })
+
+  it('leaves the average speed undefined before any work is done', () => {
+    const first = { processedTokens: 0, at: 1000 }
+    const snapshot = computePrefillSnapshot(busySlot(0, 40000, 0), 40000, [first], 5000, first)
+    expect(snapshot.avgTps).toBeUndefined()
   })
 })
 
@@ -702,6 +736,65 @@ describe('startPrefillProgressPolling', () => {
       expect(second).toHaveBeenCalledTimes(1)
       expect(second.mock.calls[0]?.[0].taskId).toBe(24)
       stopSecond()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports the engine-measured result when the tracked slot finishes', async () => {
+    vi.useFakeTimers()
+    try {
+      let calls = 0
+      const fetchImpl = (async () => {
+        calls += 1
+        return Response.json([busySlot(0, 10000, calls === 1 ? 5000 : 10000)])
+      }) as unknown as typeof fetch
+      const onProgress = vi.fn()
+      const onComplete = vi.fn()
+      const stop = startPrefillProgressPolling({
+        serverBaseUrl: 'http://localhost:8080/v1',
+        expectedPromptTokens: 10000,
+        onProgress,
+        onComplete,
+        fetchImpl,
+        intervalMs: 100,
+      })
+      await vi.advanceTimersByTimeAsync(100)
+      expect(onProgress).toHaveBeenCalledTimes(1)
+      expect(onComplete).not.toHaveBeenCalled()
+
+      // The tracked slot left the busy set: the measured result is reported
+      // once, with the completion estimated at the midpoint between the last
+      // busy sample (t=100) and this poll (t=200).
+      await vi.advanceTimersByTimeAsync(100)
+      expect(onComplete).toHaveBeenCalledTimes(1)
+      expect(onComplete.mock.calls[0]?.[0]).toEqual({ processedTokens: 10000, prefillTimeMs: 150 })
+      stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not report completion for a slot it never tracked', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchImpl = (async () => Response.json([busySlot(0, 10000, 10000)])) as unknown as typeof fetch
+      const onProgress = vi.fn()
+      const onComplete = vi.fn()
+      const stop = startPrefillProgressPolling({
+        serverBaseUrl: 'http://localhost:8080/v1',
+        expectedPromptTokens: 10000,
+        onProgress,
+        onComplete,
+        fetchImpl,
+        intervalMs: 100,
+      })
+      await vi.advanceTimersByTimeAsync(500)
+      // A slot already done on the first poll belongs to a neighbor session —
+      // it is never tracked, so it never completes.
+      expect(onProgress).not.toHaveBeenCalled()
+      expect(onComplete).not.toHaveBeenCalled()
+      stop()
     } finally {
       vi.useRealTimers()
     }

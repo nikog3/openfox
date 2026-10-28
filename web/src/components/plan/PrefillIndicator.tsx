@@ -164,6 +164,12 @@ export const PrefillIndicator = memo(function PrefillIndicator({
                   value={t({ en: '{{speed}} t/s', fr: '{{speed}} t/s' }, { speed: formatTokens(prefill.speedTps) })}
                 />
               )}
+              {prefill.avgTps !== undefined && (
+                <DetailRow
+                  label={t({ en: 'Avg speed', fr: 'Vitesse moyenne' })}
+                  value={t({ en: '{{speed}} t/s', fr: '{{speed}} t/s' }, { speed: formatTokens(prefill.avgTps) })}
+                />
+              )}
               {prefill.etaSeconds !== undefined && (
                 <DetailRow label={t({ en: 'ETA', fr: 'ETA' })} value={formatTime(prefill.etaSeconds, false)} />
               )}

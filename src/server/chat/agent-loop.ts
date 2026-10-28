@@ -13,6 +13,7 @@ import type { ServerMessage } from '../../shared/protocol.js'
 import type { LLMClientWithModel } from '../llm/client.js'
 import { getSlotProgressBaseUrl } from '../llm/client.js'
 import { estimatePromptTokens, fetchKnownTaskIds, startPrefillProgressPolling } from '../llm/prefill-progress.js'
+import type { PrefillProgressFinal, PrefillProgressSnapshot } from '../llm/prefill-progress.js'
 import { getModelProfile } from '../llm/profiles.js'
 import type { LLMToolDefinition } from '../llm/types.js'
 import type { ProviderManager } from '../provider-manager.js'
@@ -473,6 +474,7 @@ export async function runTopLevelAgentLoop(
     let result!: import('./stream-pure.js').PureStreamResult
     let assistantMsgId: string
     let assistantMessageStarted = false
+    let prefillMeasurement: PrefillProgressFinal | undefined
 
     for (;;) {
       // Resolve fresh per attempt: resolveClient() supports provider switches
@@ -672,19 +674,30 @@ export async function runTopLevelAgentLoop(
         }),
       )
       const slotProgressUrl = getSlotProgressBaseUrl(attemptClient)
+      // Per-round: a measurement captured by a previous round's poller must
+      // not leak into this round's stats.
+      prefillMeasurement = undefined
       let stopPrefillProgress = () => {}
+      let lastPrefillSnapshot: PrefillProgressSnapshot | undefined
+      let prefillStartedAt: number | undefined
       if (slotProgressUrl) {
         // Snapshot the engine's known task ids BEFORE the request is sent:
         // the slot that gains a new id_task afterwards is ours. Identity
         // tracking replaces the prompt-size guess, which is ambiguous with
         // multiple parallel slots (llama.cpp --parallel >= 2).
         const knownTaskIds = await fetchKnownTaskIds(slotProgressUrl, signal)
+        prefillStartedAt = Date.now()
         stopPrefillProgress = startPrefillProgressPolling({
           serverBaseUrl: slotProgressUrl,
           expectedPromptTokens,
           ...(knownTaskIds ? { knownTaskIds } : {}),
+          startedAtMs: prefillStartedAt,
           onProgress: (snapshot) => {
+            lastPrefillSnapshot = snapshot
             config.onMessage?.(createChatPrefillProgressMessage({ messageId: assistantMsgId, ...snapshot }))
+          },
+          onComplete: (final) => {
+            prefillMeasurement = final
           },
           ...(signal ? { signal } : {}),
         })
@@ -692,7 +705,16 @@ export async function runTopLevelAgentLoop(
 
       const attemptResult = await consumeStreamGenerator(streamGen, async (event) => {
         // First streamed event: the prefill is over, stop reporting progress.
+        // The poller's own completion tick rarely lands in time, so fall back
+        // to the last snapshot — the first token arrives right after the
+        // prefill ends, so this timestamp is the completion time.
         stopPrefillProgress()
+        if (prefillMeasurement === undefined && lastPrefillSnapshot !== undefined && prefillStartedAt !== undefined) {
+          prefillMeasurement = {
+            processedTokens: lastPrefillSnapshot.processedTokens,
+            prefillTimeMs: Math.max(0, Date.now() - prefillStartedAt),
+          }
+        }
         ensureAssistantMessage()
         // While the LLM streams an edit_file call, enrich its preparing events
         // with a live edit context (surrounding lines) computed from the file —
@@ -957,6 +979,7 @@ export async function runTopLevelAgentLoop(
       previousContextTokens,
       result.modelParams,
       result.usage,
+      prefillMeasurement,
     )
     // Accumulate wall-clock thinking time across LLM attempts in this turn.
     if (result.thinkingDurationMs !== undefined) {
