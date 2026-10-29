@@ -444,7 +444,7 @@ export async function runAgentTurn(
   const agentLlmClient = resolveAgentClient()
   const statsIdentity = resolveStatsIdentity({ ...options, llmClient: agentLlmClient })
 
-  if (!options.warmup && !options.skipAgentReminder) {
+  if (!options.warmup && !options.skipAgentReminder && !options.initialCompacting) {
     injectAgentReminder(options.sessionId, agentDef)
   }
 

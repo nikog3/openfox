@@ -24,7 +24,7 @@ export interface CreateTestServerOptions {
 function createTestConfig(options: CreateTestServerOptions = {}): Config {
   // Set test-specific env vars (loadConfig reads from process.env)
   process.env['OPENFOX_DB_PATH'] = ':memory:'
-  process.env['OPENFOX_LOG_LEVEL'] = 'error'
+  process.env['OPENFOX_LOG_LEVEL'] = process.env['OPENFOX_E2E_LOG_LEVEL'] ?? 'error'
   process.env['OPENFOX_HOST'] = '127.0.0.1'
   process.env['OPENFOX_PORT'] = '0' // Will be overridden by start(0) anyway
   if (options.maxContext !== undefined) {
@@ -35,6 +35,12 @@ function createTestConfig(options: CreateTestServerOptions = {}): Config {
 
   if (options.maxContext !== undefined) {
     config.context.maxTokens = options.maxContext
+  }
+
+  // TEMP DEBUG: loadConfig drops OPENFOX_LOG_LEVEL, wire it through explicitly
+  const logLevel = process.env['OPENFOX_E2E_LOG_LEVEL']
+  if (logLevel === 'debug' || logLevel === 'info' || logLevel === 'warn' || logLevel === 'error') {
+    config.logging = { level: logLevel }
   }
 
   // Use test mode to isolate config from production

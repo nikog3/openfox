@@ -12,12 +12,61 @@
  * The mock allows you to specify expected tool calls for given prompts.
  */
 
+import { appendFileSync } from 'node:fs'
 import type { LLMClientWithModel } from '../../src/server/llm/client.js'
 import type { LLMCompletionRequest, LLMCompletionResponse, LLMStreamEvent } from '../../src/server/llm/types.js'
 import type { ToolCall } from '../../src/shared/types.js'
 import type { Backend } from '../../src/server/llm/backend.js'
 import { getModelProfile, type ModelProfile } from '../../src/server/llm/profiles.js'
 import { logger } from '../../src/server/utils/logger.js'
+
+// Deterministic compaction summary: matches COMPACTION_PROMPT's structure and
+// is always >= MIN_COMPACTION_SUMMARY_LENGTH (50 chars) so the summary is
+// accepted. Must never trigger tool calls.
+const COMPACTION_SUMMARY = [
+  '## Summary',
+  '1. What was done: processed the conversation history.',
+  '2. File modifications: none.',
+  '3. Errors encountered and resolved: none.',
+  '4. Current progress: all prior tasks completed.',
+  '5. Technical decisions: keep summaries concise and structured.',
+  '6. Persisting requirements: none.',
+  '7. Next steps: continue from this summary.',
+  '8. User request: none active.',
+  '9. Working data: none.',
+].join('\n')
+
+function isCompactionPrompt(prompt: string): boolean {
+  return /tasked with summarizing conversations for continuation/i.test(prompt)
+}
+
+// Appends one ndjson line per LLM call when OPENFOX_MOCK_CONTROL points at a
+// control file with a `callLog` path. Never throws — logging must not break
+// a test run.
+function appendCallLog(request: LLMCompletionRequest, kind: 'complete' | 'stream'): void {
+  const control = process.env['OPENFOX_MOCK_CONTROL']
+  if (!control) return
+  try {
+    const parsed = JSON.parse(control) as { callLog?: string }
+    if (!parsed.callLog) return
+    const lastMessage = request.messages[request.messages.length - 1]
+    const toolChoice = request.toolChoice
+    appendFileSync(
+      parsed.callLog,
+      JSON.stringify({
+        kind,
+        maxTokens: request.maxTokens ?? null,
+        hasTools: (request.tools?.length ?? 0) > 0,
+        toolChoice: typeof toolChoice === 'string' ? toolChoice : toolChoice ? toolChoice.function.name : null,
+        reasoningEffort: request.reasoningEffort ?? null,
+        messageCount: request.messages.length,
+        lastMessageRole: lastMessage?.role ?? null,
+      }) + '\n',
+    )
+  } catch {
+    // Ignore logging failures
+  }
+}
 
 // ============================================================================
 // Mock Configuration
@@ -539,11 +588,30 @@ export function createMockLLMClient(config: MockLLMConfig = {}): MockLLMClient {
       const userMessage = request.messages.filter((m) => m.role === 'user').pop()
       const prompt = userMessage?.content ?? ''
 
+      appendCallLog(request, 'complete')
+
       logger.debug('Mock LLM complete', { prompt: prompt.slice(0, 100) })
 
       // Check if abort signal was triggered
       if (request.signal?.aborted) {
         throw new Error('Aborted')
+      }
+
+      // Compaction summary calls: deterministic, no tool calls, always
+      // long enough to pass MIN_COMPACTION_SUMMARY_LENGTH.
+      if (isCompactionPrompt(prompt)) {
+        return {
+          id: `mock-${Date.now()}`,
+          content: COMPACTION_SUMMARY,
+          thinkingContent: defaultThinking,
+          toolCalls: [],
+          finishReason: 'stop',
+          usage: {
+            promptTokens: Math.ceil(prompt.length / 4),
+            completionTokens: Math.ceil(COMPACTION_SUMMARY.length / 4),
+            totalTokens: 0,
+          },
+        }
       }
 
       // Match prompt to rule
@@ -590,6 +658,8 @@ export function createMockLLMClient(config: MockLLMConfig = {}): MockLLMClient {
       const userMessage = request.messages.filter((m) => m.role === 'user').pop()
       const prompt = userMessage?.content ?? ''
 
+      appendCallLog(request, 'stream')
+
       logger.debug('Mock LLM stream', { prompt: prompt.slice(0, 100) })
 
       // Check if abort signal was triggered
@@ -597,8 +667,9 @@ export function createMockLLMClient(config: MockLLMConfig = {}): MockLLMClient {
         throw new Error('Aborted')
       }
 
-      // Match prompt to rule
-      const rule = matchPrompt(prompt)
+      // Compaction summary calls stream a deterministic summary, no tools.
+      const isCompaction = isCompactionPrompt(prompt)
+      const rule = isCompaction ? undefined : matchPrompt(prompt)
 
       const toolCalls: ToolCall[] =
         rule?.toolCalls.map((tc, idx) => ({
@@ -607,7 +678,7 @@ export function createMockLLMClient(config: MockLLMConfig = {}): MockLLMClient {
           arguments: tc.arguments,
         })) ?? []
 
-      const responseContent = rule?.response ?? defaultResponse
+      const responseContent = isCompaction ? COMPACTION_SUMMARY : (rule?.response ?? defaultResponse)
       const thinking = rule?.thinking ?? defaultThinking
 
       // Stream thinking first if present

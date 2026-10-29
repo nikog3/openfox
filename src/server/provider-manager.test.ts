@@ -1825,3 +1825,90 @@ describe('ProviderManager - unknown backend URL detection', () => {
     expect(config.llm.backend).toBe('unknown')
   })
 })
+
+describe('ProviderManager - discovered context cap', () => {
+  function buildManager(providers: Provider[]) {
+    return createProviderManager({
+      providers,
+      defaultModelSelection: 'p/model-a',
+      server: { port: 10369, host: '127.0.0.1', openBrowser: true },
+      logging: { level: 'info' as const },
+      database: { path: '' },
+      llm: {
+        baseUrl: 'http://localhost:8000/v1',
+        model: 'model-a',
+        timeout: 120000,
+        idleTimeout: 30000,
+        backend: 'vllm',
+      },
+      context: { maxTokens: 4096, compactionThreshold: 10000, compactionTarget: 8000 },
+      agent: { maxIterations: 100, maxConsecutiveFailures: 5, toolTimeout: 30000 },
+      workdir: process.cwd(),
+    })
+  }
+
+  function capProvider(): Provider {
+    return {
+      id: 'p',
+      name: 'Cap Provider',
+      url: 'http://localhost:8000',
+      backend: 'vllm',
+      models: [
+        { id: 'model-a', contextWindow: 128000, source: 'default' as const },
+        { id: 'model-b', contextWindow: 64000, source: 'default' as const },
+      ],
+      isActive: true,
+      createdAt: new Date().toISOString(),
+    }
+  }
+
+  it('caps the effective context window at the discovered limit', () => {
+    const manager = buildManager([capProvider()])
+    manager.applyDiscoveredContextCap('p', 'model-a', 8000)
+    expect(manager.getCurrentModelContext()).toBe(8000)
+  })
+
+  it('lowers the cap but never raises it', () => {
+    const manager = buildManager([capProvider()])
+    manager.applyDiscoveredContextCap('p', 'model-a', 8000)
+    manager.applyDiscoveredContextCap('p', 'model-a', 120000)
+    expect(manager.getCurrentModelContext()).toBe(8000)
+    manager.applyDiscoveredContextCap('p', 'model-a', 4000)
+    expect(manager.getCurrentModelContext()).toBe(4000)
+  })
+
+  it('scopes the cap to the model that discovered it', async () => {
+    const manager = buildManager([capProvider()])
+    manager.applyDiscoveredContextCap('p', 'model-a', 8000)
+    await manager.setDefaultModelSelection('p', 'model-b')
+    expect(manager.getCurrentModelContext()).toBe(64000)
+  })
+
+  it('clears the cap when the user updates the model context window', async () => {
+    const manager = buildManager([capProvider()])
+    manager.applyDiscoveredContextCap('p', 'model-a', 8000)
+    await manager.updateModelContext('p', 'model-a', 96000)
+    expect(manager.getCurrentModelContext()).toBe(96000)
+  })
+
+  it('clears the cap when setProviders changes the model context window', () => {
+    const manager = buildManager([capProvider()])
+    manager.applyDiscoveredContextCap('p', 'model-a', 8000)
+    const updated: Provider = {
+      ...capProvider(),
+      models: [
+        { id: 'model-a', contextWindow: 96000, source: 'user' as const },
+        { id: 'model-b', contextWindow: 64000, source: 'default' as const },
+      ],
+    }
+    manager.setProviders([updated], 'p/model-a')
+    expect(manager.getCurrentModelContext()).toBe(96000)
+  })
+
+  it('keeps the cap when setProviders leaves the context window unchanged', () => {
+    const manager = buildManager([capProvider()])
+    manager.applyDiscoveredContextCap('p', 'model-a', 8000)
+    manager.setProviders([capProvider()], 'p/model-a')
+    expect(manager.getCurrentModelContext()).toBe(8000)
+  })
+})

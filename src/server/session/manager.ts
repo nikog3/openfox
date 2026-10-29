@@ -317,9 +317,18 @@ export class SessionManager {
     if (sessionId) {
       const { providerId, model } = this.resolveEffectiveProviderModel(sessionId, agentId)
       const sessionContext = this.resolveModelContext(providerId, model)
-      if (sessionContext !== undefined) return sessionContext
+      if (sessionContext !== undefined) {
+        const cap = providerId && model ? this.providerManager.getDiscoveredContextCap(providerId, model) : undefined
+        return cap !== undefined ? Math.min(sessionContext, cap) : sessionContext
+      }
     }
     return this.providerManager.getCurrentModelContext()
+  }
+
+  applyDiscoveredContextCap(sessionId: string, agentId: string | undefined, cap: number): void {
+    const { providerId, model } = this.resolveEffectiveProviderModel(sessionId, agentId)
+    if (!providerId || !model) return
+    this.providerManager.applyDiscoveredContextCap(providerId, model, cap)
   }
 
   /**
@@ -1994,7 +2003,8 @@ export class SessionManager {
     if (providerId && model) {
       const resolved = this.resolveModelContext(providerId, model)
       if (resolved !== undefined) {
-        maxTokens = resolved
+        const cap = providerManager.getDiscoveredContextCap(providerId, model)
+        maxTokens = cap !== undefined ? Math.min(resolved, cap) : resolved
       } else {
         // The pinned provider/model is gone: the context window below is the
         // global one, not the one this session was configured with, so the

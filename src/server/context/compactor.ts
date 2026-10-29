@@ -93,7 +93,7 @@ export const MIN_COMPACTION_SUMMARY_LENGTH = 50
  * both — counting only content underestimates the real prompt and lets the
  * summary call overflow the window.
  */
-function messageWireSize(message: ContextMessage): number {
+export function messageWireSize(message: ContextMessage): number {
   return message.content.length + (message.thinkingContent?.length ?? 0)
 }
 

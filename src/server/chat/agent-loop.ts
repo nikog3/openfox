@@ -67,7 +67,9 @@ import {
   shouldCompact,
   appendCompactionPrompt,
   fitSummaryInput,
+  messageWireSize,
 } from '../context/compactor.js'
+import { runSequentialFold } from '../context/fold-compactor.js'
 import { logger } from '../utils/logger.js'
 import { emitPluginHook } from '../plugins/hook-emitter.js'
 import { applyPluginMessageTransforms } from '../plugins/message-transforms.js'
@@ -576,18 +578,17 @@ export async function runTopLevelAgentLoop(
         modelSettings = { ...modelSettings, maxTokens: currentMaxTokensOverride }
       }
 
-      if (modelSettings) {
-        const requestedMaxTokens = modelSettings.maxTokens ?? profileDefaultMaxTokens
+      if (compacting) {
         // The compaction summary always gets the full COMPACTION_SUMMARY_BUDGET_TOKENS.
         // Capping it at availableForOutput collapsed the budget to the 256-token
         // floor when the window was nearly full: the summary hit its output
         // limit, the compaction was abandoned, and the re-trigger looped. The
         // input side is fitted below with fitSummaryInput instead, so
         // input + budget can never overflow the window.
-        const resolvedMaxTokens = compacting
-          ? COMPACTION_SUMMARY_BUDGET_TOKENS
-          : Math.min(requestedMaxTokens, availableForOutput)
-        modelSettings = { ...modelSettings, maxTokens: resolvedMaxTokens }
+        modelSettings = { ...(modelSettings ?? {}), maxTokens: COMPACTION_SUMMARY_BUDGET_TOKENS }
+      } else if (modelSettings) {
+        const requestedMaxTokens = modelSettings.maxTokens ?? profileDefaultMaxTokens
+        modelSettings = { ...modelSettings, maxTokens: Math.min(requestedMaxTokens, availableForOutput) }
       }
 
       // Build set of sub-agent IDs so streamLLMPure can show the correct
@@ -605,15 +606,61 @@ export async function runTopLevelAgentLoop(
         ...(signal ? { signal } : {}),
       })
 
-      // While compacting, fit the summary call's input to the window: trim the
-      // oldest conversation messages so input + the full summary budget always
-      // fits (the summary is meant to replace the trimmed messages).
+      // While compacting, fit the summary call's input to the window: the
+      // one-shot path trims the oldest messages so input + the full summary
+      // budget always fits (the summary is meant to replace the trimmed
+      // messages). When that trim would drop more than half the conversation,
+      // the loss is too large for a single call — fold it instead: recursive
+      // half-summarizations whose final summary still carries the dropped
+      // content.
+      let foldedAttemptResult: import('./stream-pure.js').PureStreamResult | undefined
       if (compacting) {
-        transformResult.messages = fitSummaryInput(
-          transformResult.messages,
-          transformResult.systemPrompt,
-          contextWindow,
-        )
+        const fittedMessages = fitSummaryInput(transformResult.messages, transformResult.systemPrompt, contextWindow)
+        const originalWire = transformResult.messages.reduce((sum, message) => sum + messageWireSize(message), 0)
+        const fittedWire = fittedMessages.reduce((sum, message) => sum + messageWireSize(message), 0)
+        if (originalWire > 0 && (originalWire - fittedWire) * 2 > originalWire) {
+          const fold = await runSequentialFold({
+            client: attemptClient,
+            systemPrompt: transformResult.systemPrompt,
+            messages: transformResult.messages,
+            contextWindow,
+            ...(signal ? { signal } : {}),
+          })
+          if (fold.summary !== undefined) {
+            foldedAttemptResult = {
+              content: fold.summary,
+              toolCalls: [],
+              segments: [],
+              usage: {
+                promptTokens: fold.promptTokens ?? previousContextTokens,
+                completionTokens: fold.completionTokens ?? 0,
+                totalTokens: (fold.promptTokens ?? previousContextTokens) + (fold.completionTokens ?? 0),
+              },
+              timing: { ttft: 0, completionTime: 0, tps: 0, prefillTps: 0 },
+              aborted: false,
+              finishReason: 'stop',
+            }
+          } else {
+            append({
+              type: 'chat.error',
+              data: {
+                error: serverT({
+                  en: 'Compaction fold failed, continuing with full context',
+                  fr: 'La compaction en plis a échoué, poursuit avec le contexte complet',
+                }),
+                recoverable: true,
+              },
+            })
+            logger.warn('Sequential fold compaction failed, continuing with full context', { sessionId })
+            tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? ''])
+            if (compactionAttempts >= MAX_COMPACTION_ATTEMPTS) compactionBlocked = true
+            compacting = false
+            if (config.initialCompacting) return {}
+            continue
+          }
+        } else {
+          transformResult.messages = fittedMessages
+        }
       }
 
       // Resolve retry patterns fresh each round so a mid-turn edit (deleting
@@ -653,89 +700,92 @@ export async function runTopLevelAgentLoop(
       const editFileContentCache = new Map<string, string>()
       const liveEditTracker = new LiveEditContextTracker()
 
-      // The tracked context size is the best-known prompt total, but it is 0
-      // for the first call of a session (context state is only filled from
-      // real usage after a response completes) and after a server restart.
-      // Estimate from the outgoing request so prefill progress is meaningful
-      // from the very first call.
-      const expectedPromptTokens =
-        previousContextTokens > 0
-          ? previousContextTokens
-          : estimatePromptTokens(transformResult.messages, transformResult.systemPrompt)
-      // Prefill feedback: announce the LLM call (the assistant message.start is
-      // deliberately deferred until the first token, so without this event the
-      // client has nothing to render while the prompt is being processed) and,
-      // when the engine supports it, poll its live prefill progress (/slots).
-      append(
-        createEvent('llm.call_start', {
-          messageId: assistantMsgId,
-          contextTokens: expectedPromptTokens,
-          ...subAgentTags(),
-        }),
-      )
-      const slotProgressUrl = getSlotProgressBaseUrl(attemptClient)
-      // Per-round: a measurement captured by a previous round's poller must
-      // not leak into this round's stats.
-      prefillMeasurement = undefined
-      let stopPrefillProgress = () => {}
-      let lastPrefillSnapshot: PrefillProgressSnapshot | undefined
-      let prefillStartedAt: number | undefined
-      if (slotProgressUrl) {
-        // Snapshot the engine's known task ids BEFORE the request is sent:
-        // the slot that gains a new id_task afterwards is ours. Identity
-        // tracking replaces the prompt-size guess, which is ambiguous with
-        // multiple parallel slots (llama.cpp --parallel >= 2).
-        const knownTaskIds = await fetchKnownTaskIds(slotProgressUrl, signal)
-        prefillStartedAt = Date.now()
-        stopPrefillProgress = startPrefillProgressPolling({
-          serverBaseUrl: slotProgressUrl,
-          expectedPromptTokens,
-          ...(knownTaskIds ? { knownTaskIds } : {}),
-          startedAtMs: prefillStartedAt,
-          onProgress: (snapshot) => {
-            lastPrefillSnapshot = snapshot
-            config.onMessage?.(createChatPrefillProgressMessage({ messageId: assistantMsgId, ...snapshot }))
-          },
-          onComplete: (final) => {
-            prefillMeasurement = final
-          },
-          ...(signal ? { signal } : {}),
-        })
-      }
+      let attemptResult: import('./stream-pure.js').PureStreamResult | undefined = foldedAttemptResult
+      if (attemptResult === undefined) {
+        // The tracked context size is the best-known prompt total, but it is 0
+        // for the first call of a session (context state is only filled from
+        // real usage after a response completes) and after a server restart.
+        // Estimate from the outgoing request so prefill progress is meaningful
+        // from the very first call.
+        const expectedPromptTokens =
+          previousContextTokens > 0
+            ? previousContextTokens
+            : estimatePromptTokens(transformResult.messages, transformResult.systemPrompt)
+        // Prefill feedback: announce the LLM call (the assistant message.start is
+        // deliberately deferred until the first token, so without this event the
+        // client has nothing to render while the prompt is being processed) and,
+        // when the engine supports it, poll its live prefill progress (/slots).
+        append(
+          createEvent('llm.call_start', {
+            messageId: assistantMsgId,
+            contextTokens: expectedPromptTokens,
+            ...subAgentTags(),
+          }),
+        )
+        const slotProgressUrl = getSlotProgressBaseUrl(attemptClient)
+        // Per-round: a measurement captured by a previous round's poller must
+        // not leak into this round's stats.
+        prefillMeasurement = undefined
+        let stopPrefillProgress = () => {}
+        let lastPrefillSnapshot: PrefillProgressSnapshot | undefined
+        let prefillStartedAt: number | undefined
+        if (slotProgressUrl) {
+          // Snapshot the engine's known task ids BEFORE the request is sent:
+          // the slot that gains a new id_task afterwards is ours. Identity
+          // tracking replaces the prompt-size guess, which is ambiguous with
+          // multiple parallel slots (llama.cpp --parallel >= 2).
+          const knownTaskIds = await fetchKnownTaskIds(slotProgressUrl, signal)
+          prefillStartedAt = Date.now()
+          stopPrefillProgress = startPrefillProgressPolling({
+            serverBaseUrl: slotProgressUrl,
+            expectedPromptTokens,
+            ...(knownTaskIds ? { knownTaskIds } : {}),
+            startedAtMs: prefillStartedAt,
+            onProgress: (snapshot) => {
+              lastPrefillSnapshot = snapshot
+              config.onMessage?.(createChatPrefillProgressMessage({ messageId: assistantMsgId, ...snapshot }))
+            },
+            onComplete: (final) => {
+              prefillMeasurement = final
+            },
+            ...(signal ? { signal } : {}),
+          })
+        }
 
-      const attemptResult = await consumeStreamGenerator(streamGen, async (event) => {
-        // First streamed event: the prefill is over, stop reporting progress.
-        // The poller's own completion tick rarely lands in time, so fall back
-        // to the last snapshot — the first token arrives right after the
-        // prefill ends, so this timestamp is the completion time.
-        stopPrefillProgress()
-        if (prefillMeasurement === undefined && lastPrefillSnapshot !== undefined && prefillStartedAt !== undefined) {
-          prefillMeasurement = {
-            processedTokens: lastPrefillSnapshot.processedTokens,
-            prefillTimeMs: Math.max(0, Date.now() - prefillStartedAt),
+        attemptResult = await consumeStreamGenerator(streamGen, async (event) => {
+          // First streamed event: the prefill is over, stop reporting progress.
+          // The poller's own completion tick rarely lands in time, so fall back
+          // to the last snapshot — the first token arrives right after the
+          // prefill ends, so this timestamp is the completion time.
+          stopPrefillProgress()
+          if (prefillMeasurement === undefined && lastPrefillSnapshot !== undefined && prefillStartedAt !== undefined) {
+            prefillMeasurement = {
+              processedTokens: lastPrefillSnapshot.processedTokens,
+              prefillTimeMs: Math.max(0, Date.now() - prefillStartedAt),
+            }
           }
-        }
-        ensureAssistantMessage()
-        // While the LLM streams an edit_file call, enrich its preparing events
-        // with a live edit context (surrounding lines) computed from the file —
-        // the same shape the final tool result carries. The file content is
-        // read once per path for the whole turn, and the context is recomputed
-        // only when the parsed edit spec changes.
-        if (event.type === 'tool.preparing' && event.data.name === 'edit_file') {
-          const editContext = await liveEditTracker.next(
-            event.data.index,
-            event.data.arguments,
-            session.workdir,
-            editFileContentCache,
-          )
-          append(editContext && editContext.length > 0 ? { ...event, data: { ...event.data, editContext } } : event)
-          return
-        }
-        append(event)
-      })
-      // Covers the paths where the stream ends without any event (immediate
-      // failure/abort) — the consumer-side stop only fires on first event.
-      stopPrefillProgress()
+          ensureAssistantMessage()
+          // While the LLM streams an edit_file call, enrich its preparing events
+          // with a live edit context (surrounding lines) computed from the file —
+          // the same shape the final tool result carries. The file content is
+          // read once per path for the whole turn, and the context is recomputed
+          // only when the parsed edit spec changes.
+          if (event.type === 'tool.preparing' && event.data.name === 'edit_file') {
+            const editContext = await liveEditTracker.next(
+              event.data.index,
+              event.data.arguments,
+              session.workdir,
+              editFileContentCache,
+            )
+            append(editContext && editContext.length > 0 ? { ...event, data: { ...event.data, editContext } } : event)
+            return
+          }
+          append(event)
+        })
+        // Covers the paths where the stream ends without any event (immediate
+        // failure/abort) — the consumer-side stop only fires on first event.
+        stopPrefillProgress()
+      }
 
       if (!attemptResult.error) {
         ensureAssistantMessage()
@@ -797,6 +847,12 @@ export async function runTopLevelAgentLoop(
         // the largest tool result proportionally to the reported count and
         // retry, fixing the request itself.
         const parsed = parseContextLengthError(attemptResult.error)
+        if (parsed.serverLimit !== undefined) {
+          const effectiveWindow = sessionManager.getCurrentModelContext(sessionId, config.mode)
+          if (parsed.serverLimit < effectiveWindow) {
+            sessionManager.applyDiscoveredContextCap(sessionId, config.mode, parsed.serverLimit)
+          }
+        }
         const estimatedRequestTokens = previousContextTokens + pendingToolResultTokens
         if (
           parsed.actualTokens !== undefined &&
@@ -1125,7 +1181,10 @@ export async function runTopLevelAgentLoop(
           tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? '', assistantMsgId])
           compactionBlocked = true
           compacting = false
-          if (config.initialCompacting) break
+          if (config.initialCompacting) {
+            append(createChatDoneEvent(assistantMsgId, 'complete', undefined, agentType))
+            break
+          }
           continue
         }
         // Tombstone the rejected tool-call-only message so it cannot pollute
@@ -1331,7 +1390,10 @@ ${COMPACTION_PROMPT}`,
         tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? '', assistantMsgId])
         if (compactionAttempts >= MAX_COMPACTION_ATTEMPTS) compactionBlocked = true
         compacting = false
-        if (config.initialCompacting) break
+        if (config.initialCompacting) {
+          append(createChatDoneEvent(assistantMsgId, 'complete', undefined, agentType))
+          break
+        }
         continue
       }
 
@@ -1353,7 +1415,10 @@ ${COMPACTION_PROMPT}`,
         tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? '', assistantMsgId])
         if (compactionAttempts >= MAX_COMPACTION_ATTEMPTS) compactionBlocked = true
         compacting = false
-        if (config.initialCompacting) break
+        if (config.initialCompacting) {
+          append(createChatDoneEvent(assistantMsgId, 'complete', undefined, agentType))
+          break
+        }
         continue
       }
 

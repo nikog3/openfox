@@ -9,6 +9,7 @@
  * deterministic testing of the entire system through the WebSocket API.
  */
 
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 import type { LLMClientWithModel } from './client.js'
@@ -742,8 +743,15 @@ function buildMockResponse(request: LLMCompletionRequest): {
   toolCalls: ToolCall[]
   finishReason: LLMCompletionResponse['finishReason']
 } {
-  // Detect compaction requests: no tools, toolChoice 'none' (summary generation)
-  if (request.toolChoice === 'none' && (!request.tools || request.tools.length === 0)) {
+  // Detect compaction requests. The one-shot path keeps the tool list (the
+  // summary is streamed like a normal turn) so the COMPACTION_PROMPT as last
+  // user message is the reliable marker; the fold path uses client.complete
+  // with no tools and the same trailing prompt.
+  const lastRequestMessage = request.messages.at(-1)
+  const isCompactionPrompt =
+    lastRequestMessage?.role === 'user' &&
+    /tasked with summarizing conversations for continuation/i.test(lastRequestMessage.content)
+  if (isCompactionPrompt || (!request.tools?.length && request.toolChoice === 'none')) {
     return {
       content:
         'Summary of conversation: The user has been working on the project. Files were modified and progress was made on all tasks. No errors were encountered during the session.',
@@ -816,6 +824,64 @@ function buildMockResponse(request: LLMCompletionRequest): {
 }
 
 // ============================================================================
+// Mock Control (test-driven failure injection + call logging)
+//
+// E2E tests point OPENFOX_MOCK_CONTROL at a JSON file, re-read on every LLM
+// call (the test server runs in-process, so the test and mock share the
+// filesystem and env). Shape:
+//   { contextError?: string, contextErrorCalls?: number, callLog?: string }
+// - contextError + contextErrorCalls > 0: the next N calls fail with it (the
+//   counter is decremented in the file after each failure). complete() throws,
+//   stream() yields an error event — matching the real client's behavior.
+// - callLog: every call appends a JSON line with call metadata.
+// ============================================================================
+
+interface MockControl {
+  contextError?: string
+  contextErrorCalls?: number
+  callLog?: string
+}
+
+function readMockControl(): { path: string; control: MockControl } | undefined {
+  const path = process.env['OPENFOX_MOCK_CONTROL']
+  if (!path) return undefined
+  try {
+    return { path, control: JSON.parse(readFileSync(path, 'utf-8')) as MockControl }
+  } catch {
+    return undefined
+  }
+}
+
+function applyMockControl(request: LLMCompletionRequest, kind: 'complete' | 'stream'): string | undefined {
+  const entry = readMockControl()
+  if (!entry) return undefined
+  const { path, control } = entry
+  if (control.contextError) {
+    const remaining = control.contextErrorCalls ?? 0
+    if (remaining > 0) {
+      writeFileSync(path, JSON.stringify({ ...control, contextErrorCalls: remaining - 1 }))
+      return control.contextError
+    }
+  }
+  if (control.callLog) {
+    const lastMessage = request.messages.at(-1)
+    appendFileSync(
+      control.callLog,
+      JSON.stringify({
+        kind,
+        maxTokens: request.modelSettings?.maxTokens ?? request.maxTokens ?? null,
+        hasTools: (request.tools?.length ?? 0) > 0,
+        toolChoice: request.toolChoice ?? null,
+        reasoningEffort: request.reasoningEffort ?? null,
+        messageCount: request.messages.length,
+        lastMessageRole: lastMessage?.role ?? null,
+      }) + '\n',
+    )
+  }
+  return undefined
+}
+
+// ============================================================================
 // Mock LLM Client
 // ============================================================================
 
@@ -835,6 +901,9 @@ export function createMockLLMClient(): LLMClientWithModel {
     },
 
     async complete(request: LLMCompletionRequest): Promise<LLMCompletionResponse> {
+      const injectedError = applyMockControl(request, 'complete')
+      if (injectedError) throw new Error(injectedError)
+
       const prompt = getLastUserPrompt(request)
 
       if (request.signal?.aborted) throw new Error('Aborted')
@@ -859,6 +928,14 @@ export function createMockLLMClient(): LLMClientWithModel {
     },
 
     async *stream(request: LLMCompletionRequest): AsyncIterable<LLMStreamEvent> {
+      const injectedError = applyMockControl(request, 'stream')
+      if (injectedError) {
+        // Mirror the real client: stream failures surface as an error event,
+        // never a throw (the agent loop retries on result.error).
+        yield { type: 'error', error: injectedError }
+        return
+      }
+
       const prompt = getLastUserPrompt(request)
 
       if (request.signal?.aborted) throw new Error('Aborted')

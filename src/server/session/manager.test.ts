@@ -80,6 +80,8 @@ const mockProviderManager = {
     },
   ),
   resolveModelEffort: vi.fn((): string | undefined => undefined),
+  getDiscoveredContextCap: vi.fn((): number | undefined => undefined),
+  applyDiscoveredContextCap: vi.fn(),
 }
 
 describe('SessionManager', () => {
@@ -101,6 +103,7 @@ describe('SessionManager', () => {
     getLspManagerMock.mockClear()
     shutdownLspManagerMock.mockClear()
     mockProviderManager.getCurrentModelContext.mockClear()
+    mockProviderManager.getDiscoveredContextCap.mockReturnValue(undefined)
     mockGetGitBranch.mockResolvedValue(null) // default: no branch
   })
 
@@ -614,6 +617,31 @@ describe('SessionManager', () => {
 
     // Session model window (262K) wins over the global default model (100K).
     expect(manager.getCurrentModelContext(session.id)).toBe(262144)
+  })
+
+  it('getCurrentModelContext clamps the session model window to a discovered server cap', () => {
+    mockProviderManager.getProviders.mockReturnValue([
+      { id: 'test-provider', models: [{ id: 'session-model-262k', contextWindow: 262144 }] },
+    ])
+    mockProviderManager.getCurrentModelContext.mockReturnValue(100000)
+    mockProviderManager.getDiscoveredContextCap.mockReturnValue(128000)
+    const session = manager.createSession(projectId, 'Test Session')
+    manager.setSessionProvider(session.id, 'test-provider', 'session-model-262k')
+
+    expect(manager.getCurrentModelContext(session.id)).toBe(128000)
+  })
+
+  it('applyDiscoveredContextCap forwards the cap to the provider manager', () => {
+    const session = manager.createSession(projectId, 'Test Session')
+    manager.setSessionProvider(session.id, 'test-provider', 'session-model-262k')
+
+    manager.applyDiscoveredContextCap(session.id, undefined, 128000)
+
+    expect(mockProviderManager.applyDiscoveredContextCap).toHaveBeenCalledWith(
+      'test-provider',
+      'session-model-262k',
+      128000,
+    )
   })
 
   it('getCurrentModelContext falls back to the global default context when the session model is unknown', () => {

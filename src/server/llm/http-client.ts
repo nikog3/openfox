@@ -7,6 +7,7 @@ import type {
 import { logger } from '../utils/logger.js'
 import { ChatHttpClient, DONE, type ChatRequest } from './http-shared.js'
 import { countTokensFromResponse } from './tokenize.js'
+import { stripVersionPrefix } from './url-utils.js'
 import './proxy.js'
 
 export interface HttpClientOptions {
@@ -41,21 +42,59 @@ export class OpenAIHttpClient extends ChatHttpClient {
     return data as ChatCompletionResponse
   }
 
-  async tokenize(content: string): Promise<number | null> {
+  /**
+   * Resolved tokenize endpoint, cached after the first successful call so
+   * subsequent measurements skip the probe. llama.cpp serves /tokenize at the
+   * server ROOT (not under the OpenAI-compatible /v1 or a custom prefix), so
+   * the naive `${baseURL}/tokenize` 404s and the backstop silently falls back
+   * to the dense chars/2.4 estimate — under-counting dense content (JSON,
+   * base64, minified code) and letting an over-window prompt slip through.
+   */
+  private tokenizeEndpoint?: string
+
+  private tokenizeCandidates(): string[] {
+    const candidates = [`${this.baseURL}/tokenize`]
+    const stripped = stripVersionPrefix(this.baseURL)
+    if (stripped !== this.baseURL) candidates.push(`${stripped}/tokenize`)
+    let origin = ''
     try {
-      const response = await fetch(`${this.baseURL}/tokenize`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify({ content }),
-        signal: AbortSignal.timeout(2000),
-      })
-      return countTokensFromResponse(response)
+      origin = new URL(this.baseURL).origin
     } catch {
-      return null
+      //
     }
+    if (origin) candidates.push(`${origin}/tokenize`)
+    return [...new Set(candidates)]
+  }
+
+  /** Tokenizing is CPU-bound on the backend; scale the budget with payload size. */
+  private tokenizeTimeout(contentLength: number): number {
+    return Math.min(60_000, 2_000 + Math.ceil(contentLength / 1_000) * 50)
+  }
+
+  async tokenize(content: string): Promise<number | null> {
+    const candidates = this.tokenizeEndpoint
+      ? [this.tokenizeEndpoint, ...this.tokenizeCandidates().filter((c) => c !== this.tokenizeEndpoint)]
+      : this.tokenizeCandidates()
+    const timeoutMs = this.tokenizeTimeout(content.length)
+    for (const endpoint of candidates) {
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({ content }),
+          signal: AbortSignal.timeout(timeoutMs),
+        })
+        if (!response.ok) continue
+        this.tokenizeEndpoint = endpoint
+        return await countTokensFromResponse(response)
+      } catch {
+        continue
+      }
+    }
+    return null
   }
 
   protected parseStreamLine(trimmed: string): ChatCompletionChunk | typeof DONE | null {

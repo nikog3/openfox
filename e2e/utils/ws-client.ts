@@ -220,6 +220,12 @@ function logMessage(msg: ServerMessage): void {
       // Skip noisy state messages
       break
 
+    case 'chat.error': {
+      const p = msg.payload as { error?: string; recoverable?: boolean }
+      console.log(`${COLORS.red}[chat.error] ${p.error} (recoverable=${p.recoverable})${COLORS.reset}`)
+      break
+    }
+
     default: {
       console.log(`${COLORS.dim}[${type}]${COLORS.reset}`)
     }

@@ -509,6 +509,9 @@ export interface ProviderManager {
   getProviderStatus(providerId: string): 'connected' | 'disconnected' | 'unknown'
   getProviderModels(providerId: string): Promise<ModelConfig[]>
   setDefaultModelSelection(providerId: string, model: string): Promise<{ success: boolean; error?: string }>
+  applyDiscoveredContextCap(providerId: string, modelId: string, cap: number): void
+  clearDiscoveredContextCap(providerId: string, modelId: string): void
+  getDiscoveredContextCap(providerId: string, modelId: string): number | undefined
   updateModelContext(
     providerId: string,
     modelId: string,
@@ -574,6 +577,16 @@ export function createProviderManager(config: Config, options: ProviderManagerOp
   let configDefaultModelSelection: string | undefined = config.defaultModelSelection
   let llmClient = createLLMClient(config)
   const providerStatus = new Map<string, 'connected' | 'disconnected' | 'unknown'>()
+  const discoveredContextCaps = new Map<string, number>()
+
+  const applyDiscoveredCap = (providerId: string, modelId: string, window: number): number => {
+    const cap = discoveredContextCaps.get(`${providerId}:${modelId}`)
+    return cap !== undefined ? Math.min(window, cap) : window
+  }
+
+  const clearDiscoveredCap = (providerId: string, modelId: string): void => {
+    discoveredContextCaps.delete(`${providerId}:${modelId}`)
+  }
 
   logger.debug('ProviderManager created', {
     providers: providers.map((p) => ({
@@ -901,6 +914,17 @@ export function createProviderManager(config: Config, options: ProviderManagerOp
     },
 
     setProviders(newProviders, newDefaultModelSelection) {
+      // An explicit context-window change is a user override: it replaces any
+      // runtime-discovered cap for that model, or the cap would keep
+      // clobbering the window the user just declared.
+      for (const provider of newProviders) {
+        for (const model of provider.models ?? []) {
+          const previous = providers.find((p) => p.id === provider.id)?.models.find((m) => m.id === model.id)
+          if (previous !== undefined && previous.contextWindow !== model.contextWindow) {
+            clearDiscoveredCap(provider.id, model.id)
+          }
+        }
+      }
       providers = [...newProviders]
       defaultModelSelection = newDefaultModelSelection
       configDefaultModelSelection = newDefaultModelSelection
@@ -971,7 +995,25 @@ export function createProviderManager(config: Config, options: ProviderManagerOp
       if (!provider) return config.context.maxTokens
 
       const modelConfig = provider.models.find((m) => m.id === model)
-      return modelConfig?.contextWindow ?? config.context.maxTokens
+      return applyDiscoveredCap(providerId, model, modelConfig?.contextWindow ?? config.context.maxTokens)
+    },
+
+    applyDiscoveredContextCap(providerId: string, modelId: string, cap: number) {
+      if (!Number.isFinite(cap) || cap <= 0) return
+      const key = `${providerId}:${modelId}`
+      const existing = discoveredContextCaps.get(key)
+      if (existing === undefined || cap < existing) {
+        discoveredContextCaps.set(key, cap)
+        logger.info('Discovered context cap applied', { providerId, modelId, cap, existing: existing ?? null })
+      }
+    },
+
+    clearDiscoveredContextCap(providerId: string, modelId: string) {
+      clearDiscoveredCap(providerId, modelId)
+    },
+
+    getDiscoveredContextCap(providerId: string, modelId: string) {
+      return discoveredContextCaps.get(`${providerId}:${modelId}`)
     },
 
     async updateModelContext(providerId: string, modelId: string, contextWindow: number) {
@@ -1000,6 +1042,7 @@ export function createProviderManager(config: Config, options: ProviderManagerOp
         )
       }
 
+      clearDiscoveredCap(providerId, modelId)
       logger.info('Model context updated', { providerId, modelId, contextWindow })
       return { success: true }
     },
