@@ -1565,7 +1565,8 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
 
     // Broadcast updated session state so all clients see the confirmation removed
     const { getEventStore, combineEventsWithSnapshot: combineEvents } = await import('./events/index.js')
-    const { buildMessagesFromStoredEvents, foldPendingConfirmations } = await import('./events/folding.js')
+    const { buildMessagesFromStoredEvents, foldInFlightPrefill, foldPendingConfirmations } =
+      await import('./events/folding.js')
     const { createSessionStateMessage } = await import('./ws/protocol.js')
     const { getPendingQuestionsForSession } = await import('./tools/index.js')
     const { getMaxVisibleItems } = await import('./db/settings.js')
@@ -1579,6 +1580,7 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
     const pendingQuestions = getPendingQuestionsForSession(sessionId)
     const session = sessionManager.getSession(sessionId)
     if (session) {
+      const prefill = session.isRunning ? foldInFlightPrefill(events) : null
       const stateMsg = createSessionStateMessage(
         session,
         messages,
@@ -1588,6 +1590,8 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
         undefined,
         hiddenCount,
         sessionManager.getDisplayWorkflowExecution(sessionId) ?? undefined,
+        undefined,
+        prefill,
       )
       wssExports.broadcastForSession(sessionId, { ...stateMsg, sessionId })
     }

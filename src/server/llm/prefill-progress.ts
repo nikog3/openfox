@@ -5,11 +5,11 @@ import { stripVersionPrefix } from './url-utils.js'
  *
  * The only field the engine reports reliably while a request is being
  * prefilled is n_prompt_tokens_processed (advancing, but only for the tokens
- * NOT served from the KV cache — n_prompt_tokens_cache). The prompt TOTAL is
- * known by the caller (it built the prompt), so progress is measured over the
- * uncached remainder of that known total; n_prompt_tokens is a rolling value
- * in some builds (it lags n_prompt_tokens_processed) and is only used as a
- * fallback when no known total is available.
+ * NOT served from the KV cache — n_prompt_tokens_cache). Progress is
+ * measured over the uncached remainder of the prompt total, which is the
+ * larger of the caller-known size (a stale lower bound on warm calls — it
+ * tracks the previous call's context) and the engine's n_prompt_tokens
+ * (rolling in some builds, authoritative for the current request).
  *
  * Slot identity: with multiple parallel slots (llama.cpp --parallel >= 2),
  * matching by prompt size alone is ambiguous (two busy slots of similar size,
@@ -110,7 +110,7 @@ export interface PrefillProgressOptions {
 const DEFAULT_INTERVAL_MS = 350
 const MAX_CONSECUTIVE_FAILURES = 4
 /** Sliding window for the live speed: samples older than this are ignored. */
-const SPEED_WINDOW_MS = 3000
+const SPEED_WINDOW_MS = 1000
 /** The pre-request /slots snapshot is an optimization, never a blocker for the LLM call. */
 const KNOWN_TASKS_TIMEOUT_MS = 2000
 /** ~4 chars per token — same heuristic as the tool-definition budget (chat/token-budget.ts). */
@@ -183,11 +183,14 @@ function slotCached(slot: SlotInfo): number {
 }
 
 /**
- * The prompt total: the caller-known size, falling back to the engine's
- * n_prompt_tokens (a rolling value in some builds) when unknown.
+ * The prompt total: the larger of the caller-known size and the engine's
+ * n_prompt_tokens. The caller-known size is a stale lower bound on warm
+ * calls (it tracks the PREVIOUS call's context), so it must never shrink the
+ * denominator below what the engine reports for the current request — a
+ * warm KV-cache call would otherwise collapse to ~0 work and sit at 100%.
  */
 function slotTotal(slot: SlotInfo, expectedPromptTokens: number): number {
-  return expectedPromptTokens > 0 ? expectedPromptTokens : slot.n_prompt_tokens
+  return Math.max(expectedPromptTokens, slot.n_prompt_tokens)
 }
 
 /**

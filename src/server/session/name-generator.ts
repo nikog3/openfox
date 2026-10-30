@@ -14,7 +14,7 @@ import type { ProviderManager } from '../provider-manager.js'
 import type { ServerMessage } from '../../shared/protocol.js'
 import { logger } from '../utils/logger.js'
 import { updateSessionMetadata } from '../db/sessions.js'
-import { buildMessagesFromStoredEvents, foldPendingConfirmations } from '../events/folding.js'
+import { buildMessagesFromStoredEvents, foldInFlightPrefill, foldPendingConfirmations } from '../events/folding.js'
 import { createSessionStateMessage, createSessionNameGeneratingMessage } from '../ws/protocol.js'
 import { evaluateLLMRetry, sleepThroughRetryBackoff } from '../chat/stream-pure.js'
 import { buildRetryPatterns } from '../chat/orchestrator.js'
@@ -204,6 +204,9 @@ export function applyGeneratedSessionName(sessionId: string, name: string, deps:
     // Carry the live workflow execution (e.g. a paused user step) through the
     // broadcast — omitting it would wipe the execution from every client.
     const activeWorkflowExecution = deps.sessionManager.getDisplayWorkflowExecution?.(sessionId) ?? undefined
+    // Carry the in-flight prefill through the broadcast — the rename fires
+    // during the first turn, so dropping it would wipe the live indicator.
+    const prefill = updatedSession.isRunning ? foldInFlightPrefill(events) : null
 
     deps.broadcastForSession(
       sessionId,
@@ -216,6 +219,8 @@ export function applyGeneratedSessionName(sessionId: string, name: string, deps:
         undefined,
         hiddenCount,
         activeWorkflowExecution,
+        undefined,
+        prefill,
       ),
     )
   }

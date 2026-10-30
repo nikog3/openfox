@@ -35,6 +35,7 @@ import { onProcessEvent } from '../tools/background-process/manager.js'
 import {
   buildMessagesFromStoredEvents,
   buildSessionStatsMessages,
+  foldInFlightPrefill,
   foldPendingConfirmations,
 } from '../events/folding.js'
 import { computeSessionStatsSummary } from '../../shared/stats.js'
@@ -633,6 +634,10 @@ export function createWebSocketServer(
       const pendingConfirmations = foldPendingConfirmations(events)
       const pendingQuestions = getPendingQuestionsForSession(updatedSession.id)
       const activeWorkflowExecution = sessionManager.getDisplayWorkflowExecution(updatedSession.id)
+      // Carry the in-flight prefill through the broadcast so an unrelated
+      // session update (rename, provider change…) does not wipe the live
+      // indicator on the client (streaming/fetch parity with REST).
+      const prefill = updatedSession.isRunning ? foldInFlightPrefill(events) : null
 
       // Update activeWorkdir when workspace changed so git polling picks up the right dir
       const effectiveWorkdir = updatedSession.workspace ?? updatedSession.workdir
@@ -664,6 +669,7 @@ export function createWebSocketServer(
           hiddenCount,
           activeWorkflowExecution ?? undefined,
           sessionStats,
+          prefill,
         ),
       )
 

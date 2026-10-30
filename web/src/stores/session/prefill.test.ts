@@ -160,6 +160,48 @@ describe('prefill indicator store state', () => {
     expect(useSessionStore.getState().prefill?.messageId).toBe('m1')
   })
 
+  it('restores the in-flight prefill from session.state (unrelated state updates must not wipe it)', async () => {
+    const useSessionStore = await loadSessionStore()
+    mockSessionApis()
+
+    await useSessionStore.getState().openPane('s1', { focus: true })
+
+    useSessionStore.getState().handleServerMessage({
+      type: 'chat.prefill',
+      sessionId: 's1',
+      payload: { messageId: 'm1', contextTokens: 40000 },
+    })
+    expect(useSessionStore.getState().panes['s1']?.prefill?.messageId).toBe('m1')
+
+    // An unrelated session update (rename, provider change…) carries the
+    // in-flight prefill back — the indicator survives the snapshot.
+    useSessionStore.getState().handleServerMessage({
+      type: 'session.state',
+      sessionId: 's1',
+      payload: {
+        session: makeSession('s1'),
+        messages: [],
+        pendingConfirmations: [],
+        prefill: { messageId: 'm1', contextTokens: 40000, startedAt: 1_700_000_000_000 },
+      },
+    })
+
+    const restored = useSessionStore.getState()
+    expect(restored.panes['s1']?.prefill?.messageId).toBe('m1')
+    expect(restored.panes['s1']?.prefill?.contextTokens).toBe(40000)
+    expect(restored.panes['s1']?.prefill?.startedAt).toBe(1_700_000_000_000)
+    expect(restored.prefill?.messageId).toBe('m1')
+
+    // When the call is no longer in flight, session.state clears the state.
+    useSessionStore.getState().handleServerMessage({
+      type: 'session.state',
+      sessionId: 's1',
+      payload: { session: makeSession('s1'), messages: [], pendingConfirmations: [] },
+    })
+    expect(useSessionStore.getState().panes['s1']?.prefill).toBeNull()
+    expect(useSessionStore.getState().prefill).toBeNull()
+  })
+
   it('keeps prefill state per pane: a sibling pane never sees it', async () => {
     const useSessionStore = await loadSessionStore()
     mockSessionApis()

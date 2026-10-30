@@ -237,6 +237,20 @@ export interface SessionStatePayload {
   pendingQuestions?: PendingQuestionPayload[]
   gitStatus?: GitStatusPayload // Current branch and diff, embedded on session load
   activeWorkflowExecution?: import('./types.js').WorkflowExecution | null
+  /**
+   * The in-flight prefill (llm.call_start without a matching message.start),
+   * when the session is running — kept in sync by every session.state
+   * broadcast so an unrelated state update (rename, provider change…) does
+   * not wipe the live prefill indicator on the client.
+   */
+  prefill?: InFlightPrefillPayload
+}
+
+/** The in-flight prefill of a running session, as folded from the event log. */
+export interface InFlightPrefillPayload {
+  messageId: string
+  contextTokens: number
+  startedAt: number
 }
 
 export interface WorkflowWaitingPayload {

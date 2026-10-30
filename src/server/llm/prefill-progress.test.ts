@@ -251,10 +251,23 @@ describe('computePrefillSnapshot', () => {
     expect(snapshot.percent).toBe(9)
   })
 
-  it('caps percent at 100 and clamps processed to the known work', () => {
+  it('caps percent at 100 and clamps processed to the real work', () => {
     const snapshot = computePrefillSnapshot(busySlot(0, 1536, 2000), 1000, [], Date.now())
-    expect(snapshot.processedTokens).toBe(1000)
+    // The engine total (1536) exceeds the stale expected size (1000) → the
+    // denominator is the engine total, and processed is clamped to it.
+    expect(snapshot.processedTokens).toBe(1536)
     expect(snapshot.percent).toBe(100)
+  })
+
+  it('measures a warm call over the engine total when the expected size is stale', () => {
+    // The expected size tracks the PREVIOUS call's context (1000), while the
+    // current request is 5000 tokens with 4000 served from the KV cache: the
+    // real work is 1000 uncached tokens, not the collapsed expected - cache.
+    const snapshot = computePrefillSnapshot(busySlot(0, 5000, 500, 4000), 1000, [], Date.now())
+    expect(snapshot.promptTokens).toBe(5000)
+    expect(snapshot.processedTokens).toBe(500)
+    expect(snapshot.percent).toBe(50)
+    expect(snapshot.cachedTokens).toBe(4000)
   })
 
   it('falls back to the engine total when no known total is available', () => {
@@ -329,12 +342,30 @@ describe('computePrefillSnapshot', () => {
 
   it('derives the speed from the oldest sample inside the window only', () => {
     const samples = [
-      { processedTokens: 1000, at: 0 },
-      { processedTokens: 5000, at: 2000 },
+      { processedTokens: 5000, at: 3000 },
       { processedTokens: 8000, at: 4000 },
     ]
     const snapshot = computePrefillSnapshot(busySlot(0, 40000, 8000), 40000, samples, 4000)
-    expect(snapshot.speedTps).toBe(1500)
+    expect(snapshot.speedTps).toBe(3000)
+  })
+
+  it('ignores samples older than the live-speed window', () => {
+    const samples = [
+      { processedTokens: 1000, at: 0 },
+      { processedTokens: 8000, at: 4000 },
+    ]
+    const snapshot = computePrefillSnapshot(busySlot(0, 40000, 8000), 40000, samples, 4000)
+    expect(snapshot.speedTps).toBeUndefined()
+  })
+
+  it('follows the recent tranche for the live speed while the average stays cumulative', () => {
+    // First observation 4s ago (cumulative average), window baseline 1s ago
+    // (live speed): a slow start must not drag the live speed down.
+    const first = { processedTokens: 0, at: 0 }
+    const samples = [first, { processedTokens: 4000, at: 3000 }, { processedTokens: 8000, at: 4000 }]
+    const snapshot = computePrefillSnapshot(busySlot(0, 40000, 8000), 40000, samples, 4000, first)
+    expect(snapshot.speedTps).toBe(4000)
+    expect(snapshot.avgTps).toBe(2000)
   })
 
   it('computes the cumulative average speed over the work done since the first observation', () => {
@@ -398,7 +429,8 @@ describe('startPrefillProgressPolling', () => {
       let processed = 0
       const fetchImpl = (async () => {
         processed += 2405
-        return Response.json([busySlot(0, processed + 384, processed)])
+        // The engine total rolls behind the processed count (lagging build).
+        return Response.json([busySlot(0, Math.max(0, processed - 384), processed)])
       }) as unknown as typeof fetch
       const onProgress = vi.fn()
       const stop = startPrefillProgressPolling({

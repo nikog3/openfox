@@ -137,6 +137,7 @@ export function createSessionStateMessage(
   hiddenCount?: number,
   activeWorkflowExecution?: import('../../shared/types.js').WorkflowExecution | null,
   sessionStats?: import('../../shared/types.js').SessionStatsSummary | null,
+  prefill?: SessionStatePayload['prefill'] | null,
 ): ServerMessage<SessionStatePayload> {
   // Enrich messages so toolCalls have their results attached
   const enrichedMessages = enrichMessagesWithToolResults(messages)
@@ -151,6 +152,7 @@ export function createSessionStateMessage(
       ...(hiddenCount !== undefined ? { hiddenCount } : {}),
       ...(activeWorkflowExecution !== undefined && activeWorkflowExecution !== null ? { activeWorkflowExecution } : {}),
       ...(sessionStats !== undefined && sessionStats !== null ? { sessionStats } : {}),
+      ...(prefill ? { prefill } : {}),
     },
     correlationId,
   )

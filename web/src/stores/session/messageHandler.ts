@@ -396,7 +396,13 @@ export function handleServerMessage(
             (payload.activeWorkflowExecution as import('@shared/types.js').WorkflowExecution | undefined) ?? null,
           queuedMessages: prior.queuedMessages,
           llmRetry: null,
-          prefill: null,
+          prefill: payload.prefill
+            ? {
+                messageId: payload.prefill.messageId,
+                contextTokens: payload.prefill.contextTokens,
+                startedAt: payload.prefill.startedAt,
+              }
+            : null,
           liveTurnStats: null,
         }
         const base = replacePane(state, sessionId, nextPane)
