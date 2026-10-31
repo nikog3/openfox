@@ -93,8 +93,8 @@ describe('Context Management', () => {
         const contextEvent = await client2.waitFor('context.state')
         const payload = contextEvent.payload as { context: ContextState }
 
-        // Default max is 200000 per config
-        expect(payload.context.maxTokens).toBeGreaterThanOrEqual(100000)
+        // Default max is 32768 per config
+        expect(payload.context.maxTokens).toBe(32768)
       } finally {
         await client2.close()
       }

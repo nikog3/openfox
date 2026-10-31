@@ -92,7 +92,7 @@ describe('Provider Context Switch', () => {
     expect(contextState!.maxTokens).toBeGreaterThan(0)
 
     // Verify the maxTokens is consistent with what we'd expect
-    // In mock mode, this should be the mock model's context window
-    expect(contextState!.maxTokens).toBeGreaterThanOrEqual(100000)
+    // Default context window is 32768 per config
+    expect(contextState!.maxTokens).toBe(32768)
   })
 })

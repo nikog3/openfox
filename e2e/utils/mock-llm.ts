@@ -123,6 +123,82 @@ export function createMockLLMClient(config: MockLLMConfig = {}): MockLLMClient {
 
   // Default rules - can be extended by tests
   const defaultRules: MockToolCallRule[] = [
+    // Path security test rules - MUST come before the generic write/read/run rules
+    // below, or those shadow them and the mock writes inside the workdir instead.
+    // Path security test rules - writing outside workdir
+    {
+      promptMatch: /write.*\/tmp\/outside/i,
+      toolCalls: [{ name: 'write_file', arguments: { path: '/tmp/outside/test.txt', content: 'test content' } }],
+      response: 'I wrote to the path.',
+    },
+    {
+      promptMatch: /write.*\/etc\/passwd/i,
+      toolCalls: [{ name: 'write_file', arguments: { path: '/etc/passwd', content: 'malicious' } }],
+      response: 'I tried to write.',
+    },
+    {
+      promptMatch: /write.*home.*secret/i,
+      toolCalls: [{ name: 'write_file', arguments: { path: '/home/test/secret.txt', content: 'secret' } }],
+      response: 'I wrote to home.',
+    },
+    // Generic /home/test writes for path security approval flow tests
+    {
+      promptMatch: /write.*\/home\/test\/approved/i,
+      toolCalls: [{ name: 'write_file', arguments: { path: '/home/test/approved.txt', content: 'approved' } }],
+      response: 'I wrote to the approved path.',
+    },
+    {
+      promptMatch: /write.*\/home\/test\/denied/i,
+      toolCalls: [{ name: 'write_file', arguments: { path: '/home/test/denied.txt', content: 'denied' } }],
+      response: 'I wrote to the denied path.',
+    },
+    {
+      promptMatch: /write.*\/home\/test\/first/i,
+      toolCalls: [{ name: 'write_file', arguments: { path: '/home/test/first.txt', content: 'first' } }],
+      response: 'I wrote the first file.',
+    },
+    {
+      promptMatch: /write.*\/home\/test\/second/i,
+      toolCalls: [{ name: 'write_file', arguments: { path: '/home/test/second.txt', content: 'second' } }],
+      response: 'I wrote the second file.',
+    },
+    // Sensitive file detection rules
+    {
+      promptMatch: /write.*\.env\b/i,
+      toolCalls: [{ name: 'write_file', arguments: { path: '.env', content: 'SECRET=value' } }],
+      response: 'I wrote to .env.',
+    },
+    {
+      promptMatch: /write.*credentials\.json/i,
+      toolCalls: [{ name: 'write_file', arguments: { path: 'credentials.json', content: '{"key": "secret"}' } }],
+      response: 'I wrote credentials.',
+    },
+    {
+      promptMatch: /read.*\.env\b/i,
+      toolCalls: [{ name: 'read_file', arguments: { path: '.env' } }],
+      response: 'I read the .env file.',
+    },
+    // Run command outside workdir
+    {
+      promptMatch: /run.*command.*\/etc/i,
+      toolCalls: [{ name: 'run_command', arguments: { command: 'cat /etc/hosts', workdir: '/etc' } }],
+      response: 'I ran the command.',
+    },
+    {
+      promptMatch: /run.*cat.*secret/i,
+      toolCalls: [{ name: 'run_command', arguments: { command: 'cat ~/.ssh/id_rsa' } }],
+      response: 'I tried to cat the file.',
+    },
+    {
+      promptMatch: /python3.*nested/i,
+      toolCalls: [
+        {
+          name: 'run_command',
+          arguments: { command: 'python3 -c "print(open(\'/home/test/nested.txt\').read())"' },
+        },
+      ],
+      response: 'I ran the command.',
+    },
     {
       promptMatch: /read.*file/i,
       toolCalls: [{ name: 'read_file', arguments: { path: 'src/index.ts' } }],
@@ -357,70 +433,6 @@ export function createMockLLMClient(config: MockLLMConfig = {}): MockLLMClient {
       promptMatch: /confirm.*with.*user/i,
       toolCalls: [{ name: 'ask_user', arguments: { question: 'Should I proceed with this action?' } }],
       response: 'I asked for confirmation.',
-    },
-    // Path security test rules - writing outside workdir
-    {
-      promptMatch: /write.*\/tmp\/outside/i,
-      toolCalls: [{ name: 'write_file', arguments: { path: '/tmp/outside/test.txt', content: 'test content' } }],
-      response: 'I wrote to the path.',
-    },
-    {
-      promptMatch: /write.*\/etc\/passwd/i,
-      toolCalls: [{ name: 'write_file', arguments: { path: '/etc/passwd', content: 'malicious' } }],
-      response: 'I tried to write.',
-    },
-    {
-      promptMatch: /write.*home.*secret/i,
-      toolCalls: [{ name: 'write_file', arguments: { path: '/home/test/secret.txt', content: 'secret' } }],
-      response: 'I wrote to home.',
-    },
-    // Generic /home/test writes for path security approval flow tests
-    {
-      promptMatch: /write.*\/home\/test\/approved/i,
-      toolCalls: [{ name: 'write_file', arguments: { path: '/home/test/approved.txt', content: 'approved' } }],
-      response: 'I wrote to the approved path.',
-    },
-    {
-      promptMatch: /write.*\/home\/test\/denied/i,
-      toolCalls: [{ name: 'write_file', arguments: { path: '/home/test/denied.txt', content: 'denied' } }],
-      response: 'I wrote to the denied path.',
-    },
-    {
-      promptMatch: /write.*\/home\/test\/first/i,
-      toolCalls: [{ name: 'write_file', arguments: { path: '/home/test/first.txt', content: 'first' } }],
-      response: 'I wrote the first file.',
-    },
-    {
-      promptMatch: /write.*\/home\/test\/second/i,
-      toolCalls: [{ name: 'write_file', arguments: { path: '/home/test/second.txt', content: 'second' } }],
-      response: 'I wrote the second file.',
-    },
-    // Sensitive file detection rules
-    {
-      promptMatch: /write.*\.env\b/i,
-      toolCalls: [{ name: 'write_file', arguments: { path: '.env', content: 'SECRET=value' } }],
-      response: 'I wrote to .env.',
-    },
-    {
-      promptMatch: /write.*credentials\.json/i,
-      toolCalls: [{ name: 'write_file', arguments: { path: 'credentials.json', content: '{"key": "secret"}' } }],
-      response: 'I wrote credentials.',
-    },
-    {
-      promptMatch: /read.*\.env\b/i,
-      toolCalls: [{ name: 'read_file', arguments: { path: '.env' } }],
-      response: 'I read the .env file.',
-    },
-    // Run command outside workdir
-    {
-      promptMatch: /run.*command.*\/etc/i,
-      toolCalls: [{ name: 'run_command', arguments: { command: 'cat /etc/hosts', workdir: '/etc' } }],
-      response: 'I ran the command.',
-    },
-    {
-      promptMatch: /run.*cat.*secret/i,
-      toolCalls: [{ name: 'run_command', arguments: { command: 'cat ~/.ssh/id_rsa' } }],
-      response: 'I tried to cat the file.',
     },
     // Edit file with syntax error (for LSP diagnostics)
     {

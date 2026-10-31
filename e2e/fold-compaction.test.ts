@@ -148,6 +148,45 @@ describe('Sequential Fold Compaction', () => {
       expect(call.hasTools).toBe(false)
     }
   }, 30000)
+
+  // The client pane dedupes chat.message by id (web/src/stores/session/
+  // messageHandler.ts): the first event for a messageId wins, later ones are
+  // dropped. The fold must therefore deliver the summary on the FIRST
+  // chat.message for its id — an empty start followed by a summary-bearing
+  // start would leave the pane with a blank message.
+  it('delivers the summary on the first chat.message for its id (client dedup keeps it)', async () => {
+    await client.send('chat.send', { content: 'B'.repeat(BIG_MESSAGE_CHARS) })
+    await client.waitForChatDone()
+    await client.send('chat.send', { content: 'S'.repeat(SMALL_MESSAGE_CHARS) })
+    await client.waitForChatDone()
+    await client.send('chat.send', { content: 'S'.repeat(SMALL_MESSAGE_CHARS) })
+    await client.waitForChatDone()
+
+    await client.send('context.compact', {})
+    const done = await client.waitForChatDone()
+    expect(done.reason).toBe('complete')
+
+    const seen = new Set<string>()
+    const pane = new Map<string, { content: string; isCompactionSummary?: boolean }>()
+    for (const e of client.allEvents()) {
+      if (e.type !== 'chat.message') continue
+      const msg = (
+        e.payload as {
+          message: { id: string; content?: string; isCompactionSummary?: boolean }
+        }
+      ).message
+      if (seen.has(msg.id)) continue
+      seen.add(msg.id)
+      pane.set(msg.id, {
+        content: msg.content ?? '',
+        ...(msg.isCompactionSummary !== undefined ? { isCompactionSummary: msg.isCompactionSummary } : {}),
+      })
+    }
+
+    const summary = [...pane.values()].find((m) => m.isCompactionSummary)
+    expect(summary).toBeDefined()
+    expect(summary!.content.length).toBeGreaterThanOrEqual(50)
+  }, 30000)
 })
 
 describe('One-Shot Compaction', () => {

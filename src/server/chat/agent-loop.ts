@@ -788,7 +788,10 @@ export async function runTopLevelAgentLoop(
       }
 
       if (!attemptResult.error) {
-        ensureAssistantMessage()
+        // Fold path: the summary is the single message.start, emitted by the
+        // context.compacted handler below. Emitting an empty start here would
+        // let the client's per-ID dedup drop the summary-bearing one.
+        if (!foldedAttemptResult) ensureAssistantMessage()
         result = attemptResult
         const usage = attemptResult.usage
         emitPluginHook('llm.completed', {

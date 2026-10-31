@@ -1088,6 +1088,44 @@ export function extractAbsolutePathsFromCommand(command: string): string[] {
         paths.push(resolved)
       }
     }
+  } else if (isWindows()) {
+    // cmd.exe/PowerShell: an unquoted /x is a switch, and a TOP-LEVEL quoted
+    // "/x" is a literal string (echo "/etc/passwd" just prints it). But a
+    // quote NESTED inside a quoted program string (python3 -c "…open('/x')…")
+    // is a path operand the program receives at runtime — the command touches
+    // that file even under a Windows shell, so it must be confirmed.
+    let outerQuote: "'" | '"' | null = null
+    for (let i = 0; i < scanCommand.length; i++) {
+      const ch = scanCommand[i]!
+      if (outerQuote === null) {
+        if (ch === "'" || ch === '"') outerQuote = ch
+        continue
+      }
+      if (ch === '\\' && outerQuote === '"') {
+        i += 1
+        continue
+      }
+      if (ch === outerQuote) {
+        outerQuote = null
+        continue
+      }
+      if (ch === "'" || ch === '"') {
+        const next = scanCommand[i + 1]
+        if (next === '/') {
+          let j = i + 2
+          while (j < scanCommand.length && !/[\s"'|&;<>`()]/.test(scanCommand[j]!)) j += 1
+          const candidate = scanCommand.slice(i + 1, j)
+          if (candidate.endsWith('/')) continue
+          if (isPlaceholderToken(candidate)) continue
+          if (looksLikeRegex(candidate)) continue
+          const resolved = normalizeExtracted(candidate)
+          if (resolved === '/' || resolved === '') continue
+          if (!isSafePath(resolved)) {
+            paths.push(resolved)
+          }
+        }
+      }
+    }
   }
 
   // Relative `..` traversal tokens are resolved cd-aware by

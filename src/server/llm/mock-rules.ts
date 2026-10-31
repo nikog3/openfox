@@ -305,6 +305,26 @@ export const RULES: MockRule[] = [
     response: 'Wrote to home.',
   },
   {
+    match: /write.*\/tmp\/outside/i,
+    tools: [{ name: 'write_file', arguments: { path: '/tmp/outside/test.txt', content: 'test content' } }],
+    response: 'Wrote to the outside path.',
+  },
+  {
+    match: /write.*\/home\/user\/\.env/i,
+    tools: [{ name: 'write_file', arguments: { path: '/home/user/.env', content: 'secrets' } }],
+    response: 'Wrote to the user env file.',
+  },
+  {
+    match: /write.*\.env\b/i,
+    tools: [{ name: 'write_file', arguments: { path: '.env', content: 'SECRET=value' } }],
+    response: 'Wrote to the env file.',
+  },
+  {
+    match: /write.*credentials\.json/i,
+    tools: [{ name: 'write_file', arguments: { path: 'credentials.json', content: '{"key": "secret"}' } }],
+    response: 'Wrote to the credentials file.',
+  },
+  {
     match: /without reading.*write|write.*without reading/i,
     tools: [{ name: 'write_file', arguments: { path: 'src/index.ts', content: 'new content' } }],
     response: 'Attempted to write without reading first.',
@@ -459,6 +479,23 @@ export const RULES: MockRule[] = [
     match: /run.*ls|list.*files/i,
     tools: [{ name: 'run_command', arguments: { command: 'ls' } }],
     response: 'Listed directory contents.',
+  },
+  {
+    match: /python3.*nested/i,
+    tools: [
+      { name: 'run_command', arguments: { command: 'python3 -c "print(open(\'/home/test/nested.txt\').read())"' } },
+    ],
+    response: 'Ran the python command.',
+  },
+  {
+    match: /run.*\/etc\/hosts/i,
+    tools: [{ name: 'run_command', arguments: { command: 'cat /etc/hosts' } }],
+    response: 'Read the hosts file.',
+  },
+  {
+    match: /run.*cat.*secret|id_rsa/i,
+    tools: [{ name: 'run_command', arguments: { command: 'cat ~/.ssh/id_rsa' } }],
+    response: 'Read the secret key file.',
   },
   {
     match: /run.*command|execute/i,

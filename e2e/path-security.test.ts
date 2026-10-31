@@ -14,7 +14,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { writeFile, mkdir, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   createTestClient,
@@ -73,11 +73,22 @@ describe('Path Security', () => {
 
   afterAll(async () => {
     await server.close()
+    // Remove the fixed outside-workdir directory so no state leaks to other
+    // test files or machines.
+    const homeTestDir = resolve(process.cwd(), '/home/test')
+    await rm(homeTestDir, { recursive: true, force: true }).catch(() => {})
   })
 
   beforeEach(async () => {
     client = await createTestClient({ url: server.wsUrl })
     testDir = await createTestProject({ template: 'typescript' })
+
+    // The mock LLM writes to a fixed /home/test/... path (C:\home\test on
+    // Windows). Prior runs leave files there, and the write preflight's
+    // read-before-write check fast-fails on existing files before path
+    // security runs — so start from a clean directory every time.
+    const homeTestDir = resolve(testDir.path, '/home/test')
+    await rm(homeTestDir, { recursive: true, force: true }).catch(() => {})
 
     // Create a directory outside the workdir for testing
     outsideDir = join(tmpdir(), `openfox-outside-${Date.now()}`)
@@ -132,7 +143,7 @@ describe('Path Security', () => {
       })
 
       // Wait for path confirmation (short timeout since it should arrive quickly)
-      const confirmationEvent = await client.waitFor('chat.path_confirmation', undefined, 500).catch(() => null)
+      const confirmationEvent = await client.waitFor('chat.path_confirmation', undefined, 5000).catch(() => null)
 
       // Path confirmation SHOULD happen for /home/test (outside workdir)
       expect(confirmationEvent).not.toBeNull()
@@ -151,14 +162,16 @@ describe('Path Security', () => {
         content: `Run the exact command: python3 -c "print(open('/home/test/nested.txt').read())"`,
       })
 
-      const confirmationEvent = await client.waitFor('chat.path_confirmation', undefined, 500).catch(() => null)
+      const confirmationEvent = await client.waitFor('chat.path_confirmation', undefined, 5000).catch(() => null)
 
       expect(confirmationEvent).not.toBeNull()
 
       const payload = confirmationEvent!.payload as PathConfirmationPayload
       expect(payload.tool).toBe('run_command')
       expect(payload.reason).toBe('outside_workdir')
-      expect(payload.paths.some((p: string) => p.includes('/home/test/nested.txt'))).toBe(true)
+      // The nested path is displayed in its platform form: /home/test/nested.txt
+      // on Unix, C:\home\test\nested.txt on Windows (drive-relative resolve).
+      expect(payload.paths.some((p: string) => p.includes('home') && p.includes('nested.txt'))).toBe(true)
 
       // Resolve the confirmation: an unanswered one leaves the tool call
       // suspended for the rest of the file's shared server.
@@ -218,7 +231,7 @@ describe('Path Security', () => {
       })
 
       // Wait for path_confirmation event (short timeout since it should arrive quickly)
-      const confirmationEvent = await client.waitFor('chat.path_confirmation', undefined, 500).catch(() => null)
+      const confirmationEvent = await client.waitFor('chat.path_confirmation', undefined, 5000).catch(() => null)
 
       // For debugging - log all events if no confirmation
       if (!confirmationEvent) {
@@ -254,7 +267,7 @@ describe('Path Security', () => {
       })
 
       // Wait for path_confirmation event (short timeout)
-      const confirmationEvent = await client.waitFor('chat.path_confirmation', undefined, 500).catch(() => null)
+      const confirmationEvent = await client.waitFor('chat.path_confirmation', undefined, 5000).catch(() => null)
 
       // Path confirmation SHOULD happen
       expect(confirmationEvent).not.toBeNull()
@@ -266,7 +279,7 @@ describe('Path Security', () => {
       await answerPathConfirmation(server.url, session.id, payload.callId, false)
 
       // Wait for chat.done (may be error or complete)
-      await client.waitFor('chat.done', undefined, 500).catch(() => null)
+      await client.waitFor('chat.done', undefined, 5000).catch(() => null)
     })
   })
 

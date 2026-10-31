@@ -2464,6 +2464,18 @@ describe('extractAbsolutePathsFromCommand on Windows (cmd.exe shell)', () => {
     expect(extractAbsolutePathsFromCommand('echo "/etc/passwd"')).toEqual([])
   })
 
+  it('extracts a posix path nested in quotes inside a program string', () => {
+    // The path's quote is nested inside the double-quoted -c/-e program, so
+    // the program (python3/bash/node) receives it as a literal path operand.
+    const paths = extractAbsolutePathsFromCommand(`python3 -c "print(open('/home/test/nested.txt').read())"`)
+    expect(paths).toContain('/home/test/nested.txt')
+  })
+
+  it('extracts a nested-quote path in a bash -c program string', () => {
+    const paths = extractAbsolutePathsFromCommand(`bash -c "cat '/etc/shadow'"`)
+    expect(paths).toContain('/etc/shadow')
+  })
+
   it('still expands tilde paths', () => {
     const paths = extractAbsolutePathsFromCommand('cat ~/file.txt')
     expect(paths).toContain(join(homedir(), 'file.txt'))
