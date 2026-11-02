@@ -550,6 +550,11 @@ export const settingResource = resource<string, [string]>({
   maxAgeMs: 60_000,
 })
 
+/** Synchronous cache read for non-hook call sites (stores, event handlers). */
+export function readSetting(key: string): string | undefined {
+  return snapshot<string>(settingResource.keyOf(key)).data
+}
+
 /** Persist a setting: PUT, then write the server-confirmed value through so
  * all subscribers on the key converge immediately (no follow-up GET). */
 export async function setSetting(key: string, value: string): Promise<void> {
@@ -576,11 +581,20 @@ export interface SttVadModelStatus {
   downloaded: boolean
 }
 
+export interface SttVoskModelStatus {
+  size: 'small' | 'large'
+  file: string
+  bytes: number
+  downloaded: boolean
+}
+
 export interface SttStatusData {
   engine: string
   whisperModel: string
   whisper: SttWhisperModelStatus
   vad: SttVadModelStatus
+  voskModel: string
+  vosk: SttVoskModelStatus
 }
 
 export async function fetchSttStatus(): Promise<SttStatusData> {
@@ -589,19 +603,23 @@ export async function fetchSttStatus(): Promise<SttStatusData> {
   return (await res.json()) as SttStatusData
 }
 
-export const sttStatusResource = resource<SttStatusData, [string]>({
-  key: (model) => `stt:status:${model}`,
+export const sttStatusResource = resource<SttStatusData, [string, string]>({
+  key: (whisperModel, voskModel) => `stt:status:${whisperModel}:${voskModel}`,
   fetch: fetchSttStatus,
   maxAgeMs: 0,
 })
 
-export async function downloadSttWhisperModel(model: string): Promise<void> {
-  const res = await authFetch('/api/stt/whisper-model', { method: 'POST' })
+export async function runSttTest(chunkBase64: string): Promise<{ text: string }> {
+  const res = await authFetch('/api/stt/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chunk: chunkBase64 }),
+  })
   if (!res.ok) {
     const data = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new Error(data.error ?? `Failed to download STT model (${res.status})`)
+    throw new Error(data.error ?? `Failed to run STT test (${res.status})`)
   }
-  await sttStatusResource.refresh(model)
+  return (await res.json()) as { text: string }
 }
 
 /** In-flight batched settings request, keyed by the joined key list so two
@@ -695,7 +713,9 @@ export const SETTINGS_KEYS = {
   VSCODE_REMOTE_PREFIX: 'editor.vscodeRemotePrefix',
   STT_ENGINE: 'stt.engine',
   STT_WHISPER_MODEL: 'stt.whisper.model',
+  STT_VOSK_MODEL: 'stt.vosk.model',
   STT_LANGUAGE: 'stt.language',
+  STT_DEBUG: 'stt.debug',
 } as const
 
 export const DISPLAY_SETTINGS_KEYS = [

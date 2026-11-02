@@ -20,6 +20,7 @@ const OfflineRecognizerMock = {
 const VadMock = vi.fn(function () {
   return {
     acceptWaveform: vi.fn(),
+    isDetected: vi.fn(() => false),
     isEmpty: vi.fn(() => true),
     front: vi.fn(),
     pop: vi.fn(),
@@ -35,6 +36,13 @@ vi.mock('sherpa-onnx-node', () => ({
 }))
 
 import { createWhisperProvider } from './whisper-provider.js'
+import type { SttProviderHooks } from './types.js'
+
+const NOOP_HOOKS: SttProviderHooks = {
+  onPartial: () => {},
+  onActivity: () => {},
+  onProgress: () => {},
+}
 
 const ENCODER = '/models/base-encoder.int8.onnx'
 const DECODER = '/models/base-decoder.int8.onnx'
@@ -43,7 +51,7 @@ const VAD = '/models/silero_vad.onnx'
 
 describe('createWhisperProvider (CJS default-only export shape)', () => {
   it('resolves OfflineRecognizer from the default export and transcribes audio', async () => {
-    const provider = await createWhisperProvider(ENCODER, DECODER, TOKENS, 'fr', VAD, () => {})
+    const provider = await createWhisperProvider(ENCODER, DECODER, TOKENS, 'fr', VAD, NOOP_HOOKS)
     expect(OfflineRecognizerMock.createAsync).toHaveBeenCalledTimes(1)
     expect(OfflineRecognizerMock.createAsync).toHaveBeenCalledWith(
       expect.objectContaining({

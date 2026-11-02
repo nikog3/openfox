@@ -46,6 +46,11 @@ import type {
   SttFinalPayload,
   SttErrorPayload,
   SttStatePayload,
+  SttActivityPayload,
+  SttProgressPayload,
+  SttProgressPhase,
+  SttModelDownloadedPayload,
+  SttModelDeletedPayload,
 } from '../../shared/protocol.js'
 import type { GitStatusPayload } from '../../shared/protocol.js'
 import type { MetadataEntry } from '../../shared/types.js'
@@ -519,6 +524,42 @@ export function createSttStateMessage(
     msg.sessionId = sessionId
   }
   return msg
+}
+
+export function createSttActivityMessage(speaking: boolean, sessionId?: string): ServerMessage<SttActivityPayload> {
+  const msg = createServerMessage('stt.activity', { speaking })
+  if (sessionId) {
+    msg.sessionId = sessionId
+  }
+  return msg
+}
+
+export function createSttProgressMessage(
+  percent: number | null,
+  sessionId?: string,
+  phase?: SttProgressPhase,
+): ServerMessage<SttProgressPayload> {
+  const msg = createServerMessage('stt.progress', { percent, ...(phase ? { phase } : {}) })
+  if (sessionId) {
+    msg.sessionId = sessionId
+  }
+  return msg
+}
+
+export function createSttModelDownloadedMessage(
+  ok: boolean,
+  model: string,
+  error?: string,
+): ServerMessage<SttModelDownloadedPayload> {
+  return createServerMessage('stt.model_downloaded', { ok, model, ...(error ? { error } : {}) })
+}
+
+export function createSttModelDeletedMessage(
+  ok: boolean,
+  model: string,
+  error?: string,
+): ServerMessage<SttModelDeletedPayload> {
+  return createServerMessage('stt.model_deleted', { ok, model, ...(error ? { error } : {}) })
 }
 
 // ============================================================================

@@ -2211,4 +2211,34 @@ describe('createWebSocketServer', () => {
 
     await harness.close()
   })
+
+  it('refuses to download a model while dictation is active', async () => {
+    const harness = await createHarness()
+    sttServiceMock.state = 'listening'
+
+    harness.send({ id: 'dl-1', type: 'stt.download_model', payload: { model: 'small' } })
+    const message = await harness.nextMessage((message) => message.type === 'stt.model_downloaded')
+    expect(message).toMatchObject({
+      type: 'stt.model_downloaded',
+      payload: { ok: false, model: '', error: 'Stop dictation before downloading a model' },
+    })
+
+    sttServiceMock.state = 'off'
+    await harness.close()
+  })
+
+  it('refuses to delete a model while dictation is active', async () => {
+    const harness = await createHarness()
+    sttServiceMock.state = 'loading'
+
+    harness.send({ id: 'del-1', type: 'stt.delete_model', payload: { model: 'small' } })
+    const message = await harness.nextMessage((message) => message.type === 'stt.model_deleted')
+    expect(message).toMatchObject({
+      type: 'stt.model_deleted',
+      payload: { ok: false, model: '', error: 'Stop dictation before deleting a model' },
+    })
+
+    sttServiceMock.state = 'off'
+    await harness.close()
+  })
 })

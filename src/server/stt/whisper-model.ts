@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { rm } from 'node:fs/promises'
 import { filePresent, downloadIfMissing } from './model.js'
 
 export type WhisperModelSize = 'base' | 'small' | 'medium'
@@ -53,6 +54,16 @@ export function getWhisperTokensPath(dataDir: string, size: WhisperModelSize): s
   return join(getWhisperModelDir(dataDir), WHISPER_MODELS[size].tokens)
 }
 
+export async function deleteWhisperModel(dataDir: string, size: WhisperModelSize): Promise<void> {
+  await Promise.all(
+    [
+      getWhisperEncoderPath(dataDir, size),
+      getWhisperDecoderPath(dataDir, size),
+      getWhisperTokensPath(dataDir, size),
+    ].map((path) => rm(path, { force: true })),
+  )
+}
+
 export function resolveWhisperModelSize(size: string | null | undefined): WhisperModelSize {
   if (size === 'base' || size === 'small' || size === 'medium') {
     return size
@@ -91,18 +102,31 @@ export interface WhisperModelPaths {
   tokens: string
 }
 
-export async function ensureWhisperModel(dataDir: string, size: WhisperModelSize): Promise<WhisperModelPaths> {
+export async function ensureWhisperModel(
+  dataDir: string,
+  size: WhisperModelSize,
+  onProgress?: (percent: number) => void,
+): Promise<WhisperModelPaths> {
   const info = WHISPER_MODELS[size]
   const encoder = getWhisperEncoderPath(dataDir, size)
   const decoder = getWhisperDecoderPath(dataDir, size)
   const tokens = getWhisperTokensPath(dataDir, size)
-  await Promise.all([
-    downloadIfMissing(hfUrl(size, info.encoder), encoder),
-    downloadIfMissing(hfUrl(size, info.decoder), decoder),
-    downloadIfMissing(hfUrl(size, info.tokens), tokens),
-  ])
+  const files: Array<[string, string]> = [
+    [hfUrl(size, info.encoder), encoder],
+    [hfUrl(size, info.decoder), decoder],
+    [hfUrl(size, info.tokens), tokens],
+  ]
+  for (let i = 0; i < files.length; i++) {
+    const [url, dest] = files[i]!
+    await downloadIfMissing(url, dest, (received, total) => {
+      if (!onProgress) return
+      const fraction = total && total > 0 ? Math.min(1, received / total) : 0
+      onProgress(((i + fraction) / files.length) * 100)
+    })
+  }
   if (!(await isWhisperModelPresent(dataDir, size))) {
     throw new Error(`Whisper model ${info.encoder} + ${info.decoder} is not available after download`)
   }
+  onProgress?.(100)
   return { encoder, decoder, tokens }
 }

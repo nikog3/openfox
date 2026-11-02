@@ -60,7 +60,9 @@ export const SETTINGS_KEYS = {
   VSCODE_REMOTE_PREFIX: 'editor.vscodeRemotePrefix',
   STT_ENGINE: 'stt.engine',
   STT_WHISPER_MODEL: 'stt.whisper.model',
+  STT_VOSK_MODEL: 'stt.vosk.model',
   STT_LANGUAGE: 'stt.language',
+  STT_DEBUG: 'stt.debug',
 } as const
 
 export const SETTINGS_DEFAULTS: Record<string, string> = {
@@ -119,7 +121,9 @@ export const SETTINGS_DEFAULTS: Record<string, string> = {
   [SETTINGS_KEYS.VSCODE_REMOTE_PREFIX]: '',
   [SETTINGS_KEYS.STT_ENGINE]: 'off',
   [SETTINGS_KEYS.STT_WHISPER_MODEL]: 'small',
+  [SETTINGS_KEYS.STT_VOSK_MODEL]: 'small',
   [SETTINGS_KEYS.STT_LANGUAGE]: 'fr',
+  [SETTINGS_KEYS.STT_DEBUG]: 'false',
 }
 
 export type SettingsKey = (typeof SETTINGS_KEYS)[keyof typeof SETTINGS_KEYS]

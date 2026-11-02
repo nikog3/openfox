@@ -1380,6 +1380,34 @@ export function handleServerMessage(
       break
     }
 
+    case 'stt.activity': {
+      const payload = message.payload as { speaking: boolean }
+      useSttStore.getState().handleActivity(payload.speaking)
+      break
+    }
+
+    case 'stt.progress': {
+      const payload = message.payload as { percent: number | null; phase?: 'init' | 'model' | 'ready' }
+      if (message.sessionId) {
+        useSttStore.getState().handleProgress(payload.percent, payload.phase)
+      } else {
+        useSttStore.getState().handleDownloadProgress(payload.percent ?? 0)
+      }
+      break
+    }
+
+    case 'stt.model_downloaded': {
+      const payload = message.payload as { ok: boolean; model: string; error?: string }
+      useSttStore.getState().handleModelDownloaded(payload.ok, payload.error)
+      break
+    }
+
+    case 'stt.model_deleted': {
+      const payload = message.payload as { ok: boolean; model: string; error?: string }
+      useSttStore.getState().handleModelDeleted(payload.ok, payload.error)
+      break
+    }
+
     case 'error': {
       const payload = message.payload as { code: string; message: string }
       console.error('Server error:', payload)

@@ -4,13 +4,17 @@ import type { Server } from 'node:http'
 import type { ServerMessage } from '../../shared/protocol.js'
 import type { GitDiffFile, GitStatusSync } from '../../shared/protocol.js'
 import { createServerMessage } from '../../shared/protocol.js'
-import type { SttStartPayload, SttAudioChunkPayload } from '../../shared/protocol.js'
+import type { SttStartPayload, SttAudioChunkPayload, SttModelDownloadPayload } from '../../shared/protocol.js'
 import {
   createSessionStateMessage,
   createSttPartialMessage,
   createSttFinalMessage,
   createSttErrorMessage,
   createSttStateMessage,
+  createSttActivityMessage,
+  createSttProgressMessage,
+  createSttModelDownloadedMessage,
+  createSttModelDeletedMessage,
 } from './protocol.js'
 import { getSttService } from '../stt/index.js'
 import { handleTerminalMessage, unsubscribeAllFromTerminal } from './terminal.js'
@@ -18,7 +22,7 @@ import type { Config } from '../config.js'
 import type { LLMClientWithModel } from '../llm/client.js'
 import type { SessionManager } from '../session/index.js'
 import { getEventStore, combineEventsWithSnapshot } from '../events/index.js'
-import { getMaxVisibleItems } from '../db/settings.js'
+import { getMaxVisibleItems, getSetting, SETTINGS_KEYS } from '../db/settings.js'
 
 import type { Message, Provider, ProviderBackend, StatsIdentity, Attachment } from '../../shared/types.js'
 import type { ProviderManager } from '../provider-manager.js'
@@ -703,6 +707,7 @@ export function createWebSocketServer(
 
   let sttActiveSessionId: string | null = null
   let sttActiveWs: WebSocket | null = null
+  let sttDownloading = false
   getSttService().subscribe((event) => {
     if (!sttActiveSessionId) return
     const sid = sttActiveSessionId
@@ -716,6 +721,10 @@ export function createWebSocketServer(
       sttActiveSessionId = null
     } else if (event.type === 'state') {
       broadcastForSession(sid, createSttStateMessage(event.state, sid))
+    } else if (event.type === 'activity') {
+      broadcastForSession(sid, createSttActivityMessage(event.speaking, sid))
+    } else if (event.type === 'progress') {
+      broadcastForSession(sid, createSttProgressMessage(event.percent, sid, event.phase))
     }
   })
 
@@ -832,6 +841,124 @@ export function createWebSocketServer(
             }
           } else if (message.type === 'stt.stop') {
             await getSttService().stop()
+          } else if (message.type === 'stt.download_model') {
+            const payload = message.payload as SttModelDownloadPayload
+            if (getSttService().getState() !== 'off') {
+              sttSend(
+                createSttModelDownloadedMessage(
+                  false,
+                  '',
+                  serverT({
+                    en: 'Stop dictation before downloading a model',
+                    fr: 'Arrêtez la dictée avant de télécharger un modèle',
+                  }),
+                ),
+              )
+              return
+            }
+            if (sttDownloading) {
+              sttSend(
+                createSttModelDownloadedMessage(
+                  false,
+                  '',
+                  serverT({
+                    en: 'Model download already in progress',
+                    fr: 'Le téléchargement du modèle est déjà en cours',
+                  }),
+                ),
+              )
+              return
+            }
+            sttDownloading = true
+            void (async () => {
+              try {
+                const { getGlobalDataDir } = await import('../../cli/paths.js')
+                const { getRuntimeConfig } = await import('../runtime-config.js')
+                const dataDir = getGlobalDataDir(getRuntimeConfig().mode ?? 'production')
+                const engine = (getSetting(SETTINGS_KEYS.STT_ENGINE) ?? 'off').trim()
+                if (engine === 'vosk') {
+                  const { resolveVoskModelSize, ensureSttModel } = await import('../stt/model.js')
+                  const size = resolveVoskModelSize(payload?.model ?? getSetting(SETTINGS_KEYS.STT_VOSK_MODEL))
+                  await ensureSttModel(dataDir, size, (percent) => {
+                    sttSend(createSttProgressMessage(percent))
+                  })
+                  sttSend(createSttModelDownloadedMessage(true, size))
+                } else {
+                  const { resolveWhisperModelSize, ensureWhisperModel } = await import('../stt/whisper-model.js')
+                  const size = resolveWhisperModelSize(payload?.model ?? getSetting(SETTINGS_KEYS.STT_WHISPER_MODEL))
+                  await ensureWhisperModel(dataDir, size, (percent) => {
+                    sttSend(createSttProgressMessage(percent))
+                  })
+                  sttSend(createSttModelDownloadedMessage(true, size))
+                }
+              } catch (error) {
+                sttSend(
+                  createSttModelDownloadedMessage(false, '', error instanceof Error ? error.message : String(error)),
+                )
+              } finally {
+                sttDownloading = false
+              }
+            })()
+          } else if (message.type === 'stt.delete_model') {
+            const payload = message.payload as SttModelDownloadPayload
+            if (getSttService().getState() !== 'off') {
+              sttSend(
+                createSttModelDeletedMessage(
+                  false,
+                  '',
+                  serverT({
+                    en: 'Stop dictation before deleting a model',
+                    fr: 'Arrêtez la dictée avant de supprimer un modèle',
+                  }),
+                ),
+              )
+              return
+            }
+            if (sttDownloading) {
+              sttSend(
+                createSttModelDeletedMessage(
+                  false,
+                  '',
+                  serverT({
+                    en: 'Model download already in progress',
+                    fr: 'Le téléchargement du modèle est déjà en cours',
+                  }),
+                ),
+              )
+              return
+            }
+            void (async () => {
+              try {
+                const { getGlobalDataDir } = await import('../../cli/paths.js')
+                const { getRuntimeConfig } = await import('../runtime-config.js')
+                const dataDir = getGlobalDataDir(getRuntimeConfig().mode ?? 'production')
+                const engine = (getSetting(SETTINGS_KEYS.STT_ENGINE) ?? 'off').trim()
+                if (engine === '' || engine === 'off') {
+                  sttSend(
+                    createSttModelDeletedMessage(
+                      false,
+                      '',
+                      serverT({ en: 'No STT engine selected', fr: 'Aucun moteur STT sélectionné' }),
+                    ),
+                  )
+                  return
+                }
+                await getSttService().dispose()
+                if (engine === 'vosk') {
+                  const { resolveVoskModelSize, deleteVoskModel } = await import('../stt/model.js')
+                  const size = resolveVoskModelSize(payload?.model ?? getSetting(SETTINGS_KEYS.STT_VOSK_MODEL))
+                  await deleteVoskModel(dataDir, size)
+                  sttSend(createSttModelDeletedMessage(true, size))
+                } else {
+                  const { resolveWhisperModelSize, deleteWhisperModel } = await import('../stt/whisper-model.js')
+                  const size = resolveWhisperModelSize(payload?.model ?? getSetting(SETTINGS_KEYS.STT_WHISPER_MODEL))
+                  await deleteWhisperModel(dataDir, size)
+                  sttSend(createSttModelDeletedMessage(true, size))
+                }
+              } catch (error) {
+                sttSend(createSttModelDeletedMessage(false, '', error instanceof Error ? error.message : String(error)))
+              }
+            })()
           }
         } catch (error) {
           logger.error('STT message handling error', { error, type: message.type })

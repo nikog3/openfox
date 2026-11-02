@@ -20,6 +20,7 @@ import { AutoScrollToggle } from '../shared/AutoScrollToggle'
 import { MicIcon, PauseIcon, PlayIcon, SearchIcon, SendIcon, StopIcon, XCloseIcon } from '../shared/icons'
 import { Spinner } from '../shared/Spinner'
 import { useSttStore } from '../../stores/stt'
+import type { CaptureErrorCode } from '../../lib/audio-capture'
 import { WorkflowBar } from './WorkflowBar'
 import { processFile } from '../../lib/file-processing.js'
 import { mimeTypeToExtension, isSupportedMimeType } from '../../lib/attachment-utils.js'
@@ -51,6 +52,36 @@ const COMPOSER_MAX_HEIGHT = 200
 // Chrome below the textarea when the composer expands full-height on mobile:
 // row padding + selector rows + form padding, with a small buffer.
 const COMPOSER_EXPANDED_RESERVE = 96
+
+function captureErrorMessage(t: (tx: { en: string; fr: string }) => string, code: CaptureErrorCode): string {
+  switch (code) {
+    case 'denied':
+      return t({
+        en: 'Microphone access denied. Check your browser permissions.',
+        fr: 'Accès au micro refusé. Vérifiez les autorisations de votre navigateur.',
+      })
+    case 'not-found':
+      return t({ en: 'No microphone found.', fr: 'Aucun micro détecté.' })
+    case 'in-use':
+      return t({
+        en: 'Microphone is in use by another application.',
+        fr: 'Le micro est utilisé par une autre application.',
+      })
+    case 'unsupported':
+      return t({
+        en: 'Audio capture is not supported in this context.',
+        fr: "La capture audio n'est pas prise en charge dans ce contexte.",
+      })
+    default:
+      return t({ en: 'Failed to start audio capture.', fr: 'Échec du démarrage de la capture audio.' })
+  }
+}
+
+function formatSttElapsed(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
 
 interface ChatInputProps {
   input: string
@@ -134,10 +165,25 @@ export function ChatInput({
   const sttStatus = useSttStore((s) => s.status)
   const sttPartialText = useSttStore((s) => s.partialText)
   const sttFinalText = useSttStore((s) => s.finalText)
+  const sttLevel = useSttStore((s) => s.level)
+  const sttSpeaking = useSttStore((s) => s.speaking)
+  const sttProgress = useSttStore((s) => s.progress)
+  const sttCaptureError = useSttStore((s) => s.captureError)
   const sttStart = useSttStore((s) => s.start)
   const sttStop = useSttStore((s) => s.stop)
   const sttReset = useSttStore((s) => s.reset)
   const sttBaseInputRef = useRef('')
+  const [sttElapsed, setSttElapsed] = useState(0)
+  useEffect(() => {
+    if (sttStatus !== 'listening' && sttStatus !== 'loading') return
+    const tick = () => {
+      const started = useSttStore.getState().startedAt
+      setSttElapsed(started ? Math.max(0, Math.floor((Date.now() - started) / 1000)) : 0)
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [sttStatus])
   const pauseGeneration = useSessionStore((state) => state.pauseGeneration)
   const resumeGeneration = useSessionStore((state) => state.resumeGeneration)
   const pauseState = useScopedPaneState(
@@ -288,23 +334,26 @@ export function ChatInput({
   }, [sttStatus, sttPartialText, setInput])
 
   useEffect(() => {
-    if (sttFinalText !== null) {
-      const base = sttBaseInputRef.current
-      const newText = base && sttFinalText ? `${base} ${sttFinalText}` : sttFinalText || base
-      setInput(newText)
-      sttReset()
-      textareaRef.current?.focus()
+    if (sttFinalText === null) return
+    const base = sttBaseInputRef.current
+    if (sttFinalText.trim() === '') {
+      setInput(base)
+      setErrorMessage(t({ en: 'No speech detected.', fr: 'Aucune parole détectée.' }))
+    } else {
+      setInput(base && sttFinalText ? `${base} ${sttFinalText}` : sttFinalText || base)
     }
-  }, [sttFinalText, setInput, sttReset])
+    sttReset()
+    textareaRef.current?.focus()
+  }, [sttFinalText, setInput, setErrorMessage, sttReset, t])
 
   const sttError = useSttStore((s) => s.error)
   useEffect(() => {
-    if (!sttError) return
+    if (!sttError && !sttCaptureError) return
     setInput(sttBaseInputRef.current)
-    setErrorMessage(sttError)
+    setErrorMessage(sttCaptureError ? captureErrorMessage(t, sttCaptureError) : sttError)
     sttReset()
     textareaRef.current?.focus()
-  }, [sttError, setInput, setErrorMessage, sttReset])
+  }, [sttError, sttCaptureError, t, setInput, setErrorMessage, sttReset])
 
   // Mobile full-height composer (opt-in): while the textarea is focused on a
   // touch device and the keyboard is up, pin it to the remaining pane height so
@@ -687,27 +736,26 @@ export function ChatInput({
     const isListening = sttStatus === 'listening'
     const isLoading = sttStatus === 'loading'
     const isTranscribing = sttStatus === 'transcribing'
-    const isBusy = isLoading || isTranscribing
     const label = isListening
       ? t({ en: 'Stop dictation', fr: 'Arrêter la dictée' })
-      : isTranscribing
-        ? t({ en: 'Transcribing…', fr: 'Transcription…' })
-        : isLoading
-          ? t({ en: 'Loading speech model…', fr: 'Chargement du modèle de dictée…' })
+      : isLoading
+        ? t({ en: 'Cancel loading', fr: 'Annuler le chargement' })
+        : isTranscribing
+          ? t({ en: 'Transcribing…', fr: 'Transcription…' })
           : t({ en: 'Dictate', fr: 'Dictée' })
     return (
       <button
         type="button"
         onClick={() => {
-          if (!sessionId || isBusy) return
-          if (isListening) {
+          if (!sessionId || isTranscribing) return
+          if (isListening || isLoading) {
             sttStop()
           } else {
             sttBaseInputRef.current = input
             void sttStart(sessionId)
           }
         }}
-        disabled={!sessionId || isBusy}
+        disabled={!sessionId || isTranscribing}
         data-testid={mobile ? 'chat-mic-button-touch' : 'chat-mic-button'}
         title={label}
         aria-label={label}
@@ -715,14 +763,16 @@ export function ChatInput({
         className={`flex items-center justify-center px-3 py-2 rounded transition-colors ${
           isListening
             ? 'bg-accent-error/30 text-accent-error animate-pulse'
-            : isBusy
+            : isTranscribing
               ? 'bg-accent-primary/20 text-accent-primary'
               : 'bg-accent-primary/10 text-accent-primary hover:bg-accent-primary/20 disabled:opacity-30 disabled:cursor-not-allowed'
         }`}
       >
         {isListening ? (
           <StopIcon className="w-4 h-4" />
-        ) : isBusy ? (
+        ) : isLoading ? (
+          <XCloseIcon className="w-4 h-4" />
+        ) : isTranscribing ? (
           <Spinner size="sm" />
         ) : (
           <MicIcon className="w-4 h-4" />
@@ -822,7 +872,16 @@ export function ChatInput({
           ...(workdir ? { workdir } : {}),
         }}
       >
-        <form onSubmit={handleSubmit} className="p-2 @md:p-4 bg-secondary rounded-lg">
+        <form
+          onSubmit={handleSubmit}
+          className={`p-2 @md:p-4 bg-secondary rounded-lg ${
+            sttStatus === 'listening'
+              ? 'ring-2 ring-accent-error/40'
+              : sttStatus === 'loading'
+                ? 'ring-2 ring-accent-primary/40'
+                : ''
+          }`}
+        >
           <input
             ref={fileInputRef}
             type="file"
@@ -840,7 +899,43 @@ export function ChatInput({
 
           {sttStatus === 'loading' && (
             <div className="mb-2 p-2 bg-accent-primary/10 border border-accent-primary/30 rounded text-accent-primary text-sm">
-              {t({ en: 'Loading speech model…', fr: 'Chargement du modèle de dictée…' })}
+              <div className="flex items-center gap-2">
+                <Spinner size="sm" />
+                {sttProgress !== null ? (
+                  <span>
+                    {t({ en: 'Loading speech model…', fr: 'Chargement du modèle de dictée…' })}{' '}
+                    {t({ en: '{{percent}}%', fr: '{{percent}} %' }, { percent: Math.round(sttProgress) })}
+                  </span>
+                ) : (
+                  t({ en: 'Loading speech model…', fr: 'Chargement du modèle de dictée…' })
+                )}
+                <span className="ml-auto text-xs tabular-nums">{formatSttElapsed(sttElapsed)}</span>
+              </div>
+              <div className="mt-1.5 h-1 rounded-full bg-accent-primary/20 overflow-hidden">
+                {sttProgress !== null ? (
+                  <div
+                    className="h-full bg-accent-primary transition-[width] duration-200"
+                    style={{ width: `${sttProgress}%` }}
+                  />
+                ) : (
+                  <div className="stt-loading-bar h-full w-1/3 bg-accent-primary rounded-full" />
+                )}
+              </div>
+            </div>
+          )}
+
+          {sttStatus === 'listening' && (
+            <div className="mb-2 p-2 bg-accent-error/10 border border-accent-error/30 rounded text-accent-error text-sm flex items-center gap-2">
+              <span
+                className={`w-2 h-2 rounded-full bg-accent-error ${sttSpeaking ? 'animate-pulse' : 'opacity-40'}`}
+              />
+              <span className="w-24 h-1.5 rounded-full bg-accent-error/20 overflow-hidden">
+                <div className="h-full bg-accent-error" style={{ width: `${Math.round(sttLevel * 100)}%` }} />
+              </span>
+              <span className="text-xs tabular-nums">{formatSttElapsed(sttElapsed)}</span>
+              {sttSpeaking
+                ? t({ en: 'Listening…', fr: 'Écoute en cours…' })
+                : t({ en: 'No speech detected', fr: 'Aucune parole détectée' })}
             </div>
           )}
 

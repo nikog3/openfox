@@ -27,11 +27,16 @@ export async function getVadModelStatus(dataDir: string): Promise<VadModelStatus
   }
 }
 
-export async function ensureVadModel(dataDir: string): Promise<string> {
+export async function ensureVadModel(dataDir: string, onProgress?: (percent: number) => void): Promise<string> {
   const dest = getVadModelPath(dataDir)
-  await downloadIfMissing(VAD_MODEL_URL, dest)
+  await downloadIfMissing(VAD_MODEL_URL, dest, (received, total) => {
+    if (!onProgress) return
+    const fraction = total && total > 0 ? Math.min(1, received / total) : 0
+    onProgress(fraction * 100)
+  })
   if (!(await filePresent(dest))) {
     throw new Error(`VAD model ${VAD_MODEL_NAME} is not available after download`)
   }
+  onProgress?.(100)
   return dest
 }

@@ -1,6 +1,31 @@
 const TARGET_RATE = 16000
 const BUFFER_SIZE = 4096
 
+export type CaptureErrorCode = 'denied' | 'not-found' | 'in-use' | 'unsupported' | 'unknown'
+
+export class CaptureError extends Error {
+  constructor(
+    message: string,
+    public readonly code: CaptureErrorCode,
+  ) {
+    super(message)
+    this.name = 'CaptureError'
+  }
+}
+
+function mapCaptureError(err: unknown): CaptureError {
+  const name = err instanceof DOMException ? err.name : ''
+  const code: CaptureErrorCode =
+    name === 'NotAllowedError' || name === 'SecurityError'
+      ? 'denied'
+      : name === 'NotFoundError' || name === 'OverconstrainedError'
+        ? 'not-found'
+        : name === 'NotReadableError' || name === 'AbortError'
+          ? 'in-use'
+          : 'unknown'
+  return new CaptureError(err instanceof Error ? err.message : String(err), code)
+}
+
 export class Resampler {
   private ratio: number
   private pos = 0
@@ -38,17 +63,22 @@ export interface AudioCaptureHandle {
 
 export async function startAudioCapture(onChunk: (samples: Int16Array) => void): Promise<AudioCaptureHandle> {
   if (!navigator.mediaDevices?.getUserMedia) {
-    throw new Error('getUserMedia not supported in this context')
+    throw new CaptureError('getUserMedia not supported in this context', 'unsupported')
   }
 
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      channelCount: 1,
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false,
-    },
-  })
+  let stream: MediaStream
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+    })
+  } catch (err) {
+    throw mapCaptureError(err)
+  }
 
   const ctx = new AudioContext()
   const source = ctx.createMediaStreamSource(stream)
@@ -78,4 +108,13 @@ export async function startAudioCapture(onChunk: (samples: Int16Array) => void):
       }
     },
   }
+}
+
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const chunkSize = 8192
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
+  }
+  return btoa(binary)
 }

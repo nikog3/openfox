@@ -45,6 +45,8 @@ export type ClientMessageType =
   | 'stt.start' // Begin dictation for a session
   | 'stt.audio_chunk' // Stream a base64 16kHz mono Int16 PCM chunk
   | 'stt.stop' // End dictation and request the final transcript
+  | 'stt.download_model' // Download the selected whisper model (progress via stt.progress)
+  | 'stt.delete_model' // Delete a downloaded STT model from disk
 
 export interface ClientMessage<T = unknown> {
   id: string
@@ -79,6 +81,10 @@ export interface SttAudioChunkPayload {
 
 export interface SttStopPayload {
   sessionId: string
+}
+
+export interface SttModelDownloadPayload {
+  model?: string
 }
 
 // Shared queue types
@@ -180,6 +186,10 @@ export type ServerMessageType =
   | 'stt.final' // Final consolidated transcript for the dictation
   | 'stt.error' // STT failure (model download, recognition, etc.)
   | 'stt.state' // STT engine state change (loading model, listening, transcribing)
+  | 'stt.activity' // Speech activity signal (speaking vs silence) while listening
+  | 'stt.progress' // Model download progress (0-100) while loading
+  | 'stt.model_downloaded' // Whisper model download finished (ok / error)
+  | 'stt.model_deleted' // STT model deletion finished (ok / error)
   // Other
   | 'lsp.diagnostics'
   | 'error'
@@ -682,6 +692,29 @@ export interface SttErrorPayload {
 
 export interface SttStatePayload {
   state: 'off' | 'loading' | 'listening' | 'transcribing'
+}
+
+export interface SttActivityPayload {
+  speaking: boolean
+}
+
+export type SttProgressPhase = 'init' | 'model' | 'ready'
+
+export interface SttProgressPayload {
+  percent: number | null
+  phase?: SttProgressPhase
+}
+
+export interface SttModelDownloadedPayload {
+  ok: boolean
+  model: string
+  error?: string
+}
+
+export interface SttModelDeletedPayload {
+  ok: boolean
+  model: string
+  error?: string
 }
 
 // Shared background process types

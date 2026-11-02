@@ -1,7 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { loadConfig } from '../config.js'
 import { closeDatabase, initDatabase } from './index.js'
-import { SETTINGS_KEYS, deleteSetting, getAllSettings, getMaxVisibleItems, getSetting, setSetting } from './settings.js'
+import {
+  SETTINGS_DEFAULTS,
+  SETTINGS_KEYS,
+  deleteSetting,
+  getAllSettings,
+  getMaxVisibleItems,
+  getSetting,
+  setSetting,
+} from './settings.js'
 
 describe('db settings', () => {
   beforeEach(() => {
@@ -101,6 +109,13 @@ describe('db settings', () => {
       setSetting(SETTINGS_KEYS.SEARCH_ENGINE, 'tavily')
       deleteSetting(SETTINGS_KEYS.SEARCH_ENGINE)
       expect(getSetting(SETTINGS_KEYS.SEARCH_ENGINE)).toBeNull()
+    })
+  })
+
+  describe('stt vosk model setting', () => {
+    it('declares the STT_VOSK_MODEL key with a small default', () => {
+      expect(SETTINGS_KEYS.STT_VOSK_MODEL).toBe('stt.vosk.model')
+      expect(SETTINGS_DEFAULTS[SETTINGS_KEYS.STT_VOSK_MODEL]).toBe('small')
     })
   })
 })

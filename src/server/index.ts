@@ -2029,29 +2029,35 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
     res.json({ shells: listAvailableShells() })
   })
 
-  // STT engine + selected whisper model status
+  // STT engine + selected whisper/vosk model status
   app.get('/api/stt/status', async (_req, res) => {
     const { getSetting, SETTINGS_KEYS, SETTINGS_DEFAULTS } = await import('./db/settings.js')
     const { resolveWhisperModelSize, getWhisperModelStatus } = await import('./stt/whisper-model.js')
+    const { resolveVoskModelSize, getVoskModelStatus } = await import('./stt/model.js')
     const { getVadModelStatus } = await import('./stt/vad-model.js')
     const engine = getSetting(SETTINGS_KEYS.STT_ENGINE) ?? SETTINGS_DEFAULTS[SETTINGS_KEYS.STT_ENGINE] ?? 'off'
     const size = resolveWhisperModelSize(getSetting(SETTINGS_KEYS.STT_WHISPER_MODEL))
+    const voskSize = resolveVoskModelSize(getSetting(SETTINGS_KEYS.STT_VOSK_MODEL))
     const dataDir = getGlobalDataDir(getRuntimeConfig().mode ?? 'production')
-    const [whisper, vad] = await Promise.all([getWhisperModelStatus(dataDir, size), getVadModelStatus(dataDir)])
-    res.json({ engine, whisperModel: size, whisper, vad })
+    const [whisper, vad, vosk] = await Promise.all([
+      getWhisperModelStatus(dataDir, size),
+      getVadModelStatus(dataDir),
+      getVoskModelStatus(dataDir, voskSize),
+    ])
+    res.json({ engine, whisperModel: size, whisper, vad, voskModel: voskSize, vosk })
   })
 
-  // Download the currently selected whisper model
-  app.post('/api/stt/whisper-model', async (_req, res) => {
-    const { getSetting, SETTINGS_KEYS } = await import('./db/settings.js')
-    const { resolveWhisperModelSize, ensureWhisperModel, getWhisperModelStatus } =
-      await import('./stt/whisper-model.js')
-    const size = resolveWhisperModelSize(getSetting(SETTINGS_KEYS.STT_WHISPER_MODEL))
-    const dataDir = getGlobalDataDir(getRuntimeConfig().mode ?? 'production')
+  // Transcribe a base64 16kHz mono Int16 PCM chunk (STT test button)
+  app.post('/api/stt/test', async (req, res) => {
+    const { transcribeTestAudio } = await import('./stt/index.js')
+    const { chunk } = (req.body ?? {}) as { chunk?: string }
+    if (!chunk) {
+      res.status(400).json({ error: 'chunk is required' })
+      return
+    }
     try {
-      await ensureWhisperModel(dataDir, size)
-      const whisper = await getWhisperModelStatus(dataDir, size)
-      res.json({ whisperModel: size, whisper })
+      const text = await transcribeTestAudio(Buffer.from(chunk, 'base64'))
+      res.json({ text })
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
     }

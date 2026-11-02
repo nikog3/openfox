@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import type { SttProviderHooks } from './types.js'
 
 const state = {
   results: [] as string[],
@@ -6,6 +7,7 @@ const state = {
   decodeCount: 0,
   vadAccepted: [] as Float32Array[],
   vadQueue: [] as { start: number; samples: Float32Array }[],
+  vadDetected: false,
 }
 
 const mockStream = {
@@ -31,6 +33,7 @@ const VadMock = vi.fn(function () {
     acceptWaveform: vi.fn((samples: Float32Array) => {
       state.vadAccepted.push(samples)
     }),
+    isDetected: vi.fn(() => state.vadDetected),
     isEmpty: vi.fn(() => state.vadQueue.length === 0),
     front: vi.fn(() => state.vadQueue[0]),
     pop: vi.fn(() => state.vadQueue.shift()),
@@ -52,12 +55,19 @@ const DECODER = '/models/base-decoder.int8.onnx'
 const TOKENS = '/models/base-tokens.txt'
 const VAD = '/models/silero_vad.onnx'
 
+const NOOP_HOOKS: SttProviderHooks = {
+  onPartial: () => {},
+  onActivity: () => {},
+  onProgress: () => {},
+}
+
 function resetState(): void {
   state.results = []
   state.accepted = []
   state.decodeCount = 0
   state.vadAccepted = []
   state.vadQueue = []
+  state.vadDetected = false
   OfflineRecognizerMock.createAsync.mockClear()
   mockRecognizer.createStream.mockClear()
   mockRecognizer.decodeAsync.mockClear()
@@ -74,8 +84,8 @@ function pcmBuffer(sampleCount: number): Buffer {
   return buf
 }
 
-async function makeProvider(onPartial: (text: string) => void = () => {}) {
-  return createWhisperProvider(ENCODER, DECODER, TOKENS, 'fr', VAD, onPartial)
+async function makeProvider(hooks: SttProviderHooks = NOOP_HOOKS) {
+  return createWhisperProvider(ENCODER, DECODER, TOKENS, 'fr', VAD, hooks)
 }
 
 describe('createWhisperProvider (live VAD + async decode)', () => {
@@ -100,7 +110,7 @@ describe('createWhisperProvider (live VAD + async decode)', () => {
   })
 
   it('maps auto language to an empty string', async () => {
-    await createWhisperProvider(ENCODER, DECODER, TOKENS, 'auto', VAD, () => {})
+    await createWhisperProvider(ENCODER, DECODER, TOKENS, 'auto', VAD, NOOP_HOOKS)
     const config = OfflineRecognizerMock.createAsync.mock.calls[0]?.[0] as {
       modelConfig: { whisper: { language: string } }
     }
@@ -115,8 +125,8 @@ describe('createWhisperProvider (live VAD + async decode)', () => {
           model: VAD,
           threshold: 0.5,
           minSpeechDuration: 0.25,
-          minSilenceDuration: 0.5,
-          maxSpeechDuration: 5,
+          minSilenceDuration: 0.35,
+          maxSpeechDuration: 3,
           windowSize: 512,
         }),
         sampleRate: 16000,
@@ -136,9 +146,20 @@ describe('createWhisperProvider (live VAD + async decode)', () => {
     expect(state.vadAccepted).toEqual([new Float32Array([0, 0.5, -0.5, 32767 / 32768])])
   })
 
+  it('emits activity while the VAD detects speech', async () => {
+    const onActivity = vi.fn()
+    const provider = await makeProvider({ ...NOOP_HOOKS, onActivity })
+    state.vadDetected = true
+    await provider.acceptAudio(pcmBuffer(1024))
+    expect(onActivity).toHaveBeenCalledWith(true)
+    state.vadDetected = false
+    await provider.acceptAudio(pcmBuffer(1024))
+    expect(onActivity).toHaveBeenLastCalledWith(false)
+  })
+
   it('decodes completed VAD segments and emits partials', async () => {
     const partials: string[] = []
-    const provider = await makeProvider((text) => partials.push(text))
+    const provider = await makeProvider({ ...NOOP_HOOKS, onPartial: (text) => partials.push(text) })
     state.results = ['bonjour']
     state.vadQueue = [{ start: 0, samples: new Float32Array(1024) }]
     await provider.acceptAudio(pcmBuffer(1024))
@@ -148,7 +169,7 @@ describe('createWhisperProvider (live VAD + async decode)', () => {
 
   it('accumulates segment texts with a space between them', async () => {
     const partials: string[] = []
-    const provider = await makeProvider((text) => partials.push(text))
+    const provider = await makeProvider({ ...NOOP_HOOKS, onPartial: (text) => partials.push(text) })
     state.results = ['bonjour', 'le monde']
     state.vadQueue = [
       { start: 0, samples: new Float32Array(512) },
@@ -160,7 +181,7 @@ describe('createWhisperProvider (live VAD + async decode)', () => {
 
   it('ignores empty segment results', async () => {
     const partials: string[] = []
-    const provider = await makeProvider((text) => partials.push(text))
+    const provider = await makeProvider({ ...NOOP_HOOKS, onPartial: (text) => partials.push(text) })
     state.results = ['   ']
     state.vadQueue = [{ start: 0, samples: new Float32Array(512) }]
     await provider.acceptAudio(pcmBuffer(512))
@@ -213,6 +234,24 @@ describe('createWhisperProvider (live VAD + async decode)', () => {
     state.results = ['second']
     await provider.acceptAudio(pcmBuffer(4800))
     expect(await provider.finalize()).toBe('second')
+  })
+
+  it('reset clears pending audio and committed text', async () => {
+    const provider = await makeProvider()
+    state.results = ['premier']
+    state.vadQueue = [{ start: 0, samples: new Float32Array(512) }]
+    await provider.acceptAudio(pcmBuffer(512))
+    await provider.reset()
+    state.results = ['second']
+    await provider.acceptAudio(pcmBuffer(4800))
+    expect(await provider.finalize()).toBe('second')
+  })
+
+  it('reset notifies the activity hook with silence', async () => {
+    const onActivity = vi.fn()
+    const provider = await makeProvider({ ...NOOP_HOOKS, onActivity })
+    await provider.reset()
+    expect(onActivity).toHaveBeenCalledWith(false)
   })
 
   it('dispose clears pending audio', async () => {

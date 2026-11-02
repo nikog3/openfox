@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { SttProviderHooks } from './types.js'
 
 const state = {
   acceptReturns: [] as boolean[],
@@ -34,6 +35,12 @@ vi.mock('voskify', () => ({
 
 import { createVoskProvider } from './vosk-provider.js'
 
+const NOOP_HOOKS: SttProviderHooks = {
+  onPartial: () => {},
+  onActivity: () => {},
+  onProgress: () => {},
+}
+
 describe('createVoskProvider', () => {
   beforeEach(() => {
     state.acceptReturns = []
@@ -46,14 +53,17 @@ describe('createVoskProvider', () => {
   })
 
   it('loads the model and creates a recognizer', async () => {
-    const provider = await createVoskProvider('/fake/model', () => {})
+    const provider = await createVoskProvider('/fake/model', NOOP_HOOKS)
     expect(provider).toBeDefined()
     expect(mockModel.createRecognizer).toHaveBeenCalledTimes(1)
   })
 
   it('emits cumulative partial results across chunks', async () => {
     const partials: string[] = []
-    const provider = await createVoskProvider('/fake/model', (t) => partials.push(t))
+    const provider = await createVoskProvider('/fake/model', {
+      ...NOOP_HOOKS,
+      onPartial: (text) => partials.push(text),
+    })
     state.acceptReturns = [false, false, false]
     state.partialResults = ['bonjour', 'bonjour le', 'bonjour le monde']
     await provider.acceptAudio(Buffer.from([1, 2, 3]))
@@ -64,7 +74,10 @@ describe('createVoskProvider', () => {
 
   it('accumulates committed segments when acceptWaveform finalizes', async () => {
     const partials: string[] = []
-    const provider = await createVoskProvider('/fake/model', (t) => partials.push(t))
+    const provider = await createVoskProvider('/fake/model', {
+      ...NOOP_HOOKS,
+      onPartial: (text) => partials.push(text),
+    })
     state.acceptReturns = [true, false]
     state.segmentResults = ['premier segment']
     state.partialResults = ['deuxième']
@@ -76,19 +89,20 @@ describe('createVoskProvider', () => {
     expect(text).toBe('premier segment deuxième')
   })
 
-  it('finalize returns full text and frees resources', async () => {
-    const provider = await createVoskProvider('/fake/model', () => {})
+  it('finalize returns full text and resets the recognizer without freeing the model', async () => {
+    const provider = await createVoskProvider('/fake/model', NOOP_HOOKS)
     state.acceptReturns = [false]
     state.partialResults = ['bonjour']
     await provider.acceptAudio(Buffer.from([1]))
     const text = await provider.finalize()
     expect(text).toBe('bonjour le monde')
     expect(state.freedRecognizer).toBe(1)
-    expect(state.freedModel).toBe(1)
+    expect(state.freedModel).toBe(0)
+    expect(mockModel.createRecognizer).toHaveBeenCalledTimes(2)
   })
 
   it('finalize returns empty string when nothing recognized', async () => {
-    const provider = await createVoskProvider('/fake/model', () => {})
+    const provider = await createVoskProvider('/fake/model', NOOP_HOOKS)
     state.finalText = '   '
     const text = await provider.finalize()
     expect(text).toBe('')
@@ -96,15 +110,40 @@ describe('createVoskProvider', () => {
 
   it('does not emit empty partials', async () => {
     const partials: string[] = []
-    const provider = await createVoskProvider('/fake/model', (t) => partials.push(t))
+    const provider = await createVoskProvider('/fake/model', {
+      ...NOOP_HOOKS,
+      onPartial: (text) => partials.push(text),
+    })
     state.acceptReturns = [false]
     state.partialResults = ['   ']
     await provider.acceptAudio(Buffer.from([1]))
     expect(partials).toEqual([])
   })
 
-  it('dispose frees resources', async () => {
-    const provider = await createVoskProvider('/fake/model', () => {})
+  it('reset clears committed text and recreates the recognizer', async () => {
+    const provider = await createVoskProvider('/fake/model', NOOP_HOOKS)
+    state.acceptReturns = [true]
+    state.segmentResults = ['premier']
+    await provider.acceptAudio(Buffer.from([1]))
+    await provider.reset()
+    expect(state.freedRecognizer).toBe(1)
+    expect(mockModel.createRecognizer).toHaveBeenCalledTimes(2)
+    state.finalText = 'seul'
+    const text = await provider.finalize()
+    expect(text).toBe('seul')
+  })
+
+  it('emits activity while speech is recognized', async () => {
+    const onActivity = vi.fn()
+    const provider = await createVoskProvider('/fake/model', { ...NOOP_HOOKS, onActivity })
+    state.acceptReturns = [false]
+    state.partialResults = ['bonjour']
+    await provider.acceptAudio(Buffer.from([1]))
+    expect(onActivity).toHaveBeenCalledWith(true)
+  })
+
+  it('dispose frees the recognizer and the model', async () => {
+    const provider = await createVoskProvider('/fake/model', NOOP_HOOKS)
     await provider.dispose()
     expect(state.freedRecognizer).toBe(1)
     expect(state.freedModel).toBe(1)

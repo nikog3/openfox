@@ -1,11 +1,12 @@
-import type { SttProvider } from './types.js'
+import { availableParallelism } from 'node:os'
+import type { SttProvider, SttProviderHooks } from './types.js'
 
 const SAMPLE_RATE = 16000
 const FEATURE_DIM = 80
 const VAD_WINDOW_SIZE = 512
 const VAD_MIN_SPEECH_DURATION = 0.25
-const VAD_MIN_SILENCE_DURATION = 0.5
-const VAD_MAX_SPEECH_DURATION = 5
+const VAD_MIN_SILENCE_DURATION = 0.35
+const VAD_MAX_SPEECH_DURATION = 3
 const VAD_BUFFER_SECONDS = 300
 
 interface WhisperStream {
@@ -32,6 +33,7 @@ interface SpeechSegment {
 
 interface WhisperVad {
   acceptWaveform(samples: Float32Array): void
+  isDetected(): boolean
   isEmpty(): boolean
   front(): SpeechSegment | null
   pop(): SpeechSegment | null
@@ -56,13 +58,17 @@ function pcmToFloat32(pcm: Buffer): Float32Array {
   return samples
 }
 
+export function getWhisperNumThreads(): number {
+  return Math.max(1, Math.min(availableParallelism(), 8))
+}
+
 export async function createWhisperProvider(
   encoderPath: string,
   decoderPath: string,
   tokensPath: string,
   language: string,
   vadModelPath: string,
-  onPartial: (text: string) => void,
+  hooks: SttProviderHooks,
 ): Promise<SttProvider> {
   const mod = (await import('sherpa-onnx-node')) as unknown as SherpaOnnxModule
   const namedRecognizer = 'OfflineRecognizer' in mod ? mod.OfflineRecognizer : undefined
@@ -75,7 +81,7 @@ export async function createWhisperProvider(
     )
   }
 
-  const recognizer = await OfflineRecognizer.createAsync({
+  let recognizer: WhisperRecognizer | null = await OfflineRecognizer.createAsync({
     featConfig: { sampleRate: SAMPLE_RATE, featureDim: FEATURE_DIM },
     modelConfig: {
       whisper: {
@@ -86,12 +92,12 @@ export async function createWhisperProvider(
         tailPaddings: -1,
       },
       tokens: tokensPath,
-      numThreads: 4,
+      numThreads: getWhisperNumThreads(),
     },
     decodingMethod: 'greedy_search',
   })
 
-  const vad = new Vad(
+  let vad: WhisperVad | null = new Vad(
     {
       sileroVad: {
         model: vadModelPath,
@@ -112,23 +118,35 @@ export async function createWhisperProvider(
   let emittedSamples = 0
   let committed = ''
   let decodeChain: Promise<void> = Promise.resolve()
+  let disposed = false
+
+  function clearState(): void {
+    audioParts.length = 0
+    fedSamples = 0
+    emittedSamples = 0
+    committed = ''
+    vad?.clear()
+    decodeChain = Promise.resolve()
+  }
 
   function appendCommitted(text: string): void {
     const trimmed = text.trim()
     if (!trimmed) return
     committed = committed ? `${committed} ${trimmed}` : trimmed
-    onPartial(committed)
+    hooks.onPartial(committed)
   }
 
   function decodeSegment(samples: Float32Array): Promise<void> {
+    const rec = recognizer
     const task = decodeChain
       .then(() => {
-        const stream = recognizer.createStream()
+        if (!rec) return undefined
+        const stream = rec.createStream()
         stream.acceptWaveform({ samples, sampleRate: SAMPLE_RATE })
-        return recognizer.decodeAsync(stream)
+        return rec.decodeAsync(stream)
       })
       .then((result) => {
-        appendCommitted(result.text)
+        if (result) appendCommitted(result.text)
       })
     decodeChain = task.then(
       () => undefined,
@@ -138,11 +156,13 @@ export async function createWhisperProvider(
   }
 
   async function drainSegments(): Promise<void> {
+    const v = vad
+    if (!v) return
     let pending: Promise<void> | null = null
-    while (!vad.isEmpty()) {
-      const segment = vad.front()
+    while (!v.isEmpty()) {
+      const segment = v.front()
       if (!segment) break
-      vad.pop()
+      v.pop()
       emittedSamples += segment.samples.length
       pending = decodeSegment(segment.samples)
     }
@@ -167,36 +187,42 @@ export async function createWhisperProvider(
 
   return {
     async acceptAudio(chunk: Buffer): Promise<void> {
+      if (disposed) return
+      const v = vad
+      if (!v) return
       const samples = pcmToFloat32(chunk)
       audioParts.push(samples)
       fedSamples += samples.length
-      vad.acceptWaveform(samples)
+      v.acceptWaveform(samples)
+      hooks.onActivity(v.isDetected())
       await drainSegments()
     },
     async finalize(): Promise<string> {
       await decodeChain
       await drainSegments()
+      const rec = recognizer
       const tail = tailSamples()
-      if (tail) {
-        const stream = recognizer.createStream()
+      if (tail && rec) {
+        const stream = rec.createStream()
         stream.acceptWaveform({ samples: tail, sampleRate: SAMPLE_RATE })
-        const result = await recognizer.decodeAsync(stream)
+        const result = await rec.decodeAsync(stream)
         appendCommitted(result.text)
       }
       const text = committed
-      audioParts.length = 0
-      fedSamples = 0
-      emittedSamples = 0
-      committed = ''
+      clearState()
+      hooks.onActivity(false)
       return text
     },
+    async reset(): Promise<void> {
+      clearState()
+      hooks.onActivity(false)
+    },
     async dispose(): Promise<void> {
-      audioParts.length = 0
-      fedSamples = 0
-      emittedSamples = 0
-      committed = ''
-      vad.clear()
-      decodeChain = Promise.resolve()
+      if (disposed) return
+      disposed = true
+      clearState()
+      recognizer = null
+      vad = null
     },
   }
 }

@@ -68,4 +68,12 @@ describe('vad model', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('bad', { status: 404, statusText: 'Not Found' }))
     await expect(ensureVadModel(baseDir)).rejects.toThrow(/404/)
   })
+
+  it('reports download progress and ends at 100%', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('vad-onnx-data', { status: 200 }))
+    const percents: number[] = []
+    await ensureVadModel(baseDir, (p) => percents.push(p))
+    expect(percents.length).toBeGreaterThan(0)
+    expect(percents[percents.length - 1]).toBe(100)
+  })
 })

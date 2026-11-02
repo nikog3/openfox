@@ -10,8 +10,10 @@ import {
   getWhisperTokensPath,
   getWhisperModelStatus,
   ensureWhisperModel,
+  deleteWhisperModel,
   WHISPER_MODELS,
 } from './whisper-model.js'
+import { filePresent } from './model.js'
 
 describe('whisper model', () => {
   let baseDir: string
@@ -108,5 +110,30 @@ describe('whisper model', () => {
   it('propagates download failures', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('bad', { status: 404, statusText: 'Not Found' }))
     await expect(ensureWhisperModel(baseDir, 'base')).rejects.toThrow(/404/)
+  })
+
+  it('reports cumulative download progress across the three files', async () => {
+    mockFetchForModels()
+    const percents: number[] = []
+    await ensureWhisperModel(baseDir, 'base', (p) => percents.push(p))
+    expect(percents.length).toBeGreaterThan(0)
+    expect(percents[percents.length - 1]).toBe(100)
+  })
+
+  it('deletes only the files of the target size', async () => {
+    mockFetchForModels()
+    await ensureWhisperModel(baseDir, 'base')
+    await ensureWhisperModel(baseDir, 'small')
+    await deleteWhisperModel(baseDir, 'base')
+    expect(await filePresent(getWhisperEncoderPath(baseDir, 'base'))).toBe(false)
+    expect(await filePresent(getWhisperDecoderPath(baseDir, 'base'))).toBe(false)
+    expect(await filePresent(getWhisperTokensPath(baseDir, 'base'))).toBe(false)
+    expect(await filePresent(getWhisperEncoderPath(baseDir, 'small'))).toBe(true)
+    expect(await filePresent(getWhisperDecoderPath(baseDir, 'small'))).toBe(true)
+    expect(await filePresent(getWhisperTokensPath(baseDir, 'small'))).toBe(true)
+  })
+
+  it('is a no-op when the whisper model files are missing', async () => {
+    await expect(deleteWhisperModel(baseDir, 'medium')).resolves.toBeUndefined()
   })
 })

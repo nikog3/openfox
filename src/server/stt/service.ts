@@ -3,6 +3,7 @@ import type { SttEvent, SttEventListener, SttProvider, SttProviderFactory, SttSt
 export class SttService {
   private state: SttState = 'off'
   private provider: SttProvider | null = null
+  private providerKey: string | null = null
   private pendingAudio: Buffer[] = []
   private listeners = new Set<SttEventListener>()
   private generation = 0
@@ -37,15 +38,35 @@ export class SttService {
     }
     const generation = ++this.generation
     this.setState('loading')
+    this.emit({ type: 'progress', percent: null, phase: 'init' })
     try {
-      const provider = await this.factory((text) => {
-        this.emit({ type: 'partial', text })
-      })
+      const key = this.factory.configKey()
+      let provider: SttProvider
+      if (this.provider && this.providerKey === key) {
+        provider = this.provider
+        await provider.reset()
+      } else {
+        const old = this.provider
+        this.provider = null
+        this.providerKey = null
+        if (old) {
+          await old.dispose()
+        }
+        provider = await this.factory.create({
+          onPartial: (text) => this.emit({ type: 'partial', text }),
+          onActivity: (speaking) => this.emit({ type: 'activity', speaking }),
+          onProgress: (percent) => this.emit({ type: 'progress', percent, phase: 'model' }),
+        })
+      }
       if (generation !== this.generation) {
-        await provider.dispose()
+        if (this.provider !== provider) {
+          await provider.dispose()
+        }
         return
       }
       this.provider = provider
+      this.providerKey = key
+      this.emit({ type: 'progress', percent: null, phase: 'ready' })
       this.setState('listening')
       for (const chunk of this.pendingAudio) {
         await provider.acceptAudio(chunk)
@@ -55,8 +76,17 @@ export class SttService {
       if (generation !== this.generation) {
         return
       }
+      const orphan = this.provider
       this.provider = null
+      this.providerKey = null
       this.pendingAudio = []
+      if (orphan) {
+        try {
+          await orphan.dispose()
+        } catch {
+          // a dispose failure must not mask the original error
+        }
+      }
       this.setState('off')
       this.emit({ type: 'error', message: error instanceof Error ? error.message : String(error) })
     }
@@ -85,15 +115,15 @@ export class SttService {
       return ''
     }
     const provider = this.provider
-    this.provider = null
     this.setState('transcribing')
     try {
       const text = await provider.finalize()
-      await provider.dispose()
       this.emit({ type: 'final', text })
       this.setState('off')
       return text
     } catch (error) {
+      this.provider = null
+      this.providerKey = null
       await provider.dispose()
       this.setState('off')
       this.emit({ type: 'error', message: error instanceof Error ? error.message : String(error) })
@@ -102,9 +132,11 @@ export class SttService {
   }
 
   async dispose(): Promise<void> {
+    this.generation++
     if (this.provider) {
       await this.provider.dispose()
       this.provider = null
+      this.providerKey = null
     }
     this.pendingAudio = []
     this.state = 'off'
