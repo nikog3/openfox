@@ -56,11 +56,12 @@ export function createFactory(): SttProviderFactory {
       if (engine === 'whisper') {
         const size = resolveWhisperModelSize(getSetting(SETTINGS_KEYS.STT_WHISPER_MODEL))
         const language = (getSetting(SETTINGS_KEYS.STT_LANGUAGE) ?? 'fr').trim() || 'fr'
+        const label = `whisper ${size}`
         let model: Awaited<ReturnType<typeof ensureWhisperModel>>
         let vadModel: string
         try {
-          model = await ensureWhisperModel(dataDir, size, (percent) => hooks.onProgress(percent * 0.95))
-          vadModel = await ensureVadModel(dataDir, (percent) => hooks.onProgress(95 + percent * 0.05))
+          model = await ensureWhisperModel(dataDir, size, (percent) => hooks.onProgress(percent * 0.95, label))
+          vadModel = await ensureVadModel(dataDir, (percent) => hooks.onProgress(95 + percent * 0.05, label))
         } catch (error) {
           throw modelPrepError(error)
         }
@@ -70,7 +71,8 @@ export function createFactory(): SttProviderFactory {
       let modelPath: string
       try {
         const size = resolveVoskModelSize(getSetting(SETTINGS_KEYS.STT_VOSK_MODEL))
-        modelPath = await ensureSttModel(dataDir, size, (percent) => hooks.onProgress(percent))
+        const label = `vosk ${size}`
+        modelPath = await ensureSttModel(dataDir, size, (percent) => hooks.onProgress(percent, label))
       } catch (error) {
         throw modelPrepError(error)
       }

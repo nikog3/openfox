@@ -14,12 +14,12 @@ vi.stubGlobal('localStorage', {
   removeItem: vi.fn(),
 })
 
-const { wsSendMock, wsSubscribeMock, wsConnectMock, wsDisconnectMock, wsStatusMock } = vi.hoisted(() => ({
+const { wsSendMock, wsSubscribeMock, wsConnectMock, wsDisconnectMock, wsStatusHandlers } = vi.hoisted(() => ({
   wsSendMock: vi.fn(() => 'message-id'),
   wsSubscribeMock: vi.fn(() => () => undefined),
   wsConnectMock: vi.fn(async () => undefined),
   wsDisconnectMock: vi.fn(() => undefined),
-  wsStatusMock: vi.fn(() => undefined),
+  wsStatusHandlers: [] as ((s: string) => void)[],
 }))
 
 vi.mock('../../lib/ws', () => ({
@@ -28,7 +28,9 @@ vi.mock('../../lib/ws', () => ({
     subscribe: wsSubscribeMock,
     connect: wsConnectMock,
     disconnect: wsDisconnectMock,
-    onStatusChange: wsStatusMock,
+    onStatusChange: (handler: (s: string) => void) => {
+      wsStatusHandlers.push(handler)
+    },
   },
 }))
 
@@ -48,13 +50,17 @@ async function loadSessionStore(): Promise<SessionStoreModule['useSessionStore']
   return module.useSessionStore
 }
 
+function emitStatus(status: string) {
+  wsStatusHandlers.forEach((h) => h(status))
+}
+
 describe('reconnect refreshes current session content', () => {
   beforeEach(() => {
     wsSendMock.mockClear()
     wsSubscribeMock.mockClear()
     wsConnectMock.mockClear()
     wsDisconnectMock.mockClear()
-    wsStatusMock.mockClear()
+    wsStatusHandlers.length = 0
     fetchMock.mockClear()
   })
 
@@ -82,8 +88,7 @@ describe('reconnect refreshes current session content', () => {
     vi.runAllTimers()
     vi.useRealTimers()
 
-    const cb = (wsStatusMock.mock.calls[0] as Array<(s: string) => void>)[0]!
-    ;(cb as (s: string) => void)('connected')
+    emitStatus('connected')
 
     expect(loadSessionSpy).toHaveBeenCalledWith('session-active')
   })
@@ -103,8 +108,7 @@ describe('reconnect refreshes current session content', () => {
     vi.runAllTimers()
     vi.useRealTimers()
 
-    const cb = (wsStatusMock.mock.calls[0] as Array<(s: string) => void>)[0]!
-    ;(cb as (s: string) => void)('connected')
+    emitStatus('connected')
 
     expect(loadSessionSpy).not.toHaveBeenCalled()
   })
@@ -151,8 +155,7 @@ describe('reconnect refreshes current session content', () => {
     vi.runAllTimers()
     vi.useRealTimers()
 
-    const cb = (wsStatusMock.mock.calls[0] as Array<(s: string) => void>)[0]!
-    ;(cb as (s: string) => void)('connected')
+    emitStatus('connected')
 
     expect(refreshSpy).toHaveBeenCalled()
   })
@@ -204,13 +207,12 @@ describe('reconnect refreshes current session content', () => {
 
     // First connect + load
     await useSessionStore.getState().connect()
-    const cb = (wsStatusMock.mock.calls[0] as Array<(s: string) => void>)[0]!
-    ;(cb as (s: string) => void)('connected')
+    emitStatus('connected')
     await vi.runAllTimersAsync()
 
     // Automatic reconnect: reconnecting clears the sequential guard
-    ;(cb as (s: string) => void)('reconnecting')
-    ;(cb as (s: string) => void)('connected')
+    emitStatus('reconnecting')
+    emitStatus('connected')
     await vi.runAllTimersAsync()
     vi.useRealTimers()
 

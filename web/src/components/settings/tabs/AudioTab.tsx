@@ -51,6 +51,7 @@ function EngineOptionsSection({
   modelLabel,
   downloaded,
   downloadProgress,
+  downloadModel,
   deletingModel,
   onDownload,
   onDelete,
@@ -66,6 +67,7 @@ function EngineOptionsSection({
   modelLabel: string
   downloaded: boolean
   downloadProgress: number | null
+  downloadModel: string | null
   deletingModel: boolean
   onDownload: () => void
   onDelete: () => void
@@ -154,10 +156,17 @@ function EngineOptionsSection({
               />
             </div>
             <div className="mt-1 text-xs text-text-muted">
-              {t(
-                { en: 'Downloading… {{percent}}%', fr: 'Téléchargement… {{percent}} %' },
-                { percent: Math.round(downloadProgress) },
-              )}
+              {downloadModel
+                ? t(
+                    { en: 'Downloading {{model}}… {{percent}}%', fr: 'Téléchargement de {{model}}… {{percent}} %' },
+                    { model: downloadModel, percent: Math.round(downloadProgress) },
+                  )
+                : t(
+                    { en: 'Downloading… {{percent}}%', fr: 'Téléchargement… {{percent}} %' },
+                    {
+                      percent: Math.round(downloadProgress),
+                    },
+                  )}
             </div>
           </div>
         )}
@@ -207,6 +216,7 @@ export function AudioTab() {
     voskModel,
   )
   const downloadProgress = useSttStore((s) => s.downloadProgress)
+  const downloadModel = useSttStore((s) => s.downloadModel)
   const downloadWsError = useSttStore((s) => s.downloadError)
   const downloaded = useSttStore((s) => s.downloaded)
   const startModelDownload = useSttStore((s) => s.startModelDownload)
@@ -390,8 +400,8 @@ export function AudioTab() {
           <h3 className="text-sm font-medium text-text-primary mb-1">{t({ en: 'Debug', fr: 'Débogage' })}</h3>
           <p className="text-xs text-text-muted mb-3">
             {t({
-              en: 'Log STT events to the browser console (F12) to troubleshoot dictation.',
-              fr: 'Journalise les événements STT dans la console du navigateur (F12) pour dépanner la dictée.',
+              en: 'Log STT events to the server console (stdout) to troubleshoot dictation.',
+              fr: 'Journalise les événements STT dans la console serveur (stdout) pour dépanner la dictée.',
             })}
           </p>
           <div className="flex items-center justify-between">
@@ -420,6 +430,7 @@ export function AudioTab() {
           modelLabel={voskModelLabel}
           downloaded={sttStatus?.vosk.downloaded === true}
           downloadProgress={downloadProgress}
+          downloadModel={downloadModel}
           deletingModel={deletingModel}
           onDownload={() => startModelDownload(voskModel)}
           onDelete={() => deleteModel(voskModel)}
@@ -442,6 +453,7 @@ export function AudioTab() {
           modelLabel={modelLabel}
           downloaded={sttStatus?.whisper.downloaded === true}
           downloadProgress={downloadProgress}
+          downloadModel={downloadModel}
           deletingModel={deletingModel}
           onDownload={() => startModelDownload(whisperModel)}
           onDelete={() => deleteModel(whisperModel)}

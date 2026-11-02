@@ -1,4 +1,8 @@
+import { serverT } from '../i18n.js'
 import type { SttEvent, SttEventListener, SttProvider, SttProviderFactory, SttState } from './types.js'
+
+const FINALIZE_TIMEOUT_MS = 120_000
+const FINALIZE_TIMEOUT_ERROR = 'stt-finalize-timeout'
 
 export class SttService {
   private state: SttState = 'off'
@@ -8,7 +12,10 @@ export class SttService {
   private listeners = new Set<SttEventListener>()
   private generation = 0
 
-  constructor(private readonly factory: SttProviderFactory) {}
+  constructor(
+    private readonly factory: SttProviderFactory,
+    private readonly finalizeTimeoutMs: number = FINALIZE_TIMEOUT_MS,
+  ) {}
 
   getState(): SttState {
     return this.state
@@ -53,9 +60,20 @@ export class SttService {
           await old.dispose()
         }
         provider = await this.factory.create({
-          onPartial: (text) => this.emit({ type: 'partial', text }),
-          onActivity: (speaking) => this.emit({ type: 'activity', speaking }),
-          onProgress: (percent) => this.emit({ type: 'progress', percent, phase: 'model' }),
+          onPartial: (text) => {
+            if (this.provider !== provider) return
+            this.emit({ type: 'partial', text })
+          },
+          onActivity: (speaking) => {
+            if (this.provider !== provider) return
+            this.emit({ type: 'activity', speaking })
+          },
+          onProgress: (percent, model) =>
+            this.emit({ type: 'progress', percent, phase: 'model', ...(model ? { model } : {}) }),
+          onFinalizeProgress: (percent) => {
+            if (this.provider !== provider) return
+            this.emit({ type: 'progress', percent })
+          },
         })
       }
       if (generation !== this.generation) {
@@ -104,9 +122,20 @@ export class SttService {
   }
 
   async stop(): Promise<string> {
-    this.generation++
+    const generation = ++this.generation
     if (this.state === 'loading') {
       this.pendingAudio = []
+      this.setState('off')
+      this.emit({ type: 'final', text: '' })
+      return ''
+    }
+    if (this.state === 'transcribing') {
+      // Cancel an in-flight transcription. The abandoned finalize keeps
+      // running on its own provider reference, but its events are dropped
+      // (generation + provider-identity guards) and the next start() gets a
+      // fresh provider.
+      this.provider = null
+      this.providerKey = null
       this.setState('off')
       this.emit({ type: 'final', text: '' })
       return ''
@@ -116,19 +145,41 @@ export class SttService {
     }
     const provider = this.provider
     this.setState('transcribing')
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
     try {
-      const text = await provider.finalize()
+      const text = await new Promise<string>((resolve, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(FINALIZE_TIMEOUT_ERROR)), this.finalizeTimeoutMs)
+        provider.finalize().then(resolve, reject)
+      })
+      if (generation !== this.generation) return ''
       this.emit({ type: 'final', text })
       this.setState('off')
       return text
     } catch (error) {
+      if (generation !== this.generation) return ''
       this.provider = null
       this.providerKey = null
-      await provider.dispose()
+      try {
+        await provider.dispose()
+      } catch {
+        // a dispose failure must not mask the original error
+      }
       this.setState('off')
-      this.emit({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+      this.emit({ type: 'error', message: this.finalizeErrorMessage(error) })
       return ''
+    } finally {
+      clearTimeout(timeoutId)
     }
+  }
+
+  private finalizeErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message === FINALIZE_TIMEOUT_ERROR) {
+      return serverT({
+        en: 'Transcription timed out, please try again with a shorter recording',
+        fr: 'La transcription a dépassé le délai maximum, réessayez avec un enregistrement plus court',
+      })
+    }
+    return error instanceof Error ? error.message : String(error)
   }
 
   async dispose(): Promise<void> {

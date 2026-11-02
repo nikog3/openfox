@@ -17,6 +17,7 @@ import {
   createSttModelDeletedMessage,
 } from './protocol.js'
 import { getSttService } from '../stt/index.js'
+import type { SttEvent } from '../stt/types.js'
 import { handleTerminalMessage, unsubscribeAllFromTerminal } from './terminal.js'
 import type { Config } from '../config.js'
 import type { LLMClientWithModel } from '../llm/client.js'
@@ -57,6 +58,43 @@ const MSG_SESSION_IS_RUNNING: Translation = {
   fr: 'La session est déjà en cours d’exécution',
 }
 const MSG_UNKNOWN_ERROR: Translation = { en: 'Unknown error', fr: 'Erreur inconnue' }
+
+function isSttDebugEnabled(): boolean {
+  return getSetting(SETTINGS_KEYS.STT_DEBUG) === 'true'
+}
+
+function logSttEvent(event: SttEvent): void {
+  if (!isSttDebugEnabled()) return
+  switch (event.type) {
+    case 'state':
+      logger.info(`[stt] state: ${event.state}`)
+      break
+    case 'partial':
+      logger.info(`[stt] partial: ${event.text}`)
+      break
+    case 'final':
+      logger.info(`[stt] final: ${event.text}`)
+      break
+    case 'error':
+      logger.info(`[stt] error: ${event.message}`)
+      break
+    case 'activity':
+      logger.info(`[stt] activity: speaking=${event.speaking}`)
+      break
+    case 'progress':
+      logger.info(
+        `[stt] progress: ${event.percent === null ? 'init' : `${Math.round(event.percent)}%`}` +
+          (event.phase ? ` (${event.phase})` : '') +
+          (event.model ? ` ${event.model}` : ''),
+      )
+      break
+  }
+}
+
+function logSttMessage(message: string, detail?: Record<string, unknown>): void {
+  if (!isSttDebugEnabled()) return
+  logger.info(`[stt] ${message}`, detail)
+}
 
 // Resolved once initial MCP connections settle — checkDynamic awaits this
 let resolveMcpReady: (() => void) | null = null
@@ -709,6 +747,7 @@ export function createWebSocketServer(
   let sttActiveWs: WebSocket | null = null
   let sttDownloading = false
   getSttService().subscribe((event) => {
+    logSttEvent(event)
     if (!sttActiveSessionId) return
     const sid = sttActiveSessionId
     if (event.type === 'partial') {
@@ -724,7 +763,7 @@ export function createWebSocketServer(
     } else if (event.type === 'activity') {
       broadcastForSession(sid, createSttActivityMessage(event.speaking, sid))
     } else if (event.type === 'progress') {
-      broadcastForSession(sid, createSttProgressMessage(event.percent, sid, event.phase))
+      broadcastForSession(sid, createSttProgressMessage(event.percent, sid, event.phase, event.model))
     }
   })
 
@@ -811,6 +850,7 @@ export function createWebSocketServer(
           if (message.type === 'stt.start') {
             const payload = message.payload as SttStartPayload
             const sessionId = payload?.sessionId ?? sttClient.activeSessionId
+            logSttMessage('stt.start', { sessionId })
             if (!sessionId) {
               sttSend(
                 createErrorMessage(
@@ -840,9 +880,11 @@ export function createWebSocketServer(
               await getSttService().feedAudio(Buffer.from(payload.chunk, 'base64'))
             }
           } else if (message.type === 'stt.stop') {
+            logSttMessage('stt.stop')
             await getSttService().stop()
           } else if (message.type === 'stt.download_model') {
             const payload = message.payload as SttModelDownloadPayload
+            logSttMessage('stt.download_model', { model: payload?.model ?? 'default' })
             if (getSttService().getState() !== 'off') {
               sttSend(
                 createSttModelDownloadedMessage(
@@ -879,15 +921,17 @@ export function createWebSocketServer(
                 if (engine === 'vosk') {
                   const { resolveVoskModelSize, ensureSttModel } = await import('../stt/model.js')
                   const size = resolveVoskModelSize(payload?.model ?? getSetting(SETTINGS_KEYS.STT_VOSK_MODEL))
+                  const label = `vosk ${size}`
                   await ensureSttModel(dataDir, size, (percent) => {
-                    sttSend(createSttProgressMessage(percent))
+                    sttSend(createSttProgressMessage(percent, undefined, undefined, label))
                   })
                   sttSend(createSttModelDownloadedMessage(true, size))
                 } else {
                   const { resolveWhisperModelSize, ensureWhisperModel } = await import('../stt/whisper-model.js')
                   const size = resolveWhisperModelSize(payload?.model ?? getSetting(SETTINGS_KEYS.STT_WHISPER_MODEL))
+                  const label = `whisper ${size}`
                   await ensureWhisperModel(dataDir, size, (percent) => {
-                    sttSend(createSttProgressMessage(percent))
+                    sttSend(createSttProgressMessage(percent, undefined, undefined, label))
                   })
                   sttSend(createSttModelDownloadedMessage(true, size))
                 }
@@ -901,6 +945,7 @@ export function createWebSocketServer(
             })()
           } else if (message.type === 'stt.delete_model') {
             const payload = message.payload as SttModelDownloadPayload
+            logSttMessage('stt.delete_model', { model: payload?.model ?? 'default' })
             if (getSttService().getState() !== 'off') {
               sttSend(
                 createSttModelDeletedMessage(

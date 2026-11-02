@@ -1337,3 +1337,31 @@ describe('chat.tool_preparing handler', () => {
     expect(preparing2?.arguments).toBe('{"path":"a.ts","old_string":"a","new_string":"b"}')
   })
 })
+
+describe('settings.updated handler', () => {
+  it('writes the new value through the setting cache', async () => {
+    const useSessionStore = await loadSessionStore()
+    const { settingResource, SETTINGS_KEYS } = await import('../../lib/resources')
+    const { snapshot } = await import('../../lib/resourceCache')
+
+    useSessionStore.getState().handleServerMessage({
+      type: 'settings.updated',
+      payload: { key: SETTINGS_KEYS.STT_DEBUG, value: 'true' },
+    })
+
+    expect(snapshot(settingResource.keyOf(SETTINGS_KEYS.STT_DEBUG)).data).toBe('true')
+  })
+
+  it('ignores malformed payloads', async () => {
+    const useSessionStore = await loadSessionStore()
+    const { settingResource, SETTINGS_KEYS } = await import('../../lib/resources')
+    const { snapshot } = await import('../../lib/resourceCache')
+
+    useSessionStore.getState().handleServerMessage({
+      type: 'settings.updated',
+      payload: { key: SETTINGS_KEYS.STT_DEBUG },
+    })
+
+    expect(snapshot(settingResource.keyOf(SETTINGS_KEYS.STT_DEBUG)).data).toBeUndefined()
+  })
+})

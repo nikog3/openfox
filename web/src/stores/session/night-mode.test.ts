@@ -13,13 +13,16 @@ vi.stubGlobal('localStorage', {
   removeItem: vi.fn(),
 })
 
-const { wsSendMock, wsSubscribeMock, wsConnectMock, wsDisconnectMock, wsStatusMock } = vi.hoisted(() => ({
-  wsSendMock: vi.fn(() => 'message-id'),
-  wsSubscribeMock: vi.fn(() => () => undefined),
-  wsConnectMock: vi.fn(async () => undefined),
-  wsDisconnectMock: vi.fn(() => undefined),
-  wsStatusMock: vi.fn(() => undefined),
-}))
+const { wsSendMock, wsSubscribeMock, wsConnectMock, wsDisconnectMock, wsStatusMock, wsStatusHandlers } = vi.hoisted(
+  () => ({
+    wsSendMock: vi.fn(() => 'message-id'),
+    wsSubscribeMock: vi.fn(() => () => undefined),
+    wsConnectMock: vi.fn(async () => undefined),
+    wsDisconnectMock: vi.fn(() => undefined),
+    wsStatusMock: vi.fn(() => undefined),
+    wsStatusHandlers: [] as ((s: string) => void)[],
+  }),
+)
 
 vi.mock('../../lib/ws', () => ({
   send: wsSendMock,
@@ -27,6 +30,15 @@ vi.mock('../../lib/ws', () => ({
   connect: wsConnectMock,
   disconnect: wsDisconnectMock,
   onStatusChange: wsStatusMock,
+  wsClient: {
+    send: wsSendMock,
+    subscribe: wsSubscribeMock,
+    connect: wsConnectMock,
+    disconnect: wsDisconnectMock,
+    onStatusChange: (handler: (s: string) => void) => {
+      wsStatusHandlers.push(handler)
+    },
+  },
 }))
 
 vi.mock('../../lib/sound', () => ({

@@ -2005,13 +2005,6 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
     res.json({ key, value })
   })
 
-  app.get('/api/settings/:key', async (req, res) => {
-    const { getSetting, SETTINGS_DEFAULTS } = await import('./db/settings.js')
-    const key = req.params.key
-    const value = getSetting(key) ?? SETTINGS_DEFAULTS[key] ?? null
-    res.json({ key, value })
-  })
-
   app.put('/api/settings/:key', async (req, res) => {
     const { setSetting } = await import('./db/settings.js')
     const key = req.params.key
@@ -2020,6 +2013,9 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
       return res.status(400).json({ error: 'value is required' })
     }
     setSetting(key, value)
+    // Broadcast to every connected client so all tabs/windows converge on the
+    // new value immediately (their setting caches write it through on receipt).
+    wssExports.broadcastAll(createServerMessage('settings.updated', { key, value }))
     res.json({ key, value })
   })
 

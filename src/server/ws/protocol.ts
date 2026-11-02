@@ -538,8 +538,9 @@ export function createSttProgressMessage(
   percent: number | null,
   sessionId?: string,
   phase?: SttProgressPhase,
+  model?: string,
 ): ServerMessage<SttProgressPayload> {
-  const msg = createServerMessage('stt.progress', { percent, ...(phase ? { phase } : {}) })
+  const msg = createServerMessage('stt.progress', { percent, ...(phase ? { phase } : {}), ...(model ? { model } : {}) })
   if (sessionId) {
     msg.sessionId = sessionId
   }

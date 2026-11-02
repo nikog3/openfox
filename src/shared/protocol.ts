@@ -158,6 +158,7 @@ export type ServerMessageType =
   | 'context.preview' // Preview diff for dynamic context changes
   // Settings events
   | 'settings.value' // Setting value response
+  | 'settings.updated' // A setting changed; clients write the value through their cache
   // Provider events
   | 'provider.changed' // Active provider was switched
   // Message queue events
@@ -216,6 +217,12 @@ export interface ProjectListPayload {
 
 export interface ProjectDeletedPayload {
   projectId: string
+}
+
+// Settings payloads
+export interface SettingsUpdatedPayload {
+  key: string
+  value: string
 }
 
 // Canonical structured shape for ask_user choice options. The server
@@ -703,6 +710,7 @@ export type SttProgressPhase = 'init' | 'model' | 'ready'
 export interface SttProgressPayload {
   percent: number | null
   phase?: SttProgressPhase
+  model?: string
 }
 
 export interface SttModelDownloadedPayload {

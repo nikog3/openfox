@@ -34,6 +34,7 @@ import type {
   QueueStatePayload,
   SessionCreatedPayload,
   SessionNameGeneratingPayload,
+  SettingsUpdatedPayload,
 } from '@shared/protocol.js'
 import { useDevServerStore } from '../dev-server'
 import { useBackgroundProcessesStore } from '../background-processes'
@@ -1309,6 +1310,16 @@ export function handleServerMessage(
       break
     }
 
+    case 'settings.updated': {
+      const payload = message.payload as SettingsUpdatedPayload
+      if (payload && typeof payload.key === 'string' && typeof payload.value === 'string') {
+        // WS write-through: every tab converges on the new value immediately
+        // instead of waiting out the cache freshness window.
+        settingResource.write(payload.value, payload.key)
+      }
+      break
+    }
+
     case 'git.status': {
       const payload = message.payload as {
         branch: string | null
@@ -1387,11 +1398,11 @@ export function handleServerMessage(
     }
 
     case 'stt.progress': {
-      const payload = message.payload as { percent: number | null; phase?: 'init' | 'model' | 'ready' }
+      const payload = message.payload as { percent: number | null; phase?: 'init' | 'model' | 'ready'; model?: string }
       if (message.sessionId) {
-        useSttStore.getState().handleProgress(payload.percent, payload.phase)
+        useSttStore.getState().handleProgress(payload.percent, payload.phase, payload.model)
       } else {
-        useSttStore.getState().handleDownloadProgress(payload.percent ?? 0)
+        useSttStore.getState().handleDownloadProgress(payload.percent ?? 0, payload.model)
       }
       break
     }

@@ -35,9 +35,29 @@ function createFactory(createImpl: (hooks: SttProviderHooks) => Promise<SttProvi
   }
 }
 
-function createService(factory: SttProviderFactory): SttService & { events: SttEvent[] } {
+function createHangingProvider(): SttProvider & {
+  resolveFinalize: (text: string) => void
+  finalize: ReturnType<typeof vi.fn>
+  dispose: ReturnType<typeof vi.fn>
+} {
+  let resolveFinalize: (text: string) => void = () => {}
+  return {
+    acceptAudio: vi.fn(async () => {}),
+    finalize: vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveFinalize = resolve
+        }),
+    ),
+    reset: vi.fn(async () => {}),
+    dispose: vi.fn(async () => {}),
+    resolveFinalize: (text: string) => resolveFinalize(text),
+  }
+}
+
+function createService(factory: SttProviderFactory, finalizeTimeoutMs?: number): SttService & { events: SttEvent[] } {
   const events: SttEvent[] = []
-  const service = new SttService(factory)
+  const service = finalizeTimeoutMs === undefined ? new SttService(factory) : new SttService(factory, finalizeTimeoutMs)
   service.subscribe((event) => {
     events.push(event)
   })
@@ -147,6 +167,23 @@ describe('SttService', () => {
     await service.feedAudio(Buffer.from([1]))
     expect(service.events).toContainEqual({ type: 'activity', speaking: true })
     expect(service.events).toContainEqual({ type: 'progress', percent: 42, phase: 'model' })
+  })
+
+  it('includes the model label in progress events', async () => {
+    const service = createService(
+      createFactory(async (hooks) => {
+        const provider = createMockProvider()
+        return {
+          ...provider,
+          acceptAudio: vi.fn(async () => {
+            hooks.onProgress(17, 'whisper small')
+          }),
+        }
+      }),
+    )
+    await service.start()
+    await service.feedAudio(Buffer.from([1]))
+    expect(service.events).toContainEqual({ type: 'progress', percent: 17, phase: 'model', model: 'whisper small' })
   })
 
   it('emits init and ready phase progress events around provider creation', async () => {
@@ -313,6 +350,96 @@ describe('SttService', () => {
     expect(provider.dispose).toHaveBeenCalledTimes(1)
     const errors = service.events.filter((e) => e.type === 'error')
     expect(errors).toEqual([{ type: 'error', message: 'finalize failed' }])
+  })
+
+  it('finalize timeout emits a friendly error, disposes the provider, and returns to off', async () => {
+    const provider = createHangingProvider()
+    const service = createService(
+      createFactory(async () => provider),
+      50,
+    )
+    await service.start()
+    const text = await service.stop()
+    expect(text).toBe('')
+    expect(service.getState()).toBe('off')
+    expect(provider.dispose).toHaveBeenCalledTimes(1)
+    const errors = service.events.filter((e) => e.type === 'error')
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toMatch(/timed out/i)
+    const finals = service.events.filter((e) => e.type === 'final')
+    expect(finals).toEqual([])
+  })
+
+  it('a second stop cancels an in-flight transcription, drops its late result, and allows a new dictation', async () => {
+    const hanging = createHangingProvider()
+    const next = createMockProvider({ finalText: 'hello' })
+    let calls = 0
+    const service = createService({
+      configKey: () => 'a',
+      create: async () => {
+        calls++
+        return calls === 1 ? hanging : next
+      },
+    })
+    await service.start()
+    const firstStop = service.stop()
+    expect(service.getState()).toBe('transcribing')
+    const text = await service.stop()
+    expect(text).toBe('')
+    expect(service.getState()).toBe('off')
+    expect(hanging.dispose).not.toHaveBeenCalled()
+    hanging.resolveFinalize('stale')
+    await firstStop
+    expect(service.events.filter((e) => e.type === 'final')).toEqual([{ type: 'final', text: '' }])
+    await service.start()
+    expect(service.getState()).toBe('listening')
+    expect(calls).toBe(2)
+    const finalText = await service.stop()
+    expect(finalText).toBe('hello')
+  })
+
+  it('drops partial, activity, and progress events from a cancelled transcription', async () => {
+    const staleHooks: { current: SttProviderHooks | null } = { current: null }
+    const hanging = createHangingProvider()
+    const service = createService({
+      configKey: () => 'a',
+      create: async (hooks) => {
+        staleHooks.current = hooks
+        return hanging
+      },
+    })
+    await service.start()
+    const firstStop = service.stop()
+    await service.stop()
+    staleHooks.current?.onPartial('stale')
+    staleHooks.current?.onActivity(true)
+    staleHooks.current?.onFinalizeProgress?.(50)
+    hanging.resolveFinalize('stale')
+    await firstStop
+    expect(service.events.some((e) => e.type === 'partial')).toBe(false)
+    expect(service.events.some((e) => e.type === 'activity')).toBe(false)
+    expect(service.events.some((e) => e.type === 'progress' && 'phase' in e === false)).toBe(false)
+    expect(service.events.filter((e) => e.type === 'final')).toEqual([{ type: 'final', text: '' }])
+  })
+
+  it('emits finalize progress events without a phase', async () => {
+    const service = createService(
+      createFactory(async (hooks) => {
+        const provider = createMockProvider({ finalText: 'hello' })
+        return {
+          ...provider,
+          finalize: vi.fn(async () => {
+            hooks.onFinalizeProgress?.(25)
+            hooks.onFinalizeProgress?.(100)
+            return 'hello'
+          }),
+        }
+      }),
+    )
+    await service.start()
+    await service.stop()
+    expect(service.events).toContainEqual({ type: 'progress', percent: 25 })
+    expect(service.events).toContainEqual({ type: 'progress', percent: 100 })
   })
 
   it('unsubscribe removes the listener', () => {

@@ -10,7 +10,8 @@ export interface SttProvider {
 export interface SttProviderHooks {
   onPartial: (text: string) => void
   onActivity: (speaking: boolean) => void
-  onProgress: (percent: number) => void
+  onProgress: (percent: number, model?: string) => void
+  onFinalizeProgress?: (percent: number) => void
 }
 
 export interface SttProviderFactory {
@@ -24,7 +25,7 @@ export type SttEvent =
   | { type: 'state'; state: SttState }
   | { type: 'partial'; text: string }
   | { type: 'activity'; speaking: boolean }
-  | { type: 'progress'; percent: number | null; phase?: SttProgressPhase }
+  | { type: 'progress'; percent: number | null; phase?: SttProgressPhase; model?: string }
   | { type: 'final'; text: string }
   | { type: 'error'; message: string }
 

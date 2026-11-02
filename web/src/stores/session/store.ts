@@ -424,41 +424,6 @@ export const useSessionStore = create<SessionState>((set, get) => {
         return
       }
 
-      wsClient.onStatusChange((newStatus) => {
-        set({ connectionStatus: newStatus })
-        if (newStatus === 'connected') {
-          // Refresh the session list contextually and leanly. The homepage
-          // owns its own curated load (listHomeSessions), so we must NOT fire
-          // a heavyweight global list here. When a session is open, refresh
-          // that project's bounded list so the sidebar stays fresh after a
-          // reconnect. On the split route, the control panel needs the full
-          // curated list across projects — a per-project refresh would shrink
-          // it to a single project.
-          if (isSplitRoute()) {
-            get().listHomeSessions()
-          } else {
-            const activeProjectId = get().currentSession?.projectId
-            if (activeProjectId) {
-              get().listSessions(activeProjectId)
-            }
-          }
-          void projectsResource.refresh()
-          // Reload the active session on (re)connect only when it has not been
-          // loaded yet (first connect, or after any disconnect/reconnect which
-          // clears loadedSessionIds). The route-level useSessionLoader already
-          // covers the initial navigation, so this avoids a duplicate fetch on
-          // first load. Clearing on 'reconnecting'/'disconnected' also covers
-          // automatic WS reconnects (ws.ts), so the client re-subscribes via
-          // session.load after every connection drop.
-          const currentSessionId = get().focusedSessionId ?? get().currentSession?.id
-          if (currentSessionId) {
-            void get().loadSession(currentSessionId)
-          }
-        } else if (newStatus === 'disconnected' || newStatus === 'reconnecting') {
-          loadedSessionIds.clear()
-        }
-      })
-
       try {
         await wsClient.connect()
 
@@ -1360,5 +1325,45 @@ export const useSessionStore = create<SessionState>((set, get) => {
     handleServerMessage: (message) => {
       handleMessage(message, set, get)
     },
+  }
+})
+
+// Register the WS status handler exactly once, at module scope. connect() can
+// run again (StrictMode double-effect, manual reconnect): registering inside
+// it would stack a fresh handler each time and fire list refreshes twice per
+// status change.
+wsClient.onStatusChange((newStatus) => {
+  useSessionStore.setState({ connectionStatus: newStatus })
+  if (newStatus === 'connected') {
+    // Refresh the session list contextually and leanly. The homepage
+    // owns its own curated load (listHomeSessions), so we must NOT fire
+    // a heavyweight global list here. When a session is open, refresh
+    // that project's bounded list so the sidebar stays fresh after a
+    // reconnect. On the split route, the control panel needs the full
+    // curated list across projects — a per-project refresh would shrink
+    // it to a single project.
+    if (isSplitRoute()) {
+      useSessionStore.getState().listHomeSessions()
+    } else {
+      const activeProjectId = useSessionStore.getState().currentSession?.projectId
+      if (activeProjectId) {
+        useSessionStore.getState().listSessions(activeProjectId)
+      }
+    }
+    void projectsResource.refresh()
+    // Reload the active session on (re)connect only when it has not been
+    // loaded yet (first connect, or after any disconnect/reconnect which
+    // clears loadedSessionIds). The route-level useSessionLoader already
+    // covers the initial navigation, so this avoids a duplicate fetch on
+    // first load. Clearing on 'reconnecting'/'disconnected' also covers
+    // automatic WS reconnects (ws.ts), so the client re-subscribes via
+    // session.load after every connection drop.
+    const currentSessionId =
+      useSessionStore.getState().focusedSessionId ?? useSessionStore.getState().currentSession?.id
+    if (currentSessionId) {
+      void useSessionStore.getState().loadSession(currentSessionId)
+    }
+  } else if (newStatus === 'disconnected' || newStatus === 'reconnecting') {
+    loadedSessionIds.clear()
   }
 })

@@ -168,6 +168,7 @@ export function ChatInput({
   const sttLevel = useSttStore((s) => s.level)
   const sttSpeaking = useSttStore((s) => s.speaking)
   const sttProgress = useSttStore((s) => s.progress)
+  const sttLoadingModel = useSttStore((s) => s.loadingModel)
   const sttCaptureError = useSttStore((s) => s.captureError)
   const sttStart = useSttStore((s) => s.start)
   const sttStop = useSttStore((s) => s.stop)
@@ -175,9 +176,10 @@ export function ChatInput({
   const sttBaseInputRef = useRef('')
   const [sttElapsed, setSttElapsed] = useState(0)
   useEffect(() => {
-    if (sttStatus !== 'listening' && sttStatus !== 'loading') return
+    if (sttStatus !== 'listening' && sttStatus !== 'loading' && sttStatus !== 'transcribing') return
     const tick = () => {
-      const started = useSttStore.getState().startedAt
+      const stt = useSttStore.getState()
+      const started = sttStatus === 'transcribing' ? (stt.transcribingSince ?? stt.startedAt) : stt.startedAt
       setSttElapsed(started ? Math.max(0, Math.floor((Date.now() - started) / 1000)) : 0)
     }
     tick()
@@ -741,21 +743,21 @@ export function ChatInput({
       : isLoading
         ? t({ en: 'Cancel loading', fr: 'Annuler le chargement' })
         : isTranscribing
-          ? t({ en: 'Transcribing…', fr: 'Transcription…' })
+          ? t({ en: 'Cancel transcription', fr: 'Annuler la transcription' })
           : t({ en: 'Dictate', fr: 'Dictée' })
     return (
       <button
         type="button"
         onClick={() => {
-          if (!sessionId || isTranscribing) return
-          if (isListening || isLoading) {
+          if (!sessionId) return
+          if (isListening || isLoading || isTranscribing) {
             sttStop()
           } else {
             sttBaseInputRef.current = input
             void sttStart(sessionId)
           }
         }}
-        disabled={!sessionId || isTranscribing}
+        disabled={!sessionId}
         data-testid={mobile ? 'chat-mic-button-touch' : 'chat-mic-button'}
         title={label}
         aria-label={label}
@@ -764,16 +766,14 @@ export function ChatInput({
           isListening
             ? 'bg-accent-error/30 text-accent-error animate-pulse'
             : isTranscribing
-              ? 'bg-accent-primary/20 text-accent-primary'
+              ? 'bg-accent-error/20 text-accent-error hover:bg-accent-error/30'
               : 'bg-accent-primary/10 text-accent-primary hover:bg-accent-primary/20 disabled:opacity-30 disabled:cursor-not-allowed'
         }`}
       >
         {isListening ? (
           <StopIcon className="w-4 h-4" />
-        ) : isLoading ? (
+        ) : isLoading || isTranscribing ? (
           <XCloseIcon className="w-4 h-4" />
-        ) : isTranscribing ? (
-          <Spinner size="sm" />
         ) : (
           <MicIcon className="w-4 h-4" />
         )}
@@ -903,9 +903,13 @@ export function ChatInput({
                 <Spinner size="sm" />
                 {sttProgress !== null ? (
                   <span>
-                    {t({ en: 'Loading speech model…', fr: 'Chargement du modèle de dictée…' })}{' '}
+                    {sttLoadingModel
+                      ? t({ en: 'Loading {{model}}…', fr: 'Chargement de {{model}}…' }, { model: sttLoadingModel })
+                      : t({ en: 'Loading speech model…', fr: 'Chargement du modèle de dictée…' })}{' '}
                     {t({ en: '{{percent}}%', fr: '{{percent}} %' }, { percent: Math.round(sttProgress) })}
                   </span>
+                ) : sttLoadingModel ? (
+                  t({ en: 'Loading {{model}}…', fr: 'Chargement de {{model}}…' }, { model: sttLoadingModel })
                 ) : (
                   t({ en: 'Loading speech model…', fr: 'Chargement du modèle de dictée…' })
                 )}
@@ -940,9 +944,20 @@ export function ChatInput({
           )}
 
           {sttStatus === 'transcribing' && (
-            <div className="mb-2 p-2 bg-accent-primary/10 border border-accent-primary/30 rounded text-accent-primary text-sm flex items-center gap-2">
-              <Spinner size="sm" />
-              {t({ en: 'Transcribing…', fr: 'Transcription…' })}
+            <div className="mb-2 p-2 bg-accent-primary/10 border border-accent-primary/30 rounded text-accent-primary text-sm">
+              <div className="flex items-center gap-2">
+                <Spinner size="sm" />
+                {t({ en: 'Transcribing…', fr: 'Transcription…' })}
+                <span className="ml-auto text-xs tabular-nums">{formatSttElapsed(sttElapsed)}</span>
+              </div>
+              {sttProgress !== null && (
+                <div className="mt-1.5 h-1 rounded-full bg-accent-primary/20 overflow-hidden">
+                  <div
+                    className="h-full bg-accent-primary transition-[width] duration-200"
+                    style={{ width: `${sttProgress}%` }}
+                  />
+                </div>
+              )}
             </div>
           )}
 

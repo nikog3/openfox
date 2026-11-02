@@ -38,14 +38,17 @@ interface SttStore {
   speaking: boolean
   progress: number | null
   loadPhase: SttLoadPhase | null
+  loadingModel: string | null
   startedAt: number | null
   cancelled: boolean
   captureError: CaptureErrorCode | null
   downloadProgress: number | null
+  downloadModel: string | null
   downloadError: string | null
   downloaded: boolean | null
   deletingModel: boolean
   deleted: boolean | null
+  transcribingSince: number | null
   start: (sessionId: string) => Promise<void>
   stop: () => void
   handlePartial: (text: string) => void
@@ -53,9 +56,9 @@ interface SttStore {
   handleError: (message: string) => void
   handleState: (state: 'off' | 'loading' | 'listening' | 'transcribing') => void
   handleActivity: (speaking: boolean) => void
-  handleProgress: (percent: number | null, phase?: SttLoadPhase) => void
+  handleProgress: (percent: number | null, phase?: SttLoadPhase, model?: string) => void
   startModelDownload: (model: string) => void
-  handleDownloadProgress: (percent: number) => void
+  handleDownloadProgress: (percent: number, model?: string) => void
   handleModelDownloaded: (ok: boolean, error?: string) => void
   clearDownloadResult: () => void
   deleteModel: (model: string) => void
@@ -73,6 +76,7 @@ const clearedFields = {
   level: 0,
   speaking: false,
   progress: null,
+  loadingModel: null,
   cancelled: false,
   captureError: null,
 }
@@ -97,14 +101,17 @@ export const useSttStore = create<SttStore>()((set, get) => ({
   speaking: false,
   progress: null,
   loadPhase: null,
+  loadingModel: null,
   startedAt: null,
   cancelled: false,
   captureError: null,
   downloadProgress: null,
+  downloadModel: null,
   downloadError: null,
   downloaded: null,
   deletingModel: false,
   deleted: null,
+  transcribingSince: null,
 
   start: async (sessionId: string) => {
     if (get().status !== 'idle') return
@@ -141,6 +148,7 @@ export const useSttStore = create<SttStore>()((set, get) => ({
         speaking: false,
         progress: null,
         loadPhase: null,
+        loadingModel: null,
         startedAt: null,
         error:
           err instanceof Error
@@ -175,13 +183,20 @@ export const useSttStore = create<SttStore>()((set, get) => ({
         speaking: false,
         progress: null,
         loadPhase: null,
+        loadingModel: null,
         startedAt: null,
+        transcribingSince: null,
         cancelled: true,
       })
       logStt('cancelled during load', { elapsedMs })
       return
     }
-    set({ status: 'transcribing' })
+    if (status === 'transcribing') {
+      set({ cancelled: true })
+      logStt('cancel during transcription')
+      return
+    }
+    set({ status: 'transcribing', transcribingSince: Date.now() })
     logStt('stop')
   },
 
@@ -200,7 +215,9 @@ export const useSttStore = create<SttStore>()((set, get) => ({
         speaking: false,
         progress: null,
         loadPhase: null,
+        loadingModel: null,
         startedAt: null,
+        transcribingSince: null,
         cancelled: false,
       })
       logStt('final ignored (cancelled)', { text })
@@ -219,7 +236,9 @@ export const useSttStore = create<SttStore>()((set, get) => ({
       speaking: false,
       progress: null,
       loadPhase: null,
+      loadingModel: null,
       startedAt: null,
+      transcribingSince: null,
       cancelled: false,
     })
     logStt('final', { text })
@@ -238,7 +257,9 @@ export const useSttStore = create<SttStore>()((set, get) => ({
       speaking: false,
       progress: null,
       loadPhase: null,
+      loadingModel: null,
       startedAt: null,
+      transcribingSince: null,
       cancelled: false,
     })
     logStt('error', { message })
@@ -249,8 +270,32 @@ export const useSttStore = create<SttStore>()((set, get) => ({
   },
 
   handleState: (state: 'off' | 'loading' | 'listening' | 'transcribing') => {
-    if (state === 'off') return
+    if (state === 'off') {
+      if (get().status === 'idle') return
+      // The server dropped the session (timeout, cancel, dispose). Recover a
+      // stuck client — finalText is kept on purpose so its insertion effect
+      // does not re-run.
+      set({
+        status: 'idle',
+        sessionId: null,
+        partialText: '',
+        level: 0,
+        speaking: false,
+        progress: null,
+        loadPhase: null,
+        loadingModel: null,
+        startedAt: null,
+        transcribingSince: null,
+        cancelled: false,
+      })
+      logStt('state off (reset)')
+      return
+    }
     logStt('state', { state })
+    if (state === 'transcribing' && get().status !== 'transcribing') {
+      set({ status: state, transcribingSince: Date.now() })
+      return
+    }
     set({ status: state })
   },
 
@@ -258,40 +303,42 @@ export const useSttStore = create<SttStore>()((set, get) => ({
     set({ speaking })
   },
 
-  handleProgress: (percent: number | null, phase?: SttLoadPhase) => {
+  handleProgress: (percent: number | null, phase?: SttLoadPhase, model?: string) => {
     if (phase) {
-      set({ progress: percent, loadPhase: phase })
+      set({ progress: percent, loadPhase: phase, ...(model ? { loadingModel: model } : {}) })
     } else {
       set({ progress: percent })
     }
-    logStt('progress', { percent, phase })
+    logStt('progress', { percent, phase, model })
   },
 
   startModelDownload: (model: string) => {
     logStt('model download start', { model })
-    set({ downloadProgress: 0, downloadError: null, downloaded: null })
+    set({ downloadProgress: 0, downloadModel: null, downloadError: null, downloaded: null })
     try {
       wsClient.send('stt.download_model', { model })
     } catch {
       set({
         downloadProgress: null,
+        downloadModel: null,
         downloadError: t({ en: 'Model download failed', fr: 'Échec du téléchargement du modèle' }),
       })
     }
   },
 
-  handleDownloadProgress: (percent: number) => {
-    set({ downloadProgress: percent })
+  handleDownloadProgress: (percent: number, model?: string) => {
+    set({ downloadProgress: percent, ...(model ? { downloadModel: model } : {}) })
   },
 
   handleModelDownloaded: (ok, error) => {
     logStt('model downloaded', { ok, error })
     if (ok) {
-      set({ downloaded: true, downloadProgress: null, downloadError: null })
+      set({ downloaded: true, downloadProgress: null, downloadModel: null, downloadError: null })
     } else {
       set({
         downloaded: false,
         downloadProgress: null,
+        downloadModel: null,
         downloadError: error ?? t({ en: 'Model download failed', fr: 'Échec du téléchargement du modèle' }),
       })
     }
@@ -317,7 +364,14 @@ export const useSttStore = create<SttStore>()((set, get) => ({
   handleModelDeleted: (ok, error) => {
     logStt('model deleted', { ok, error })
     if (ok) {
-      set({ deletingModel: false, deleted: true, downloadError: null, downloadProgress: null, downloaded: null })
+      set({
+        deletingModel: false,
+        deleted: true,
+        downloadError: null,
+        downloadProgress: null,
+        downloadModel: null,
+        downloaded: null,
+      })
     } else {
       set({
         deletingModel: false,
@@ -342,6 +396,15 @@ export const useSttStore = create<SttStore>()((set, get) => ({
       sessionId: null,
       loadPhase: null,
       startedAt: null,
+      transcribingSince: null,
     })
   },
 }))
+
+// A WS reconnect means the server state is unknown (a stuck transcription was
+// lost with the socket). Reset any in-flight dictation so the UI is usable.
+wsClient.onStatusChange((status) => {
+  if (status === 'connected' && useSttStore.getState().status !== 'idle') {
+    useSttStore.getState().reset()
+  }
+})

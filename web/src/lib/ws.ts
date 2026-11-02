@@ -15,7 +15,7 @@ type StatusHandler = (status: ConnectionStatus) => void
 export class WebSocketClient {
   private ws: WebSocket | null = null
   private handlers = new Set<MessageHandler>()
-  private statusHandler: StatusHandler | null = null
+  private statusHandlers = new Set<StatusHandler>()
   private baseUrl: string
   private isReconnecting = false
   private connectingPromise: Promise<void> | null = null
@@ -100,7 +100,7 @@ export class WebSocketClient {
     }
     this.connectingPromise = null
     this.reconnectAttempts = 0
-    this.statusHandler?.('disconnected')
+    this.statusHandlers.forEach((h) => h('disconnected'))
     this.connect().catch(() => {
       // a failed attempt closes the socket, which resumes the normal backoff
     })
@@ -132,19 +132,12 @@ export class WebSocketClient {
   }
 
   onStatusChange(handler: StatusHandler): void {
-    this.statusHandler = handler
+    this.statusHandlers.add(handler)
   }
 
   connect(): Promise<void> {
     if (this.ws?.readyState === WebSocket.OPEN) {
       return Promise.resolve()
-    }
-
-    this.lastCloseCode = 0
-    this.isReconnecting = false
-
-    if (this.connectingPromise && this.ws?.readyState === WebSocket.CONNECTING) {
-      return this.connectingPromise
     }
 
     this.lastCloseCode = 0
@@ -175,7 +168,7 @@ export class WebSocketClient {
           this.reconnectAttempts = 0
           this.resumeRequested = false
           this.connectingPromise = null
-          this.statusHandler?.('connected')
+          this.statusHandlers.forEach((h) => h('connected'))
           resolve()
         }
 
@@ -184,11 +177,11 @@ export class WebSocketClient {
           this.lastCloseCode = event.code
           if (this.ws?.readyState === WebSocket.CONNECTING) {
             this.connectingPromise = null
-            this.statusHandler?.('disconnected')
+            this.statusHandlers.forEach((h) => h('disconnected'))
             reject(new Error(`Connection closed: ${event.code}`))
           } else {
             this.connectingPromise = null
-            this.statusHandler?.('disconnected')
+            this.statusHandlers.forEach((h) => h('disconnected'))
             this.attemptReconnect()
           }
         }
@@ -247,7 +240,7 @@ export class WebSocketClient {
 
     if (this.isReconnecting || this.manualReconnectScheduled) return
     this.isReconnecting = true
-    this.statusHandler?.('reconnecting')
+    this.statusHandlers.forEach((h) => h('reconnecting'))
 
     let delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts || 0), 30000)
     if (this.resumeRequested) {

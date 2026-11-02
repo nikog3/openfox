@@ -29,6 +29,7 @@ import {
   createSessionPauseMessage,
   createSessionRunningMessage,
   createSessionStateMessage,
+  createSttProgressMessage,
   parseClientMessage,
   serializeServerMessage,
   storedEventToServerMessage,
@@ -1082,6 +1083,22 @@ describe('ws/protocol', () => {
       // envelope fields, not payload. The payload shape itself must match.
       expect(replayed?.type).toBe(live.type)
       expect(replayed?.payload).toEqual(live.payload)
+    })
+  })
+
+  describe('createSttProgressMessage', () => {
+    it('includes the model label when provided', () => {
+      const msg = createSttProgressMessage(17, 'sess-1', 'model', 'whisper small')
+      expect(msg).toEqual({
+        type: 'stt.progress',
+        sessionId: 'sess-1',
+        payload: { percent: 17, phase: 'model', model: 'whisper small' },
+      })
+    })
+
+    it('omits the model field when not provided', () => {
+      const msg = createSttProgressMessage(42)
+      expect(msg).toEqual({ type: 'stt.progress', payload: { percent: 42 } })
     })
   })
 })

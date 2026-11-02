@@ -136,7 +136,7 @@ export async function createWhisperProvider(
     hooks.onPartial(committed)
   }
 
-  function decodeSegment(samples: Float32Array): Promise<void> {
+  function decodeSegment(samples: Float32Array, onDecoded?: (n: number) => void): Promise<void> {
     const rec = recognizer
     const task = decodeChain
       .then(() => {
@@ -147,6 +147,7 @@ export async function createWhisperProvider(
       })
       .then((result) => {
         if (result) appendCommitted(result.text)
+        onDecoded?.(samples.length)
       })
     decodeChain = task.then(
       () => undefined,
@@ -155,7 +156,7 @@ export async function createWhisperProvider(
     return task
   }
 
-  async function drainSegments(): Promise<void> {
+  async function drainSegments(onSegment?: (n: number) => void): Promise<void> {
     const v = vad
     if (!v) return
     let pending: Promise<void> | null = null
@@ -164,7 +165,7 @@ export async function createWhisperProvider(
       if (!segment) break
       v.pop()
       emittedSamples += segment.samples.length
-      pending = decodeSegment(segment.samples)
+      pending = decodeSegment(segment.samples, onSegment)
     }
     if (pending) {
       await pending
@@ -199,7 +200,18 @@ export async function createWhisperProvider(
     },
     async finalize(): Promise<string> {
       await decodeChain
-      await drainSegments()
+      const pendingSamples = Math.max(0, fedSamples - emittedSamples)
+      let decodedSinceBase = 0
+      const report = (): void => {
+        const percent = pendingSamples > 0 ? Math.min(100, Math.round((decodedSinceBase / pendingSamples) * 100)) : 100
+        hooks.onFinalizeProgress?.(percent)
+      }
+      report()
+      const onSegment = (n: number): void => {
+        decodedSinceBase += n
+        report()
+      }
+      await drainSegments(onSegment)
       const rec = recognizer
       const tail = tailSamples()
       if (tail && rec) {
@@ -207,7 +219,9 @@ export async function createWhisperProvider(
         stream.acceptWaveform({ samples: tail, sampleRate: SAMPLE_RATE })
         const result = await rec.decodeAsync(stream)
         appendCommitted(result.text)
+        decodedSinceBase += tail.length
       }
+      report()
       const text = committed
       clearState()
       hooks.onActivity(false)
