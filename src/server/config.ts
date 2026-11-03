@@ -18,8 +18,8 @@ const envSchema = z.object({
   OPENFOX_REASONING_EFFORT: z.string().optional(),
   // Deprecated: use OPENFOX_REASONING_EFFORT=none instead
   OPENFOX_DISABLE_THINKING: z.coerce.boolean().default(false),
-  OPENFOX_LLM_TIMEOUT: z.coerce.number().default(300_000),
-  OPENFOX_LLM_IDLE_TIMEOUT: z.coerce.number().default(300_000),
+  OPENFOX_LLM_TIMEOUT: z.coerce.number().default(600_000),
+  OPENFOX_LLM_IDLE_TIMEOUT: z.coerce.number().default(600_000),
   OPENFOX_DEV: z.coerce.boolean().default(false),
   OPENFOX_DISABLE_AUTO_SESSION_TITLE: z.coerce.boolean().optional(),
   OPENFOX_DEFAULT_AGENT: z.string().optional(),
@@ -55,7 +55,7 @@ export function loadConfig(): Config {
     agent: {
       maxIterations: 10,
       maxConsecutiveFailures: 3,
-      toolTimeout: 300_000,
+      toolTimeout: 600_000,
     },
     server: {
       port: env.OPENFOX_PORT,
