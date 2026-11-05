@@ -4,8 +4,20 @@ import type {
   ChatCompletionResponse,
   ChatCompletionChunk,
 } from './openai-types.js'
+import { fetch as undiciFetch, Agent } from 'undici'
 import { logger } from '../utils/logger.js'
 import { LLMError } from '../utils/errors.js'
+
+/**
+ * Transport-level timeouts for LLM requests. undici's defaults are 300s each
+ * for headers and body, which is fatal for local prefill: llama-server sends
+ * no response headers until the first token, so a prefill longer than 5 minutes
+ * dies with "fetch failed" before the app-level idle timeout can ever fire.
+ * Both are set to 0 (disabled) so the LLM client's idle timeout is the single
+ * guard against a silent stream.
+ */
+export const llmDispatcherOptions = { headersTimeout: 0, bodyTimeout: 0 }
+export const llmDispatcher = new Agent(llmDispatcherOptions)
 
 export interface RequestOptions {
   signal?: AbortSignal | null | undefined
@@ -89,12 +101,13 @@ export async function postJson(
   body: string,
   options?: RequestOptions,
 ): Promise<Response> {
-  const response = await fetch(url, {
+  const response = (await undiciFetch(url, {
     method: 'POST',
     headers,
     body,
     signal: options?.signal ?? null,
-  })
+    dispatcher: llmDispatcher,
+  })) as unknown as Response
 
   if (!response.ok) {
     const errorText = await response.text()

@@ -1,4 +1,6 @@
+import { fetch as undiciFetch } from 'undici'
 import { logger } from '../utils/logger.js'
+import { llmDispatcher } from './http-shared.js'
 
 export type VisionBackend = 'ollama' | 'openai'
 
@@ -136,11 +138,12 @@ export async function describeImage(
       headers['Authorization'] = `Bearer ${visionModel.apiKey}`
     }
 
-    const response = await fetch(url, {
+    const response = await undiciFetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(requestBody),
       signal,
+      dispatcher: llmDispatcher,
     })
 
     clearTimeout(timeoutId)
