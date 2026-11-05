@@ -41,6 +41,7 @@ function makeTemplateContext(overrides: Partial<TemplateContext> = {}): Template
     modifiedFiles: '- src/index.ts',
     stepOutput: { content: 'Some findings', stdout: 'exit 0' },
     params: {},
+    language: 'English',
     ...overrides,
   }
 }

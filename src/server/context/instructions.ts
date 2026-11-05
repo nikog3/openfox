@@ -20,11 +20,34 @@ export interface AllInstructions {
   files: InstructionFile[]
 }
 
-export function buildLanguageInstruction(language: string | null | undefined): string | null {
+const SCOPE_NOTE =
+  'This applies to every piece of user-facing text you produce — chat replies, explanations, summaries, and workflow step outputs.'
+
+export function buildLanguageInstruction(language: string | null | undefined): string {
   const trimmed = language?.trim()
-  if (!trimmed || trimmed.toLowerCase() === 'automatic') return null
+  if (!trimmed || trimmed.toLowerCase() === 'automatic') {
+    return (
+      `## LANGUAGE\n\n` +
+      `Always respond to the user in the language they are using in this conversation. ` +
+      `${SCOPE_NOTE} ` +
+      `Follow the user's language, never the language of system, workflow, or step prompts.`
+    )
+  }
   const display = trimmed[0]!.toUpperCase() + trimmed.slice(1)
-  return `## LANGUAGE\n\nAlways respond to the user in ${display}.`
+  return (
+    `## LANGUAGE\n\n` +
+    `Always respond to the user in ${display}. ` +
+    `${SCOPE_NOTE} ` +
+    `It takes precedence over the language of system, workflow, or step prompts.`
+  )
+}
+
+export function buildLanguageTemplateValue(language: string | null | undefined): string {
+  const trimmed = language?.trim()
+  if (!trimmed || trimmed.toLowerCase() === 'automatic') {
+    return 'the language the user is using in this conversation'
+  }
+  return trimmed[0]!.toUpperCase() + trimmed.slice(1)
 }
 
 // Filenames to look for (in order of priority within same directory)
@@ -114,11 +137,8 @@ export async function getAllInstructions(workdir: string, projectId: string): Pr
   const sections: string[] = []
   const allFiles: InstructionFile[] = []
 
-  // 0. Language (from settings) - always first when set
-  const languageInstruction = buildLanguageInstruction(getSetting(SETTINGS_KEYS.LANGUAGE))
-  if (languageInstruction) {
-    sections.push(languageInstruction)
-  }
+  // 0. Language (from settings) - always first
+  sections.push(buildLanguageInstruction(getSetting(SETTINGS_KEYS.LANGUAGE)))
 
   // 1. Global instructions (from settings)
   const globalInstructions = getSetting(SETTINGS_KEYS.GLOBAL_INSTRUCTIONS)

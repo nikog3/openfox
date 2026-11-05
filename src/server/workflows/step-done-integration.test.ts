@@ -90,6 +90,7 @@ describe('buildAgentNudge', () => {
     modifiedFiles: '- src/index.ts',
     stepOutput: { content: 'Previous attempt failed' },
     params: {},
+    language: 'English',
   }
 
   it('uses only the simple reminder when the transition condition is already satisfied', () => {

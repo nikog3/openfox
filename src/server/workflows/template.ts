@@ -19,6 +19,8 @@ export interface TemplateContext {
   stepOutput: Record<string, string>
   /** User-supplied parameters from workflow launch (e.g. slash command args) */
   params: Record<string, string>
+  /** Language the agent should use for user-facing text (e.g. "French") */
+  language: string
 }
 
 /** Canonical list of template variables — single source of truth for resolveTemplate and the API. */
@@ -42,6 +44,7 @@ export const TEMPLATE_VARIABLES: Array<{ name: string; description: string }> = 
   { name: 'pendingCount', description: 'Number of pending/failed criteria' },
   { name: 'criteriaList', description: 'Formatted list of all criteria with status' },
   { name: 'modifiedFiles', description: 'List of modified files' },
+  { name: 'language', description: 'Language the agent should use for user-facing text (from settings)' },
 ]
 
 export function resolveTemplate(template: string, ctx: TemplateContext): string {

@@ -8,6 +8,7 @@ import { createProject, updateProject } from '../db/projects.js'
 import { setSetting, SETTINGS_KEYS } from '../db/settings.js'
 import {
   buildLanguageInstruction,
+  buildLanguageTemplateValue,
   findInstructionFiles,
   getAllInstructions,
   getInstructionsForWorkdir,
@@ -157,21 +158,51 @@ describe('instructions', () => {
   describe('buildLanguageInstruction', () => {
     it('returns a LANGUAGE section for a preset language', () => {
       const result = buildLanguageInstruction('French')
-      expect(result).toBe('## LANGUAGE\n\nAlways respond to the user in French.')
+      expect(result).toBe(
+        '## LANGUAGE\n\n' +
+          'Always respond to the user in French. ' +
+          'This applies to every piece of user-facing text you produce — chat replies, explanations, summaries, and workflow step outputs. ' +
+          'It takes precedence over the language of system, workflow, or step prompts.',
+      )
     })
 
     it('capitalizes the first letter of custom languages', () => {
-      expect(buildLanguageInstruction('german')).toBe('## LANGUAGE\n\nAlways respond to the user in German.')
-      expect(buildLanguageInstruction('  spanish  ')).toBe('## LANGUAGE\n\nAlways respond to the user in Spanish.')
+      expect(buildLanguageInstruction('german')).toContain('Always respond to the user in German.')
+      expect(buildLanguageInstruction('  spanish  ')).toContain('Always respond to the user in Spanish.')
     })
 
-    it('returns null for automatic, empty, and null values', () => {
-      expect(buildLanguageInstruction('automatic')).toBeNull()
-      expect(buildLanguageInstruction('Automatic')).toBeNull()
-      expect(buildLanguageInstruction('')).toBeNull()
-      expect(buildLanguageInstruction('   ')).toBeNull()
-      expect(buildLanguageInstruction(null)).toBeNull()
-      expect(buildLanguageInstruction(undefined)).toBeNull()
+    it('covers summaries and workflow step outputs, not just chat replies', () => {
+      const result = buildLanguageInstruction('French')
+      expect(result).toContain('summaries')
+      expect(result).toContain('workflow step outputs')
+      expect(result).toContain('takes precedence over the language of system, workflow, or step prompts')
+    })
+
+    it('returns a match-the-conversation instruction for automatic, empty, and null values', () => {
+      for (const value of ['automatic', 'Automatic', '', '   ', null, undefined]) {
+        const result = buildLanguageInstruction(value)
+        expect(result).not.toBeNull()
+        expect(result).toContain('Always respond to the user in the language they are using in this conversation.')
+        expect(result).toContain('summaries')
+        expect(result).toContain('never the language of system, workflow, or step prompts')
+      }
+    })
+  })
+
+  describe('buildLanguageTemplateValue', () => {
+    it('returns the capitalized language name for a set language', () => {
+      expect(buildLanguageTemplateValue('French')).toBe('French')
+      expect(buildLanguageTemplateValue('german')).toBe('German')
+      expect(buildLanguageTemplateValue('  spanish  ')).toBe('Spanish')
+    })
+
+    it('returns the match-the-conversation phrase for automatic, empty, and null values', () => {
+      const phrase = 'the language the user is using in this conversation'
+      expect(buildLanguageTemplateValue('automatic')).toBe(phrase)
+      expect(buildLanguageTemplateValue('Automatic')).toBe(phrase)
+      expect(buildLanguageTemplateValue('')).toBe(phrase)
+      expect(buildLanguageTemplateValue(null)).toBe(phrase)
+      expect(buildLanguageTemplateValue(undefined)).toBe(phrase)
     })
   })
 
@@ -215,22 +246,24 @@ describe('instructions', () => {
       expect(content).toContain('## LANGUAGE\n\nAlways respond to the user in French.')
     })
 
-    it('omits the LANGUAGE section when language is automatic', async () => {
+    it('includes the LANGUAGE section when language is automatic', async () => {
       const project = createProject('OpenFox', testDir)
       setSetting(SETTINGS_KEYS.LANGUAGE, 'automatic')
       setSetting(SETTINGS_KEYS.GLOBAL_INSTRUCTIONS, 'Global rule')
 
       const result = await getAllInstructions(testDir, project.id)
 
-      expect(result.content).not.toContain('## LANGUAGE')
+      expect(result.content).toContain('## LANGUAGE')
+      expect(result.content).toContain('the language they are using in this conversation')
       expect(result.content).toContain('## GLOBAL INSTRUCTIONS\n\nGlobal rule')
     })
 
-    it('omits the LANGUAGE section when language is not set', async () => {
+    it('includes the LANGUAGE section when language is not set', async () => {
       const project = createProject('OpenFox', testDir)
       const result = await getAllInstructions(testDir, project.id)
 
-      expect(result.content).not.toContain('## LANGUAGE')
+      expect(result.content).toContain('## LANGUAGE')
+      expect(result.content).toContain('the language they are using in this conversation')
     })
 
     it('keeps file entries even when a discovered instruction file becomes unreadable', async () => {
@@ -241,7 +274,8 @@ describe('instructions', () => {
 
       const result = await getAllInstructions(testDir, project.id)
 
-      expect(result.content).toBe('')
+      expect(result.content).toContain('## LANGUAGE')
+      expect(result.content).not.toContain('## FILE INSTRUCTIONS')
       expect(result.files).toEqual([])
     })
   })

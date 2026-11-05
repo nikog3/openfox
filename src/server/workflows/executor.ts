@@ -32,6 +32,8 @@ import { computeSessionStats } from '../../shared/stats.js'
 import { formatGitDiffFiles } from '../git/diff.js'
 import { aggregateParallel, mapPool, runChild, runShellChild, runSubAgentChild, type RunChildDeps } from './parallel.js'
 import { resolveTemplate, type TemplateContext } from './template.js'
+import { buildLanguageTemplateValue } from '../context/instructions.js'
+import { getSetting, SETTINGS_KEYS } from '../db/settings.js'
 import { resolveLLMClientForAgent, buildAgentOverrideStatsIdentity } from '../agents/model-overrides.js'
 import { logger } from '../utils/logger.js'
 import { LLMError } from '../utils/errors.js'
@@ -516,6 +518,7 @@ export async function executeWorkflow(
       }),
       stepOutput: lastStepOutput,
       params: options.params ?? {},
+      language: buildLanguageTemplateValue(getSetting(SETTINGS_KEYS.LANGUAGE)),
     }
 
     // Set session phase
