@@ -423,8 +423,12 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
   // Project endpoints (REST)
   app.get('/api/projects', async (_req, res) => {
     const { listProjects } = await import('./db/projects.js')
+    const { getProjectGitStatus } = await import('./git/status.js')
     const projects = listProjects()
-    res.json({ projects })
+    const enriched = await Promise.all(
+      projects.map(async (project) => ({ ...project, gitStatus: await getProjectGitStatus(project.workdir) })),
+    )
+    res.json({ projects: enriched })
   })
 
   app.post('/api/projects', async (req, res) => {

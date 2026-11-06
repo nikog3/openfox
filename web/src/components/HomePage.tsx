@@ -11,6 +11,7 @@ import { SETTINGS_KEYS, summariesResource } from '../lib/resources'
 import { Button } from './shared/Button'
 import { OpenProjectModal } from './CreateSessionModal'
 import { DeleteProjectConfirmationModal } from './DeleteProjectConfirmationModal'
+import { ProjectGitBadge } from './ProjectGitBadge'
 import { formatRelativeDate } from '../lib/format-date'
 import { sortProjectsStarredFirst } from '../lib/projects'
 import {
@@ -407,6 +408,7 @@ export function HomePage() {
                   <span className="text-text-primary font-semibold truncate">{project.name}</span>
                 </Link>
                 <div className="flex items-center gap-1.5">
+                  <ProjectGitBadge gitStatus={project.gitStatus} />
                   <Button
                     variant="secondary"
                     size="sm"

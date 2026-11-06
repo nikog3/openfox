@@ -5,6 +5,13 @@ export type { PluginModelMetadataView } from './plugin.js'
 // Project Types
 // ============================================================================
 
+export interface ProjectGitStatus {
+  branch: string | null
+  ahead: number
+  behind: number
+  dirtyFiles: number
+}
+
 export interface Project {
   id: string
   name: string
@@ -15,6 +22,7 @@ export interface Project {
   isStarred?: boolean // Whether the project is starred for quick access
   workspaceRootDir?: string // Custom workspace root directory (user-specific, stored in DB)
   mcpOverrides?: Record<string, { disabled?: boolean; disabledTools?: string[] }> // Project-level MCP server overrides
+  gitStatus?: ProjectGitStatus | null
   createdAt: string
   updatedAt: string
 }

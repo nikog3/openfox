@@ -68,6 +68,7 @@ const projectFixtures = [
     name: 'Project Alpha',
     workdir: '/tmp/alpha',
     isStarred: false,
+    gitStatus: { branch: 'main', ahead: 0, behind: 0, dirtyFiles: 0 },
     createdAt: '2024-01-01',
     updatedAt: '2024-01-01',
   },
@@ -76,6 +77,7 @@ const projectFixtures = [
     name: 'Project Beta',
     workdir: '/tmp/beta',
     isStarred: true,
+    gitStatus: { branch: 'main', ahead: 0, behind: 2, dirtyFiles: 1 },
     createdAt: '2024-01-02',
     updatedAt: '2024-01-02',
   },
@@ -84,6 +86,7 @@ const projectFixtures = [
     name: 'Project Gamma',
     workdir: '/tmp/gamma',
     isStarred: false,
+    gitStatus: null,
     createdAt: '2024-01-03',
     updatedAt: '2024-01-03',
   },
@@ -689,6 +692,34 @@ describe('HomePage', () => {
     // p2 has no tasks at all: the button shows the label and icon, no chips.
     const betaTasks = container.querySelector<HTMLElement>('[aria-label="Tasks for Project Beta"]')
     expect(textOf(betaTasks)).toBe('Tasks')
+  })
+
+  it('shows a git status badge per project state', async () => {
+    const { HomePage } = await import('./HomePage')
+    const container = render(<HomePage />)
+
+    const badgeIn = (projectId: string): HTMLElement | null => {
+      const card = container.querySelector(`a[href="/p/${projectId}"]`)?.closest('div.bg-bg-secondary')
+      return card?.querySelector<HTMLElement>('span.rounded-full') ?? null
+    }
+
+    // p1: clean repo — branch only, green.
+    const alphaBadge = badgeIn('p1')!
+    expect(alphaBadge).toBeTruthy()
+    expect(alphaBadge.title).toBe('main')
+    expect(textOf(alphaBadge)).toContain('main')
+
+    // p2: dirty + behind — red takes priority, shows both counts.
+    const betaBadge = badgeIn('p2')!
+    expect(betaBadge.title).toBe('main · 1 modified · 2 behind')
+    expect(textOf(betaBadge)).toContain('main')
+    expect(textOf(betaBadge)).toContain('1')
+    expect(textOf(betaBadge)).toContain('↓2')
+
+    // p3: not a git repository — gray "no git".
+    const gammaBadge = badgeIn('p3')!
+    expect(gammaBadge.title).toBe('Not a git repository')
+    expect(textOf(gammaBadge)).toBe('no git')
   })
 
   it('opens the Tasks modal for the clicked project', async () => {
