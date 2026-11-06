@@ -16,6 +16,7 @@ export interface SequentialFoldOptions {
 
 export interface SequentialFoldResult {
   summary: string | undefined
+  steps: number
   promptTokens?: number
   completionTokens?: number
 }
@@ -47,6 +48,7 @@ export async function runSequentialFold(options: SequentialFoldOptions): Promise
   const inputBudgetChars =
     Math.max(0, contextWindow - COMPACTION_SUMMARY_BUDGET_TOKENS - OUTPUT_RESERVE_TOKENS) * DENSE_CHARS_PER_TOKEN
   const usage = { promptTokens: 0, completionTokens: 0 }
+  let steps = 0
 
   const fits = (candidate: ContextMessage[]): boolean => {
     let chars = systemPrompt.length + COMPACTION_PROMPT.length
@@ -55,6 +57,7 @@ export async function runSequentialFold(options: SequentialFoldOptions): Promise
   }
 
   const summarize = async (candidate: ContextMessage[]): Promise<string> => {
+    steps += 1
     const response = await client.complete({
       messages: [...candidate, { role: 'user', content: COMPACTION_PROMPT }],
       maxTokens: COMPACTION_SUMMARY_BUDGET_TOKENS,
@@ -81,13 +84,13 @@ export async function runSequentialFold(options: SequentialFoldOptions): Promise
 
   try {
     const summary = await fold(messages, 0)
-    return { summary, promptTokens: usage.promptTokens, completionTokens: usage.completionTokens }
+    return { summary, steps, promptTokens: usage.promptTokens, completionTokens: usage.completionTokens }
   } catch (error) {
     if (signal?.aborted) throw new Error('Aborted')
     logger.warn('Sequential fold compaction failed', {
       error: error instanceof Error ? error.message : String(error),
     })
-    return { summary: undefined }
+    return { summary: undefined, steps }
   }
 }
 

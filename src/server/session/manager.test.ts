@@ -292,6 +292,20 @@ describe('SessionManager', () => {
     // (messages are stored as events, not in session object)
   })
 
+  it('keeps message metadata when mapping window messages', () => {
+    const session = manager.createSession(projectId)
+    manager.addMessage(session.id, {
+      role: 'user',
+      content: 'folded summary',
+      isCompactionSummary: true,
+      metadata: { type: 'compaction', name: 'Compaction', color: '#64748b', foldSteps: 2 },
+    })
+
+    const [msg] = manager.getCurrentWindowMessages(session.id)
+    expect(msg?.isCompactionSummary).toBe(true)
+    expect(msg?.metadata).toEqual({ type: 'compaction', name: 'Compaction', color: '#64748b', foldSteps: 2 })
+  })
+
   it('manages criteria lifecycle and verification attempts', () => {
     const session = manager.createSession(projectId)
 

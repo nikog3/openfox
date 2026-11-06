@@ -399,7 +399,13 @@ export function emitUserMessage(
     attachments?: Attachment[] // Optional image attachments
     subAgentId?: string
     subAgentType?: string
-    metadata?: { type: string; name: string; color: string; kind?: 'definition' | 'reminder' | 'continuation' }
+    metadata?: {
+      type: string
+      name: string
+      color: string
+      kind?: 'definition' | 'reminder' | 'continuation'
+      foldSteps?: number
+    }
   },
 ): string {
   const eventStore = getEventStore()

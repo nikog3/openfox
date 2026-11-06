@@ -614,4 +614,62 @@ describe('AssistantMessage', () => {
     expect(html).toContain('deepseek-v4-flash-dspark')
     expect(html).not.toContain('my-provider/')
   })
+
+  it('labels compaction summary messages', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMessage
+        message={{
+          id: 'assistant-summary',
+          role: 'assistant',
+          content: 'Summary content',
+          timestamp: '2024-01-01T00:00:00.000Z',
+          tokenCount: 0,
+          isStreaming: false,
+          isCompactionSummary: true,
+        }}
+      />,
+    )
+
+    expect(html).toContain('Compaction summary')
+  })
+
+  it('shows the fold step badge on multi-step compaction summaries', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMessage
+        message={{
+          id: 'assistant-summary-fold',
+          role: 'assistant',
+          content: 'Summary content',
+          timestamp: '2024-01-01T00:00:00.000Z',
+          tokenCount: 0,
+          isStreaming: false,
+          isCompactionSummary: true,
+          metadata: { type: 'compaction', name: 'Compaction', color: '#64748b', foldSteps: 3 },
+        }}
+      />,
+    )
+
+    expect(html).toContain('Compaction summary')
+    expect(html).toContain('3 folds')
+  })
+
+  it('hides the fold badge for single-step compaction summaries', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMessage
+        message={{
+          id: 'assistant-summary-single',
+          role: 'assistant',
+          content: 'Summary content',
+          timestamp: '2024-01-01T00:00:00.000Z',
+          tokenCount: 0,
+          isStreaming: false,
+          isCompactionSummary: true,
+          metadata: { type: 'compaction', name: 'Compaction', color: '#64748b', foldSteps: 1 },
+        }}
+      />,
+    )
+
+    expect(html).toContain('Compaction summary')
+    expect(html).not.toContain('1 fold')
+  })
 })

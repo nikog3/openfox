@@ -523,6 +523,7 @@ export interface Message {
     kind?: 'definition' | 'reminder' | 'continuation'
     branchName?: string
     workspaceName?: string
+    foldSteps?: number
   } // For auto-prompt messages
 }
 

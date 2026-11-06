@@ -1437,6 +1437,7 @@ export class SessionManager {
     const options: {
       contextWindowId?: string
       isSystemGenerated?: boolean
+      isCompactionSummary?: boolean
       messageKind?:
         | 'correction'
         | 'auto-prompt'
@@ -1449,10 +1450,17 @@ export class SessionManager {
       attachments?: Attachment[] // Optional image attachments
       subAgentId?: string
       subAgentType?: string
-      metadata?: { type: string; name: string; color: string; kind?: 'definition' | 'reminder' | 'continuation' }
+      metadata?: {
+        type: string
+        name: string
+        color: string
+        kind?: 'definition' | 'reminder' | 'continuation'
+        foldSteps?: number
+      }
     } = {}
     if (contextWindowId !== undefined) options.contextWindowId = contextWindowId
     if (message.isSystemGenerated !== undefined) options.isSystemGenerated = message.isSystemGenerated
+    if (message.isCompactionSummary !== undefined) options.isCompactionSummary = message.isCompactionSummary
     if (message.messageKind !== undefined) options.messageKind = message.messageKind
     if (message.tokenCount !== undefined) options.tokenCount = message.tokenCount
     if (message.attachments !== undefined) options.attachments = message.attachments
@@ -1472,6 +1480,7 @@ export class SessionManager {
     }
     if (contextWindowId !== undefined) result.contextWindowId = contextWindowId
     if (message.isSystemGenerated !== undefined) result.isSystemGenerated = message.isSystemGenerated
+    if (message.isCompactionSummary !== undefined) result.isCompactionSummary = message.isCompactionSummary
     if (message.messageKind !== undefined) result.messageKind = message.messageKind
     if (message.attachments !== undefined) result.attachments = message.attachments
     if (message.subAgentId !== undefined) result.subAgentId = message.subAgentId
@@ -1575,6 +1584,7 @@ export class SessionManager {
         if (m.isSystemGenerated !== undefined) msg.isSystemGenerated = m.isSystemGenerated
         if (m.messageKind !== undefined) msg.messageKind = m.messageKind
         if (m.isCompactionSummary !== undefined) msg.isCompactionSummary = m.isCompactionSummary
+        if (m.metadata !== undefined) msg.metadata = m.metadata
         return msg
       })
   }
@@ -2409,6 +2419,7 @@ export class SessionManager {
       if (m.messageKind !== undefined) msg.messageKind = m.messageKind
       if (m.contextWindowId !== undefined) msg.contextWindowId = m.contextWindowId
       if (m.isCompactionSummary !== undefined) msg.isCompactionSummary = m.isCompactionSummary
+      if (m.metadata !== undefined) msg.metadata = m.metadata
       return msg
     })
 

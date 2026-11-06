@@ -241,6 +241,16 @@ export const AssistantMessage = memo(function AssistantMessage({
     <div className="feed-item" onContextMenu={(e) => onContextMenu(e, !!sessionId)}>
       <div className="min-w-0">
         {forkError && <p className="text-xs text-accent-error mb-1 ml-0.5">{forkError}</p>}
+        {message.isCompactionSummary && (
+          <div className="flex items-center gap-1.5 text-[10px] text-text-muted mb-1">
+            <span>{t({ en: 'Compaction summary', fr: 'Résumé de compaction' })}</span>
+            {typeof message.metadata?.foldSteps === 'number' && message.metadata.foldSteps > 1 && (
+              <span className="rounded bg-border px-1">
+                {t({ en: '{{count}} folds', fr: '{{count}} plis' }, { count: message.metadata.foldSteps })}
+              </span>
+            )}
+          </div>
+        )}
         {hasThinking && (
           <ThinkingBlockToggle
             messageId={message.id}

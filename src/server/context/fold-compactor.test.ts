@@ -59,6 +59,7 @@ describe('runSequentialFold', () => {
 
     expect(calls).toHaveLength(1)
     expect(result.summary).toBe(SUMMARY_1)
+    expect(result.steps).toBe(1)
     expect(result.promptTokens).toBe(1_001)
     expect(result.completionTokens).toBe(101)
     const last = calls[0]!.messages[calls[0]!.messages.length - 1]
@@ -109,6 +110,7 @@ describe('runSequentialFold', () => {
     expect(calls[1]!.messages[1]).toEqual(m2)
     expect(calls[1]!.messages[calls[1]!.messages.length - 1]?.content).toBe(COMPACTION_PROMPT)
     expect(result.summary).toBe(SUMMARY_2)
+    expect(result.steps).toBe(2)
     expect(result.promptTokens).toBe(6_000)
     expect(result.completionTokens).toBe(300)
   })
@@ -186,6 +188,7 @@ describe('runSequentialFold', () => {
       contextWindow: 200_000,
     })
     expect(result.summary).toBeUndefined()
+    expect(result.steps).toBe(1)
   })
 
   it('returns no summary when the LLM call fails', async () => {

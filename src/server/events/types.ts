@@ -94,7 +94,13 @@ export type TurnEvent =
         isCompactionSummary?: boolean // True if this is the summary message after compaction
         tokenCount?: number // Known upfront for user messages
         attachments?: Attachment[] // Optional image attachments
-        metadata?: { type: string; name: string; color: string; kind?: 'definition' | 'reminder' | 'continuation' } // For auto-prompt messages
+        metadata?: {
+          type: string
+          name: string
+          color: string
+          kind?: 'definition' | 'reminder' | 'continuation'
+          foldSteps?: number
+        } // For auto-prompt messages
       }
     }
   | {
@@ -575,7 +581,13 @@ export interface SnapshotMessage {
   contextWindowId?: string
   isCompactionSummary?: boolean
   attachments?: Attachment[] // Optional image attachments
-  metadata?: { type: string; name: string; color: string; kind?: 'definition' | 'reminder' | 'continuation' } // For auto-prompt messages
+  metadata?: {
+    type: string
+    name: string
+    color: string
+    kind?: 'definition' | 'reminder' | 'continuation'
+    foldSteps?: number
+  } // For auto-prompt messages
 }
 
 export interface ToolCallWithResult extends ToolCall {

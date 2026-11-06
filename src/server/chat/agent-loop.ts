@@ -392,6 +392,7 @@ export async function runTopLevelAgentLoop(
   let compactionAttempts = 0
   let compactionBlocked = false
   let compactionPromptMsgId: string | undefined
+  let compactionFoldSteps: number | undefined
   // Tool-call rejections within the current compaction attempt. Bounded by
   // MAX_COMPACTION_TOOLCALL_REJECTIONS so a model that keeps calling tools
   // during compaction cannot loop the summary call forever.
@@ -570,6 +571,7 @@ export async function runTopLevelAgentLoop(
         compacting = true
         compactionAttempts += 1
         compactionToolCallRejections = 0
+        compactionFoldSteps = undefined
         continue
       }
 
@@ -627,6 +629,7 @@ export async function runTopLevelAgentLoop(
             ...(signal ? { signal } : {}),
           })
           if (fold.summary !== undefined) {
+            compactionFoldSteps = fold.steps
             foldedAttemptResult = {
               content: fold.summary,
               toolCalls: [],
@@ -1094,6 +1097,7 @@ export async function runTopLevelAgentLoop(
         compacting = true
         compactionAttempts += 1
         compactionToolCallRejections = 0
+        compactionFoldSteps = undefined
         continue
       }
     }
@@ -1474,6 +1478,12 @@ ${COMPACTION_PROMPT}`,
           content: summary,
           contextWindowId: newWindowId,
           isCompactionSummary: true,
+          metadata: {
+            type: 'compaction',
+            name: 'Compaction',
+            color: '#64748b',
+            foldSteps: compactionFoldSteps ?? 1,
+          },
           ...subAgentTags(),
         },
       })
