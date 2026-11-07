@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { runSequentialFold } from './fold-compactor.js'
 import { COMPACTION_PROMPT } from '../chat/prompts.js'
 import { COMPACTION_SUMMARY_BUDGET_TOKENS } from './compactor.js'
@@ -168,18 +168,58 @@ describe('runSequentialFold', () => {
     expect(result.summary).toBe(SUMMARY_1)
   })
 
-  it('returns no summary when the summary call is truncated', async () => {
-    const { client } = makeClient([{ content: SUMMARY_1, finishReason: 'length' }])
+  it('retries a failed step once, then recovers with the original input', async () => {
+    const { client, calls } = makeClient([{ content: 'ok', finishReason: 'stop' }, { content: SUMMARY_1 }])
     const result = await runSequentialFold({
       client,
       systemPrompt: 'sys',
       messages: [msg('user', 1_000)],
       contextWindow: 200_000,
     })
-    expect(result.summary).toBeUndefined()
+    // 1st call too short → 1 retry with the same candidate → success
+    expect(calls).toHaveLength(2)
+    expect(result.summary).toBe(SUMMARY_1)
+    expect(result.failureReason).toBeUndefined()
   })
 
-  it('returns no summary when the summary is too short', async () => {
+  it('falls back to a lossy truncated input when the retries fail', async () => {
+    const { client, calls } = makeClient([
+      { content: SUMMARY_1, finishReason: 'length' },
+      { content: SUMMARY_1, finishReason: 'length' },
+      { content: SUMMARY_1 },
+    ])
+    const messages = [msg('user', 12_000), msg('assistant', 12_000)]
+    const result = await runSequentialFold({
+      client,
+      systemPrompt: 'sys',
+      messages,
+      contextWindow: 20_000,
+    })
+    // 1st + retry truncated → fallback summarizes a budget-halved copy of
+    // the chunk (lossy) and the fold finishes with a partial summary.
+    expect(calls).toHaveLength(3)
+    expect(result.summary).toBe(SUMMARY_1)
+    expect(result.failureReason).toBeUndefined()
+    expect(wireSize(calls[2]!)).toBeLessThan(wireSize(calls[0]!))
+  })
+
+  it('returns the failure reason and step count when even the fallback fails', async () => {
+    const { client, calls } = makeClient([{ content: SUMMARY_1, finishReason: 'length' }])
+    const result = await runSequentialFold({
+      client,
+      systemPrompt: 'sys',
+      messages: [msg('user', 1_000)],
+      contextWindow: 200_000,
+    })
+    // initial + 1 retry + 1 degraded fallback, all truncated
+    expect(calls).toHaveLength(3)
+    expect(result.summary).toBeUndefined()
+    expect(result.failureReason).toBe('truncated')
+    expect(result.steps).toBe(1)
+    expect(result.totalSteps).toBe(1)
+  })
+
+  it('reports too-short as the failure reason when the fallback also fails', async () => {
     const { client } = makeClient([{ content: 'ok' }])
     const result = await runSequentialFold({
       client,
@@ -188,10 +228,12 @@ describe('runSequentialFold', () => {
       contextWindow: 200_000,
     })
     expect(result.summary).toBeUndefined()
+    expect(result.failureReason).toBe('too-short')
     expect(result.steps).toBe(1)
+    expect(result.totalSteps).toBe(1)
   })
 
-  it('returns no summary when the LLM call fails', async () => {
+  it('reports llm-error as the failure reason when the backend keeps failing', async () => {
     const client = {
       complete: async () => {
         throw new Error('backend down')
@@ -206,6 +248,62 @@ describe('runSequentialFold', () => {
       contextWindow: 200_000,
     })
     expect(result.summary).toBeUndefined()
+    expect(result.failureReason).toBe('llm-error')
+  })
+
+  it('reports a single step when the conversation fits the budget', async () => {
+    const { client } = makeClient([{ content: SUMMARY_1 }])
+    const onStep = vi.fn()
+    await runSequentialFold({
+      client,
+      systemPrompt: 'sys',
+      messages: [msg('user', 1_000)],
+      contextWindow: 200_000,
+      onStep,
+    })
+    expect(onStep).toHaveBeenCalledTimes(1)
+    expect(onStep).toHaveBeenNthCalledWith(1, 1, 1)
+  })
+
+  it('reports every fold step with the estimated total step count', async () => {
+    const { client } = makeClient([
+      { content: SUMMARY_1, usage: { promptTokens: 5_000, completionTokens: 200, totalTokens: 5_200 } },
+      { content: SUMMARY_2, usage: { promptTokens: 6_000, completionTokens: 300, totalTokens: 6_300 } },
+    ])
+    const onStep = vi.fn()
+    const m1 = msg('user', 20_000)
+    const m2 = msg('assistant', 20_000)
+    // 20k window → budget ≈ 33.2k chars; the 40k conversation is folded into
+    // two budget-sized leaves → two steps out of two.
+    await runSequentialFold({
+      client,
+      systemPrompt: 'sys',
+      messages: [m1, m2],
+      contextWindow: 20_000,
+      onStep,
+    })
+    expect(onStep).toHaveBeenCalledTimes(2)
+    expect(onStep).toHaveBeenNthCalledWith(1, 1, 2)
+    expect(onStep).toHaveBeenNthCalledWith(2, 2, 2)
+  })
+
+  it('reports each step once even when the step is retried', async () => {
+    const { client } = makeClient([{ content: 'ok' }, { content: SUMMARY_1 }, { content: SUMMARY_2 }])
+    const onStep = vi.fn()
+    const m1 = msg('user', 20_000)
+    const m2 = msg('assistant', 20_000)
+    // 20k window → two leaves; the first one fails (too short) and is
+    // retried — the step counter must not double-count the attempt.
+    await runSequentialFold({
+      client,
+      systemPrompt: 'sys',
+      messages: [m1, m2],
+      contextWindow: 20_000,
+      onStep,
+    })
+    expect(onStep).toHaveBeenCalledTimes(2)
+    expect(onStep).toHaveBeenNthCalledWith(1, 1, 2)
+    expect(onStep).toHaveBeenNthCalledWith(2, 2, 2)
   })
 
   it('rethrows Aborted when the signal is aborted', async () => {

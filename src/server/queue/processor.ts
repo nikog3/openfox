@@ -26,6 +26,8 @@ export class QueueProcessor {
   private unsubscribe: (() => void) | null = null
   private activeAgents = new Map<string, AbortController>()
   private abortedSessions = new Set<string>()
+  private heldSessions = new Set<string>()
+  private abortResolvers = new Map<string, () => void>()
 
   constructor(deps: QueueProcessorDeps) {
     this.deps = deps
@@ -58,6 +60,11 @@ export class QueueProcessor {
       controller.abort()
     }
     this.activeAgents.clear()
+    for (const resolve of this.abortResolvers.values()) {
+      resolve()
+    }
+    this.abortResolvers.clear()
+    this.heldSessions.clear()
 
     logger.debug('QueueProcessor stopped')
   }
@@ -74,7 +81,27 @@ export class QueueProcessor {
     return false
   }
 
+  holdSession(sessionId: string): void {
+    this.heldSessions.add(sessionId)
+  }
+
+  releaseSession(sessionId: string): void {
+    this.heldSessions.delete(sessionId)
+    this.handleTurnDone(sessionId)
+  }
+
+  async abortSessionAndWait(sessionId: string): Promise<boolean> {
+    const controller = this.activeAgents.get(sessionId)
+    if (!controller) return false
+    const aborted = await new Promise<boolean>((resolve) => {
+      this.abortResolvers.set(sessionId, () => resolve(true))
+      this.abortSession(sessionId)
+    })
+    return aborted
+  }
+
   private handleQueueAdded(sessionId: string): void {
+    if (this.heldSessions.has(sessionId)) return
     const { sessionManager } = this.deps
     const session = sessionManager.getSession(sessionId)
     if (!session) return
@@ -93,6 +120,7 @@ export class QueueProcessor {
   }
 
   private handleTurnDone(sessionId: string): void {
+    if (this.heldSessions.has(sessionId)) return
     logger.debug('Turn done, checking for more queued messages', { sessionId })
 
     const { sessionManager } = this.deps
@@ -275,7 +303,7 @@ export class QueueProcessor {
           }
 
           const hasMore = sessionManager.hasQueuedMessages(sessionId)
-          if (!hasMore) {
+          if (!hasMore || this.heldSessions.has(sessionId)) {
             finalizeTurnCompletion(sessionId, sessionManager, broadcastForSession)
             return
           }
@@ -292,6 +320,12 @@ export class QueueProcessor {
             sessionId,
             error: error instanceof Error ? error.message : String(error),
           })
+        } finally {
+          const resolve = this.abortResolvers.get(sessionId)
+          if (resolve) {
+            this.abortResolvers.delete(sessionId)
+            resolve()
+          }
         }
       })
   }

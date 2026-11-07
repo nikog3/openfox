@@ -1100,10 +1100,15 @@ describe('createWebSocketServer', () => {
       type: 'queue.state',
       payload: { success: true },
     })
+    // Compact while running: the running turn is aborted and the compaction proceeds
+    runChatTurnMock.mockResolvedValue(undefined)
     harness.send({ id: 'compact-running', type: 'context.compact', payload: {} })
     expect(await harness.nextMessage((message) => message.id === 'compact-running')).toMatchObject({
-      payload: { code: 'SESSION_RUNNING' },
+      type: 'ack',
     })
+    expect(runChatTurnMock).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'session-1', initialCompacting: true }),
+    )
 
     sessionState.isRunning = false
 

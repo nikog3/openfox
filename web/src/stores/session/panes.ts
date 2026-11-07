@@ -21,6 +21,7 @@ export function emptyPane(): SessionPane {
     llmRetry: null,
     nameGenerating: null,
     prefill: null,
+    compactionProgress: null,
     liveTurnStats: null,
     sessionStats: null,
   }
@@ -47,6 +48,7 @@ export function paneFromFlat(state: SessionState): SessionPane {
     llmRetry: state.llmRetry,
     nameGenerating: state.nameGenerating,
     prefill: state.prefill,
+    compactionProgress: state.compactionProgress,
     liveTurnStats: state.liveTurnStats,
     sessionStats: state.sessionStats,
   }
@@ -73,6 +75,7 @@ export function mirror(pane: SessionPane): Partial<SessionState> {
     llmRetry: pane.llmRetry,
     nameGenerating: pane.nameGenerating,
     prefill: pane.prefill,
+    compactionProgress: pane.compactionProgress,
     liveTurnStats: pane.liveTurnStats,
     sessionStats: pane.sessionStats,
   }

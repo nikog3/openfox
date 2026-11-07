@@ -50,6 +50,7 @@ import {
   createChatLLMRetryFailedMessage,
   createChatPrefillProgressMessage,
   createChatStatsMessage,
+  createCompactionProgressMessage,
 } from '../ws/protocol.js'
 import { executeTools, type ToolBatchContext } from './execute-tools.js'
 import { isContextLengthError, parseContextLengthError, CHARS_PER_TOKEN } from './token-budget.js'
@@ -64,12 +65,14 @@ import {
   MAX_COMPACTION_ATTEMPTS,
   MAX_COMPACTION_TOOLCALL_REJECTIONS,
   MIN_COMPACTION_SUMMARY_LENGTH,
+  COMPACTION_PRESERVED_USER_MESSAGES,
   shouldCompact,
   appendCompactionPrompt,
   fitSummaryInput,
   messageWireSize,
 } from '../context/compactor.js'
-import { runSequentialFold } from '../context/fold-compactor.js'
+import { runSequentialFold, type FoldFailureReason } from '../context/fold-compactor.js'
+import { DENSE_CHARS_PER_TOKEN } from '../tools/output-cap.js'
 import { logger } from '../utils/logger.js'
 import { emitPluginHook } from '../plugins/hook-emitter.js'
 import { applyPluginMessageTransforms } from '../plugins/message-transforms.js'
@@ -334,14 +337,112 @@ function tombstoneMessageEvents(sessionId: string, messageIds: string[]): void {
 }
 
 /**
- * Find the last real user message (not system-generated, no message kind) so
- * a compaction can re-inject the user's current question verbatim into the
- * fresh window — the summary alone used to truncate it mid-sentence, leaving
- * the agent asking the user to repeat a question it had already answered.
+ * Hard-trim backstop for an over-full context after a compaction failure:
+ * tombstone the oldest messages — tool-result blocks first — until the given
+ * excess is covered, so the next prompt is guaranteed to fit the window and
+ * the backend never truncates blindly. A tool result is only dropped
+ * together with the assistant message that called it (a dangling tool call
+ * or tool result would 400). `subAgentId` scopes the trim to one context.
+ * Returns the estimated number of freed tokens.
  */
-function findLastUserMessage(sessionId: string): string | undefined {
+function hardTrimOverfullContext(sessionId: string, excessChars: number, subAgentId?: string): number {
+  if (excessChars <= 0) return 0
+  const store = getEventStore()
+  const events = store.getEvents(sessionId)
+
+  interface Unit {
+    seqs: number[]
+    chars: number
+    hasToolResult: boolean
+    scopedOut: boolean
+    role: string | undefined
+  }
+
+  const units: Unit[] = []
+  const byMessageId = new Map<string, Unit>()
+  for (const event of events) {
+    const data = event.data as
+      | {
+          messageId?: string
+          role?: string
+          content?: string
+          thinkingContent?: string
+          subAgentId?: string
+          result?: { output?: string; error?: string }
+        }
+      | undefined
+    const messageId = data?.messageId
+    if (!messageId) continue
+    if (event.type === 'message.start') {
+      const unit: Unit = {
+        seqs: [event.seq],
+        chars: (data.content?.length ?? 0) + (data.thinkingContent?.length ?? 0),
+        hasToolResult: false,
+        scopedOut: subAgentId ? data.subAgentId !== subAgentId : Boolean(data.subAgentId),
+        role: data.role,
+      }
+      byMessageId.set(messageId, unit)
+      units.push(unit)
+    } else {
+      const unit = byMessageId.get(messageId)
+      if (!unit) continue
+      unit.seqs.push(event.seq)
+      if (event.type === 'message.delta' || event.type === 'message.thinking') {
+        unit.chars += data.content?.length ?? 0
+      }
+      if (event.type === 'tool.call') unit.hasToolResult = true
+      if (event.type === 'tool.result') {
+        unit.hasToolResult = true
+        unit.chars += (data.result?.output?.length ?? 0) + (data.result?.error?.length ?? 0)
+      }
+    }
+  }
+
+  let freedChars = 0
+  const drop = (unit: Unit) => {
+    freedChars += unit.chars
+    try {
+      store.tombstoneEvents(sessionId, unit.seqs)
+    } catch (error) {
+      logger.warn('Hard-trim backstop failed to tombstone a message block', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+  // Pass 1: tool-result blocks (oldest first) — the biggest, least essential
+  // chunks. Pass 2: plain messages (oldest first), but the most recent real
+  // user messages are protected: they are re-injected verbatim after
+  // compaction, so trimming them would only re-add them on the next one.
+  const recentUserUnits = units
+    .filter((unit) => !unit.scopedOut && unit.role === 'user')
+    .slice(-COMPACTION_PRESERVED_USER_MESSAGES)
+  const protectedStartSeqs = new Set(recentUserUnits.map((unit) => unit.seqs[0]))
+  for (const unit of units) {
+    if (freedChars >= excessChars) break
+    if (unit.scopedOut || !unit.hasToolResult) continue
+    drop(unit)
+  }
+  for (const unit of units) {
+    if (freedChars >= excessChars) break
+    if (unit.scopedOut || unit.hasToolResult) continue
+    if (protectedStartSeqs.has(unit.seqs[0])) continue
+    drop(unit)
+  }
+  return freedChars / DENSE_CHARS_PER_TOKEN
+}
+
+/**
+ * Find the most recent real user messages (not system-generated, no message
+ * kind), newest first, so a compaction can re-inject them verbatim into the
+ * fresh window — the summary alone used to truncate the user's current
+ * question, file paths and other recent details mid-sentence, leaving the
+ * agent asking the user to repeat requests it had already received.
+ */
+function findLastUserMessages(sessionId: string, count: number): string[] {
   const events = getEventStore().getEvents(sessionId)
-  for (let i = events.length - 1; i >= 0; i--) {
+  const contents: string[] = []
+  for (let i = events.length - 1; i >= 0 && contents.length < count; i--) {
     const event = events[i]
     if (event?.type !== 'message.start') continue
     const data = event.data as
@@ -353,9 +454,15 @@ function findLastUserMessage(sessionId: string): string | undefined {
         }
       | undefined
     if (data?.role !== 'user' || data.isSystemGenerated || data.messageKind || !data.content) continue
-    return data.content
+    contents.push(data.content)
   }
-  return undefined
+  return contents.reverse()
+}
+
+const FOLD_FAILURE_REASON_TEXT: Record<FoldFailureReason, { en: string; fr: string }> = {
+  truncated: { en: 'summary truncated', fr: 'résumé tronqué' },
+  'too-short': { en: 'summary too short', fr: 'résumé trop court' },
+  'llm-error': { en: 'LLM error', fr: 'erreur LLM' },
 }
 
 export async function runTopLevelAgentLoop(
@@ -397,6 +504,50 @@ export async function runTopLevelAgentLoop(
   // MAX_COMPACTION_TOOLCALL_REJECTIONS so a model that keeps calling tools
   // during compaction cannot loop the summary call forever.
   let compactionToolCallRejections = 0
+
+  // Tracked context tokens and window for this run (sub-agent scoped).
+  // Sub-agents run in a fresh scoped context: their usage is never the
+  // parent session's.
+  const contextTokensAndWindow = (): { tokens: number; window: number } => {
+    const contextState = sessionManager.getContextState(sessionId)
+    const tokens = config.subAgentMetadata
+      ? (sessionManager.getSubAgentContextTokens?.(config.subAgentMetadata.subAgentId) ?? 0)
+      : contextState.currentTokens
+    return { tokens, window: sessionManager.getCurrentModelContext(sessionId, config.mode) }
+  }
+
+  // Backstop: after a compaction failure, if the tracked context still
+  // exceeds the window, hard-trim the oldest messages (tool results first)
+  // so the next prompt fits — the backend must never truncate blindly.
+  const backstopTrimIfOverfull = () => {
+    const { tokens, window } = contextTokensAndWindow()
+    if (window <= 0 || tokens <= window) return
+    const freedTokens = hardTrimOverfullContext(
+      sessionId,
+      (tokens - (window - COMPACTION_HEADROOM_TOKENS)) * DENSE_CHARS_PER_TOKEN,
+      config.subAgentMetadata?.subAgentId,
+    )
+    if (freedTokens > 0) {
+      sessionManager.setCurrentContextSize(
+        sessionId,
+        Math.max(0, Math.round(tokens - freedTokens)),
+        0,
+        config.subAgentMetadata?.subAgentId,
+      )
+      // Announce the trim: tombstoned messages disappear from the user's
+      // view, so the loss must be visible, not silent.
+      append({
+        type: 'chat.error',
+        data: {
+          error: serverT({
+            en: `Context still overfull after the failed compaction: removed ~${Math.round(freedTokens)}k tokens of the oldest messages (tool results first) so the next prompt fits the window`,
+            fr: `Contexte toujours trop plein après l’échec de la compaction : ~${Math.round(freedTokens)}k tokens des messages les plus anciens (résultats d’outils en premier) ont été retirés pour que la prochaine requête tienne dans la fenêtre`,
+          }),
+          recoverable: true,
+        },
+      })
+    }
+  }
 
   for (;;) {
     if (signal?.aborted) throw new Error('Aborted')
@@ -536,17 +687,12 @@ export async function runTopLevelAgentLoop(
         )
       }
 
-      const contextState = sessionManager.getContextState(sessionId)
       // Sub-agents run in a fresh scoped context: their output budget must be
       // clamped against their own context usage, never the parent session's
       // (a big parent session would otherwise leave the sub-agent only the
       // 256-token safety floor — the root cause of truncated sub-agent plans).
-      const subAgentContextTokens = config.subAgentMetadata
-        ? (sessionManager.getSubAgentContextTokens?.(config.subAgentMetadata.subAgentId) ?? 0)
-        : undefined
-      previousContextTokens = subAgentContextTokens ?? contextState.currentTokens
-
-      const contextWindow = sessionManager.getCurrentModelContext(sessionId, config.mode)
+      const { tokens: trackedTokens, window: contextWindow } = contextTokensAndWindow()
+      previousContextTokens = trackedTokens
       const availableForOutput = Math.max(
         256,
         contextWindow - previousContextTokens - pendingToolResultTokens - OUTPUT_RESERVE_TOKENS,
@@ -561,6 +707,19 @@ export async function runTopLevelAgentLoop(
       // percentage quality threshold is deliberately NOT applied here (it stays
       // in the post-turn check) so a near-full-but-safe prompt is not
       // re-triggered on every iteration.
+      // Re-arm: compactionBlocked is no longer permanent. Once the tracked
+      // context has dropped back under the safety line (hard-trim, a
+      // successful manual compaction, a fresh window), compaction may fire
+      // again — with a fresh attempt budget.
+      if (
+        compactionBlocked &&
+        contextWindow > 0 &&
+        contextWindow - previousContextTokens >= COMPACTION_HEADROOM_TOKENS
+      ) {
+        compactionBlocked = false
+        compactionAttempts = 0
+      }
+
       if (
         !compacting &&
         !compactionBlocked &&
@@ -627,6 +786,9 @@ export async function runTopLevelAgentLoop(
             messages: transformResult.messages,
             contextWindow,
             ...(signal ? { signal } : {}),
+            onStep: (step, totalSteps) => {
+              onMessage?.(createCompactionProgressMessage({ step, totalSteps }))
+            },
           })
           if (fold.summary !== undefined) {
             compactionFoldSteps = fold.steps
@@ -644,20 +806,27 @@ export async function runTopLevelAgentLoop(
               finishReason: 'stop',
             }
           } else {
+            const reasonText = FOLD_FAILURE_REASON_TEXT[fold.failureReason ?? 'llm-error']
             append({
               type: 'chat.error',
               data: {
                 error: serverT({
-                  en: 'Compaction fold failed, continuing with full context',
-                  fr: 'La compaction en plis a échoué, poursuit avec le contexte complet',
+                  en: `Compaction fold failed at step ${fold.steps} of ${fold.totalSteps} (${reasonText.en}), continuing with full context`,
+                  fr: `La compaction en plis a échoué à l'étape ${fold.steps} sur ${fold.totalSteps} (${reasonText.fr}), poursuit avec le contexte complet`,
                 }),
                 recoverable: true,
               },
             })
-            logger.warn('Sequential fold compaction failed, continuing with full context', { sessionId })
+            logger.warn('Sequential fold compaction failed, continuing with full context', {
+              sessionId,
+              reason: fold.failureReason,
+              step: fold.steps,
+              totalSteps: fold.totalSteps,
+            })
             tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? ''])
             if (compactionAttempts >= MAX_COMPACTION_ATTEMPTS) compactionBlocked = true
             compacting = false
+            backstopTrimIfOverfull()
             if (config.initialCompacting) return {}
             continue
           }
@@ -1063,17 +1232,21 @@ export async function runTopLevelAgentLoop(
     pendingToolResultTokens = 0
     currentMaxTokensOverride = undefined
 
+    // Re-arm (post-turn): same rule as the pre-call check, with the fresh
+    // usage just recorded.
+    if (compactionBlocked) {
+      const { tokens: rearmTokens, window: rearmWindow } = contextTokensAndWindow()
+      if (rearmWindow > 0 && rearmWindow - rearmTokens >= COMPACTION_HEADROOM_TOKENS) {
+        compactionBlocked = false
+        compactionAttempts = 0
+      }
+    }
+
     // Check compaction threshold with fresh promptTokens from LLM.
     // When exceeded, append compaction prompt and let the next iteration
     // handle summarization — same agent, same loop, no nested call.
     if (!compacting && !compactionBlocked) {
-      const contextState = sessionManager.getContextState(sessionId)
-      const compactionTokens = config.subAgentMetadata
-        ? (sessionManager.getSubAgentContextTokens?.(config.subAgentMetadata.subAgentId) ?? 0)
-        : contextState.currentTokens
-      const compactionWindow = config.subAgentMetadata
-        ? sessionManager.getCurrentModelContext(sessionId, config.mode)
-        : contextState.maxTokens
+      const { tokens: compactionTokens, window: compactionWindow } = contextTokensAndWindow()
       if (
         shouldCompact(
           compactionTokens,
@@ -1188,6 +1361,7 @@ export async function runTopLevelAgentLoop(
           tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? '', assistantMsgId])
           compactionBlocked = true
           compacting = false
+          backstopTrimIfOverfull()
           if (config.initialCompacting) {
             append(createChatDoneEvent(assistantMsgId, 'complete', undefined, agentType))
             break
@@ -1397,6 +1571,7 @@ ${COMPACTION_PROMPT}`,
         tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? '', assistantMsgId])
         if (compactionAttempts >= MAX_COMPACTION_ATTEMPTS) compactionBlocked = true
         compacting = false
+        backstopTrimIfOverfull()
         if (config.initialCompacting) {
           append(createChatDoneEvent(assistantMsgId, 'complete', undefined, agentType))
           break
@@ -1422,6 +1597,7 @@ ${COMPACTION_PROMPT}`,
         tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? '', assistantMsgId])
         if (compactionAttempts >= MAX_COMPACTION_ATTEMPTS) compactionBlocked = true
         compacting = false
+        backstopTrimIfOverfull()
         if (config.initialCompacting) {
           append(createChatDoneEvent(assistantMsgId, 'complete', undefined, agentType))
           break
@@ -1512,12 +1688,13 @@ ${COMPACTION_PROMPT}`,
         append({ type: 'message.done', data: { messageId: freshMsgId } })
       }
 
-      // Reinject the user's current question verbatim into the new window
-      // (top-level only). The summary can truncate it mid-sentence; re-adding
-      // it verbatim guarantees the agent keeps the user's actual request.
+      // Reinject the user's most recent questions verbatim into the new
+      // window (top-level only). The summary can truncate them mid-sentence
+      // (requests, file paths, ...); re-adding them verbatim guarantees the
+      // agent keeps the user's actual recent asks.
       if (!config.subAgentMetadata) {
-        const question = findLastUserMessage(sessionId)
-        if (question) {
+        const questions = findLastUserMessages(sessionId, COMPACTION_PRESERVED_USER_MESSAGES)
+        for (const question of questions) {
           const continuationMsgId = crypto.randomUUID()
           append(
             createMessageStartEvent(continuationMsgId, 'user', question, {

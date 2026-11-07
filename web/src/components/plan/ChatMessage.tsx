@@ -340,13 +340,18 @@ export const ChatMessage = memo(function ChatMessage({
     )
   }
 
-  // The user's question re-injected verbatim after compaction. It only exists
-  // for the LLM window — render it as a muted divider, not a second user bubble.
+  // Recent user questions re-injected verbatim after compaction. They only
+  // exist for the LLM window — render them as a muted divider, not second user bubbles.
   if (message.messageKind === 'context-continuation') {
     return (
       <div className="flex items-center gap-4 my-3 text-text-muted text-xs">
         <div className="flex-1 border-t border-border" />
-        <span>{t({ en: 'Question re-anchored after compaction', fr: 'Question réancrée après compaction' })}</span>
+        <span>
+          {t({
+            en: 'Recent questions re-anchored after compaction',
+            fr: 'Questions récentes réancrées après compaction',
+          })}
+        </span>
         <div className="flex-1 border-t border-border" />
       </div>
     )

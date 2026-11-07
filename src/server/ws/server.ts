@@ -307,6 +307,42 @@ function processQueueAndRestartTurn(
 // Track active agent AbortControllers by sessionId
 const activeAgents = new Map<string, AbortController>()
 const abortedSessions = new Set<string>()
+// Sessions whose queue must survive a turn settlement (manual compaction in
+// progress): cleanupAfterTurn must not drain or clear their message queues.
+const heldSessions = new Set<string>()
+const turnResolvers = new Map<string, () => void>()
+// Sessions with a manual compaction turn in flight: a concurrent
+// context.compact (easy double-click) must not abort the fold mid-run —
+// it is deduped with an ack.
+const compactingSessions = new Set<string>()
+// Bounded wait for a settling turn: if the turn settles just before its
+// resolver is registered, the promise would never resolve and the queue
+// holds would freeze the session's queue until a server restart.
+const TURN_SETTLE_TIMEOUT_MS = 30_000
+
+function awaitTurnSettle(promise: Promise<unknown>): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, TURN_SETTLE_TIMEOUT_MS)
+    promise.then(
+      () => {
+        clearTimeout(timer)
+        resolve()
+      },
+      () => {
+        clearTimeout(timer)
+        resolve()
+      },
+    )
+  })
+}
+
+interface ExternalTurnControl {
+  hold: (sessionId: string) => void
+  release: (sessionId: string) => void
+  abortAndWait: (sessionId: string) => Promise<boolean>
+}
+
+let externalTurnControl: ExternalTurnControl | null = null
 
 interface ClientConnection {
   ws: WebSocket
@@ -511,50 +547,64 @@ export function createWebSocketServer(
     }
     activeAgents.delete(sessionId)
 
-    if (abortedSessions.has(sessionId)) {
-      abortedSessions.delete(sessionId)
+    try {
+      if (heldSessions.has(sessionId)) {
+        const contextState = sessionManager.getContextState(sessionId)
+        sendFn(sessionId, createContextStateMessage(contextState))
+        return
+      }
+
+      if (abortedSessions.has(sessionId)) {
+        abortedSessions.delete(sessionId)
+        sessionManager.clearMessageQueue(sessionId)
+        const contextState = sessionManager.getContextState(sessionId)
+        sendFn(sessionId, createContextStateMessage(contextState))
+        return
+      }
+
+      const processed = processQueueAndRestartTurn(
+        sessionManager,
+        sessionId,
+        (sid) => sessionManager.drainAsapMessages(sid),
+        'asap',
+        sendFn,
+        activeAgents,
+        startTurnWithCompletionChain,
+        (sid, mode, content, attachments, messageKind) =>
+          sessionManager.queueMessage(sid, mode, content, attachments, messageKind as 'command' | undefined),
+      )
+      if (processed) {
+        if (setRunningOnEarlyReturn) sessionManager.setRunning(sessionId, false)
+        return
+      }
+
+      const processedCompletion = processQueueAndRestartTurn(
+        sessionManager,
+        sessionId,
+        (sid) => sessionManager.drainCompletionMessages(sid),
+        'completion',
+        sendFn,
+        activeAgents,
+        startTurnWithCompletionChain,
+      )
+      if (processedCompletion) {
+        if (setRunningOnEarlyReturn) sessionManager.setRunning(sessionId, false)
+        return
+      }
+
       sessionManager.clearMessageQueue(sessionId)
+      // runChatTurn in startTurnWithCompletionChain already sets isRunning=false in finally.
+      // For the runner orchestrator path (which bypasses runChatTurn), the caller's
+      // .finally() block handles setRunning(false) explicitly.
       const contextState = sessionManager.getContextState(sessionId)
       sendFn(sessionId, createContextStateMessage(contextState))
-      return
+    } finally {
+      const resolve = turnResolvers.get(sessionId)
+      if (resolve) {
+        turnResolvers.delete(sessionId)
+        resolve()
+      }
     }
-
-    const processed = processQueueAndRestartTurn(
-      sessionManager,
-      sessionId,
-      (sid) => sessionManager.drainAsapMessages(sid),
-      'asap',
-      sendFn,
-      activeAgents,
-      startTurnWithCompletionChain,
-      (sid, mode, content, attachments, messageKind) =>
-        sessionManager.queueMessage(sid, mode, content, attachments, messageKind as 'command' | undefined),
-    )
-    if (processed) {
-      if (setRunningOnEarlyReturn) sessionManager.setRunning(sessionId, false)
-      return
-    }
-
-    const processedCompletion = processQueueAndRestartTurn(
-      sessionManager,
-      sessionId,
-      (sid) => sessionManager.drainCompletionMessages(sid),
-      'completion',
-      sendFn,
-      activeAgents,
-      startTurnWithCompletionChain,
-    )
-    if (processedCompletion) {
-      if (setRunningOnEarlyReturn) sessionManager.setRunning(sessionId, false)
-      return
-    }
-
-    sessionManager.clearMessageQueue(sessionId)
-    // runChatTurn in startTurnWithCompletionChain already sets isRunning=false in finally.
-    // For the runner orchestrator path (which bypasses runChatTurn), the caller's
-    // .finally() block handles setRunning(false) explicitly.
-    const contextState = sessionManager.getContextState(sessionId)
-    sendFn(sessionId, createContextStateMessage(contextState))
   }
 
   function startTurnWithCompletionChain(sessionId: string, controller: AbortController) {
@@ -1098,6 +1148,9 @@ export function createWebSocketServer(
     broadcastForProject,
     broadcastAll,
     refreshGitStatus: (workdir: string) => moduleRefreshGitStatus(workdir),
+    setExternalTurnControl: (control: ExternalTurnControl) => {
+      externalTurnControl = control
+    },
   }
 }
 
@@ -1109,6 +1162,7 @@ export interface WebSocketServerExports {
   broadcastForProject: (projectId: string, sessionId: string, msg: ServerMessage) => void
   broadcastAll: (msg: ServerMessage) => void
   refreshGitStatus: (workdir: string) => Promise<void>
+  setExternalTurnControl: (control: ExternalTurnControl) => void
 }
 
 async function handleClientMessage(
@@ -1277,19 +1331,35 @@ async function handleClientMessage(
 
       const session = sessionManager.requireSession(sessionId)
 
-      // Check if session is running
-      if (session.isRunning) {
-        send(
-          createErrorMessage(
-            'SESSION_RUNNING',
-            serverT({
-              en: 'Cannot compact while session is running',
-              fr: 'Impossible de compacter pendant que la session est en cours',
-            }),
-            message.id,
-          ),
-        )
+      // A manual compaction is already in flight for this session (easy
+      // double-click): dedupe with an ack instead of aborting the fold.
+      if (compactingSessions.has(sessionId)) {
+        send({ type: 'ack', payload: {}, id: message.id })
         return
+      }
+      compactingSessions.add(sessionId)
+
+      // If a turn is running, hold the session's queue (so queued messages
+      // survive) and wait for the running turn to fully settle before
+      // compacting. The hold is released when the compaction turn ends.
+      let releaseQueue: (() => void) | undefined
+      if (session.isRunning) {
+        heldSessions.add(sessionId)
+        if (externalTurnControl) {
+          externalTurnControl.hold(sessionId)
+          releaseQueue = () => externalTurnControl?.release(sessionId)
+          await awaitTurnSettle(externalTurnControl.abortAndWait(sessionId))
+        }
+        const wsController = activeAgents.get(sessionId)
+        if (wsController) {
+          await awaitTurnSettle(
+            new Promise<void>((resolve) => {
+              turnResolvers.set(sessionId, resolve)
+              wsController.abort()
+            }),
+          )
+        }
+        heldSessions.delete(sessionId)
       }
 
       // Acknowledge immediately
@@ -1357,6 +1427,10 @@ async function handleClientMessage(
             sendForSession(sessionId, createContextStateMessage(contextState))
           } catch {
             // Session may have been deleted during execution
+          } finally {
+            // Release the queue hold so queued messages start after compaction
+            releaseQueue?.()
+            compactingSessions.delete(sessionId)
           }
         })
 

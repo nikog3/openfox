@@ -283,6 +283,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
           llmRetry: null,
           nameGenerating: null,
           prefill: null,
+          compactionProgress: null,
           pendingSessionCreate: false as boolean | string,
         }
       })
@@ -340,6 +341,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
           llmRetry: null,
           nameGenerating: null,
           prefill: data.prefill ?? null,
+          compactionProgress: null,
         }
         return {
           ...replacePane(s, sessionId, nextPane),
@@ -394,6 +396,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
     llmRetry: null,
     nameGenerating: null,
     prefill: null,
+    compactionProgress: null,
     liveTurnStats: null,
     sessionStats: null,
     sessionsHasMore: true,

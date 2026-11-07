@@ -83,16 +83,14 @@ export function ContextPopover({ variant = 'popover', onUpdateSystemPrompt }: Co
           <div className="absolute right-0 top-full mt-1.5 z-50 bg-bg-secondary border border-border rounded-lg shadow-xl py-1 min-w-[160px]">
             <button
               onClick={() => {
-                if (!isRunning && sessionId) compactContext(sessionId)
+                if (sessionId) compactContext(sessionId)
                 setMenuOpen(false)
               }}
-              disabled={isRunning}
-              className="w-full px-3 py-1.5 text-left text-sm hover:bg-bg-tertiary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              title={
-                isRunning
-                  ? t({ en: 'Cannot compact while running', fr: 'Impossible de compresser pendant l’exécution' })
-                  : t({ en: 'Compact context', fr: 'Compresser le contexte' })
-              }
+              className="w-full px-3 py-1.5 text-left text-sm hover:bg-bg-tertiary transition-colors"
+              title={t({
+                en: 'Compact context — stops the running turn',
+                fr: 'Compresser le contexte — arrête le tour en cours',
+              })}
             >
               <span className={dangerZone ? 'text-accent-error' : ''}>{t({ en: 'Compact', fr: 'Compresser' })}</span>
             </button>
@@ -153,15 +151,13 @@ export function ContextPopover({ variant = 'popover', onUpdateSystemPrompt }: Co
       <div className="space-y-1">
         <button
           onClick={() => {
-            if (!isRunning && sessionId) compactContext(sessionId)
+            if (sessionId) compactContext(sessionId)
           }}
-          disabled={isRunning}
-          className="w-full px-3 py-1.5 text-left text-sm hover:bg-bg-tertiary transition-colors disabled:opacity-40 disabled:cursor-not-allowed rounded"
-          title={
-            isRunning
-              ? t({ en: 'Cannot compact while running', fr: 'Impossible de compresser pendant l’exécution' })
-              : t({ en: 'Compact context', fr: 'Compresser le contexte' })
-          }
+          className="w-full px-3 py-1.5 text-left text-sm hover:bg-bg-tertiary transition-colors rounded"
+          title={t({
+            en: 'Compact context — stops the running turn',
+            fr: 'Compresser le contexte — arrête le tour en cours',
+          })}
         >
           <span className={dangerZone ? 'text-accent-error' : ''}>{t({ en: 'Compact', fr: 'Compresser' })}</span>
         </button>

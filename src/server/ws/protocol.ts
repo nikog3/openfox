@@ -23,6 +23,7 @@ import type {
   ChatProgressPayload,
   ChatPrefillPayload,
   ChatPrefillProgressPayload,
+  CompactionProgressPayload,
   ChatFormatRetryPayload,
   ChatMessagePayload,
   ChatMessageUpdatedPayload,
@@ -295,6 +296,12 @@ export function createChatPrefillProgressMessage(
   payload: ChatPrefillProgressPayload,
 ): ServerMessage<ChatPrefillProgressPayload> {
   return createServerMessage('chat.prefill_progress', payload)
+}
+
+export function createCompactionProgressMessage(
+  payload: CompactionProgressPayload,
+): ServerMessage<CompactionProgressPayload> {
+  return createServerMessage('compaction.progress', payload)
 }
 
 export function createChatFormatRetryMessage(

@@ -90,6 +90,17 @@ export interface PrefillState {
   cachedTokens?: number
 }
 
+/**
+ * Live context-compaction progress: the sequential fold is summarizing the
+ * conversation in steps; the UI shows "step X of Y" until the summary lands.
+ */
+export interface CompactionProgressState {
+  /** Current summary step (1-based, in progress). */
+  step: number
+  /** Estimated total summary steps. */
+  totalSteps: number
+}
+
 export interface StreamingBuffer {
   messageId: string | null
   deltaContent: string
@@ -139,6 +150,8 @@ export interface SessionPane {
   nameGenerating: NameGeneratingState | null
   /** Live prefill state; null when no LLM call is awaiting its first token. */
   prefill: PrefillState | null
+  /** Live context-compaction fold progress; null when not compacting. */
+  compactionProgress: CompactionProgressState | null
   /** Cumulative turn stats streamed while a turn is running; null when idle. */
   liveTurnStats: MessageStats | null
   /** Server-computed headline stats for the whole session (all context windows). Null when no response has stats yet. */
@@ -175,6 +188,8 @@ export interface SessionState {
   nameGenerating: NameGeneratingState | null
   /** Live prefill state; null when no LLM call is awaiting its first token. */
   prefill: PrefillState | null
+  /** Live context-compaction fold progress; null when not compacting. */
+  compactionProgress: CompactionProgressState | null
   /** Cumulative turn stats streamed while a turn is running; null when idle. */
   liveTurnStats: MessageStats | null
   /** Server-computed headline stats for the whole session (all context windows). Null when no response has stats yet. */

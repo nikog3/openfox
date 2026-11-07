@@ -129,6 +129,7 @@ export type ServerMessageType =
   | 'chat.progress' // Progress update (e.g., "Generating summary...")
   | 'chat.prefill' // LLM call started — prefill in progress, first token pending
   | 'chat.prefill_progress' // Live prefill progress (engine-measured, llama.cpp /slots)
+  | 'compaction.progress' // Sequential fold compaction step progress (live)
   | 'chat.format_retry' // Model used wrong format (XML tools), retrying
   | 'chat.message' // Full message added (system-generated, etc.)
   | 'chat.message_updated' // Message updated (e.g., isStreaming changed)
@@ -393,6 +394,13 @@ export interface ChatPrefillProgressPayload {
   taskId?: number
   /** Prompt tokens served from the KV cache, when reported by the engine. */
   cachedTokens?: number
+}
+
+export interface CompactionProgressPayload {
+  /** Current summary step of the sequential fold (1-based, in progress). */
+  step: number
+  /** Estimated total summary steps for the fold. */
+  totalSteps: number
 }
 
 export interface ChatFormatRetryPayload {

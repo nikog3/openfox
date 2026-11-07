@@ -2185,6 +2185,7 @@ describe('compaction under context overflow', () => {
         dynamicContextChanged: false,
       }),
       getCurrentModelContext: vi.fn().mockReturnValue(200_000),
+      getModelCompactionThreshold: vi.fn().mockReturnValue(undefined),
       getCurrentModelSettings: vi.fn().mockReturnValue({ maxTokens: 1_000 }),
       setCurrentContextSize: vi.fn(),
       getDynamicContextChanged: vi.fn().mockReturnValue(false),
@@ -2429,6 +2430,200 @@ describe('compaction under context overflow', () => {
     expect(continuation).toBeDefined()
     expect(continuation.data.role).toBe('user')
     expect(continuation.data.content).toBe("Non. Je veux savoir ce que j'ai intégré")
+  })
+
+  it('hard-trims the oldest tool results when the context is still overfull after a failed compaction (backstop)', async () => {
+    mockSessionManager = {
+      ...makeOverflowingSessionManager(),
+      getContextState: vi.fn().mockReturnValue({
+        currentTokens: 205_000,
+        maxTokens: 200_000,
+        compactionCount: 0,
+        dangerZone: false,
+        canCompact: false,
+        dynamicContextChanged: false,
+      }),
+      getCurrentModelContext: vi.fn().mockReturnValue(200_000),
+    }
+    const toolResultOutput = 'x'.repeat(25_000)
+    ;(mockEventStore.getEvents as any).mockReturnValue([
+      { type: 'message.start', seq: 0, data: { messageId: 'a1', role: 'assistant', content: '' } },
+      { type: 'tool.call', seq: 1, data: { messageId: 'a1', toolCallId: 't1', name: 'read_file', arguments: {} } },
+      {
+        type: 'tool.result',
+        seq: 2,
+        data: { messageId: 'a1', toolCallId: 't1', result: { output: toolResultOutput, error: '' } },
+      },
+      { type: 'message.start', seq: 3, data: { messageId: 'u1', role: 'user', content: 'y'.repeat(4_000) } },
+    ])
+    let call = 0
+    ;(consumeStreamGenerator as any).mockImplementation(() => {
+      call += 1
+      return Promise.resolve({
+        content: call <= 2 ? 'OK' : 'final answer after the backstop trim',
+        toolCalls: [],
+        segments: [{ type: 'text', content: call <= 2 ? 'OK' : 'final answer after the backstop trim' }],
+        usage: { promptTokens: 10, completionTokens: 5 },
+        timing: { ttft: 0.1, completionTime: 0.5, tps: 10, prefillTps: 100 },
+        aborted: false,
+        finishReason: 'stop',
+        modelParams: {},
+      })
+    })
+
+    const config = makeConfig()
+    await runTopLevelAgentLoop(config, mockTurnMetrics).catch(() => {})
+
+    expect(streamLLMPure).toHaveBeenCalledTimes(3)
+    const events = emittedEvents(config)
+    expect(events.some((e) => e?.type === 'context.compacted')).toBe(false)
+    const compactionErrors = events.filter(
+      (e) => e?.type === 'chat.error' && e.data?.recoverable && /too short summary/.test(e.data?.error ?? ''),
+    )
+    expect(compactionErrors.length).toBe(2)
+    const trimCalls = (mockEventStore.tombstoneEvents as any).mock.calls.filter((c: any[]) => c[1]?.[0] === 0)
+    expect(trimCalls.length).toBeGreaterThan(0)
+    expect(trimCalls[0]?.[1]).toEqual([0, 1, 2])
+    expect(
+      (mockEventStore.tombstoneEvents as any).mock.calls.every((c: any[]) => !(c[1] as number[]).includes(3)),
+    ).toBe(true)
+    expect(events.some((e) => e?.type === 'chat.done' && e.data?.reason === 'complete')).toBe(true)
+  })
+
+  it('reports a failing fold step with its reason and continues the turn (fold resilience)', async () => {
+    mockSessionManager = {
+      ...makeOverflowingSessionManager(),
+      getContextState: vi.fn().mockReturnValue({
+        currentTokens: 196_000,
+        maxTokens: 200_000,
+        compactionCount: 0,
+        dangerZone: false,
+        canCompact: false,
+        dynamicContextChanged: false,
+      }),
+      getCurrentModelContext: vi.fn().mockReturnValue(200_000),
+    }
+    // 500k + 450k chars: fitting would drop more than half the wire → fold path
+    assembleRequestMock.mockReturnValue({
+      systemPrompt: 'sys',
+      messages: [
+        { role: 'user' as const, content: 'x'.repeat(500_000) },
+        { role: 'assistant' as const, content: 'y'.repeat(450_000) },
+        { role: 'user' as const, content: 'compaction prompt text' },
+      ],
+    })
+    const completeMock = vi.fn().mockRejectedValue(new Error('boom'))
+    mockLLMClient = { ...mockLLMClient, complete: completeMock }
+    ;(consumeStreamGenerator as any).mockResolvedValue({
+      content: 'final answer after fold failure',
+      toolCalls: [],
+      segments: [{ type: 'text', content: 'final answer after fold failure' }],
+      usage: { promptTokens: 10, completionTokens: 5 },
+      timing: { ttft: 0.1, completionTime: 0.5, tps: 10, prefillTps: 100 },
+      aborted: false,
+      finishReason: 'stop',
+      modelParams: {},
+    })
+
+    const onMessage = vi.fn()
+    const config = makeConfig({ onMessage })
+    await runTopLevelAgentLoop(config, mockTurnMetrics).catch(() => {})
+
+    expect(completeMock).toHaveBeenCalledTimes(6)
+    expect(streamLLMPure).toHaveBeenCalledTimes(1)
+    const events = emittedEvents(config)
+    expect(events.some((e) => e?.type === 'context.compacted')).toBe(false)
+    const foldErrors = events.filter(
+      (e) => e?.type === 'chat.error' && e.data?.recoverable && /step 1 of 3 \(LLM error\)/.test(e.data?.error ?? ''),
+    )
+    expect(foldErrors.length).toBe(2)
+    const progress = onMessage.mock.calls.map((c: any[]) => c[0]).filter((m: any) => m?.type === 'compaction.progress')
+    expect(progress).toHaveLength(2)
+    for (const msg of progress) expect(msg.payload).toEqual({ step: 1, totalSteps: 3 })
+    expect(events.some((e) => e?.type === 'chat.done' && e.data?.reason === 'complete')).toBe(true)
+  })
+
+  it('re-arms compaction once the context drops back under the safety line, then compacts again with a fresh budget', async () => {
+    const toolRegistry = {
+      tools: [],
+      definitions: [],
+      execute: vi.fn().mockResolvedValue({ success: true, output: 'file contents', durationMs: 0, truncated: false }),
+    } as any
+    // Context reads in order: pre-call read per iteration, plus one extra
+    // backstop read after each failed (too-short) compaction round. The 190k
+    // read re-arms (headroom 10k >= 5k), the 196k post-call read re-triggers
+    // with a fresh budget (196k >= 85% of 200k), and 50k ends the turn.
+    const ctxSequence = [
+      205_000, // iter 1 pre-call -> trigger
+      205_000, // iter 2 pre-call (summary call 1)
+      205_000, // iter 2 backstop after too-short failure
+      205_000, // iter 3 pre-call -> trigger
+      205_000, // iter 4 pre-call (summary call 2)
+      190_000, // iter 4 backstop (under window, no trim)
+      190_000, // iter 5 pre-call -> re-arm
+      196_000, // iter 5 post-call threshold -> re-trigger, fresh budget
+      196_000, // iter 6 pre-call (summary call 3, succeeds)
+      50_000, // iter 7 pre-call (fresh window)
+    ]
+    let ctxCall = 0
+    mockSessionManager = {
+      ...makeOverflowingSessionManager(),
+      getContextState: vi.fn().mockImplementation(() => {
+        ctxCall += 1
+        return {
+          currentTokens: ctxSequence[ctxCall - 1] ?? 50_000,
+          maxTokens: 200_000,
+          compactionCount: 0,
+          dangerZone: false,
+          canCompact: false,
+          dynamicContextChanged: false,
+        }
+      }),
+    }
+    const goodSummary =
+      'A compaction summary of the whole conversation so far, with the key decisions and file changes.'
+    let llmCall = 0
+    ;(consumeStreamGenerator as any).mockImplementation(() => {
+      llmCall += 1
+      if (llmCall === 3) {
+        return Promise.resolve({
+          content: '',
+          toolCalls: [{ id: 'call-1', name: 'read_file', arguments: { path: 'a.ts' } }],
+          segments: [],
+          usage: { promptTokens: 10, completionTokens: 5 },
+          timing: { ttft: 0.1, completionTime: 0.5, tps: 10, prefillTps: 100 },
+          aborted: false,
+          finishReason: 'tool_calls',
+          modelParams: {},
+        })
+      }
+      return Promise.resolve({
+        content: llmCall <= 2 ? 'OK' : goodSummary,
+        toolCalls: [],
+        segments: [{ type: 'text', content: llmCall <= 2 ? 'OK' : goodSummary }],
+        usage: { promptTokens: 10, completionTokens: 5 },
+        timing: { ttft: 0.1, completionTime: 0.5, tps: 10, prefillTps: 100 },
+        aborted: false,
+        finishReason: 'stop',
+        modelParams: {},
+      })
+    })
+
+    const config = makeConfig({ getToolRegistry: () => toolRegistry })
+    await runTopLevelAgentLoop(config, mockTurnMetrics)
+
+    // Two too-short failures block compaction, the 190k context re-arms it,
+    // and the 196k context re-triggers it with a fresh attempt budget.
+    expect(streamLLMPure).toHaveBeenCalledTimes(5)
+    const events = emittedEvents(config)
+    const tooShort = events.filter(
+      (e) => e?.type === 'chat.error' && e.data?.recoverable && /too short summary/.test(e.data?.error ?? ''),
+    )
+    expect(tooShort.length).toBe(2)
+    const compacted = events.find((e) => e?.type === 'context.compacted')
+    expect(compacted).toBeDefined()
+    expect(compacted.data.summary).toBe(goodSummary)
+    expect(events.some((e) => e?.type === 'chat.done' && e.data?.reason === 'complete')).toBe(true)
   })
 })
 

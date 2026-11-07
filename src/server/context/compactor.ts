@@ -79,6 +79,14 @@ export const MAX_COMPACTION_ATTEMPTS = 2
 export const MAX_COMPACTION_TOOLCALL_REJECTIONS = 3
 
 /**
+ * Number of most recent real user messages kept verbatim after compaction.
+ * The summary can truncate recent requests, file paths and other details the
+ * user is still relying on; re-injecting them verbatim into the fresh window
+ * keeps them canonical (generalizes the single "last question" re-injection).
+ */
+export const COMPACTION_PRESERVED_USER_MESSAGES = 5
+
+/**
  * Minimum length for a summary to be allowed to replace the whole
  * conversation context. A one-line non-summary ("OK") must never wipe a
  * 130k-token context — below this floor the summary is treated as empty

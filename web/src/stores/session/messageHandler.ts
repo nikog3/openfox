@@ -17,6 +17,7 @@ import type {
   ChatTodoPayload,
   ChatPrefillPayload,
   ChatPrefillProgressPayload,
+  CompactionProgressPayload,
   ChatMessagePayload,
   ChatMessageUpdatedPayload,
   ChatStatsPayload,
@@ -404,6 +405,7 @@ export function handleServerMessage(
                 startedAt: payload.prefill.startedAt,
               }
             : null,
+          compactionProgress: null,
           liveTurnStats: null,
         }
         const base = replacePane(state, sessionId, nextPane)
@@ -487,6 +489,7 @@ export function handleServerMessage(
             queuedMessages: [],
             liveTurnStats: null,
             prefill: null,
+            compactionProgress: null,
           })),
         )
       }
@@ -876,6 +879,16 @@ export function handleServerMessage(
       break
     }
 
+    case 'compaction.progress': {
+      // Sequential fold compaction step progress. Liveness-only for background
+      // sessions; open panes update the indicator in place.
+      const payload = message.payload as CompactionProgressPayload
+      if (!applyChat(set, get, message.sessionId, (pane) => ({ ...pane, compactionProgress: payload }))) {
+        // No unread tick: the turn will surface via chat.done.
+      }
+      break
+    }
+
     case 'chat.format_retry': {
       // Same treatment as progress: acknowledge, mark background sessions
       // unread, and carry no state of our own.
@@ -917,6 +930,7 @@ export function handleServerMessage(
           ...(clearsLiveTurnStats(payload) ? { liveTurnStats: null } : {}),
           ...(payload.reason !== 'error' ? { llmRetry: null } : {}),
           prefill: null,
+          compactionProgress: null,
         })),
       )
       break
@@ -989,6 +1003,7 @@ export function handleServerMessage(
           ...pane,
           error: { code: 'CHAT_ERROR', message: payload.error },
           prefill: null,
+          compactionProgress: null,
         })),
       )
       break

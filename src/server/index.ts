@@ -3778,7 +3778,7 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
 
   // Point the tasks service at the workflow launcher. Task-seeded workflows run
   // through the same shared launcher as runner.launch (src/server/runner/launch.ts).
-  const { launchWorkflowRun, abortRunnerRun } = await import('./runner/launch.js')
+  const { launchWorkflowRun, abortRunnerRun, abortRunnerRunAndWait } = await import('./runner/launch.js')
   deferTasksLaunchWorkflow = (sessionId, launch) => {
     // Honor the session's effective provider/model (agent override > session
     // preference > default) exactly like the WS session-aware client path —
@@ -3842,6 +3842,20 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
     broadcastForSession: wssExports.broadcastForSession,
   })
   queueProcessor.start()
+
+  // Let the WS layer hold a session's queue and wait for external turn owners
+  // (queue processor, task-launched workflow runs) to settle before compacting.
+  wssExports.setExternalTurnControl({
+    hold: (sessionId) => queueProcessor.holdSession(sessionId),
+    release: (sessionId) => queueProcessor.releaseSession(sessionId),
+    abortAndWait: async (sessionId) => {
+      const [runnerAborted, queueAborted] = await Promise.all([
+        abortRunnerRunAndWait(sessionId),
+        queueProcessor.abortSessionAndWait(sessionId),
+      ])
+      return runnerAborted || queueAborted
+    },
+  })
 
   // Opt-in boot auto-continuation (Settings > Advanced): sessions that were
   // running when the server stopped get a continuation turn queued through the

@@ -48,12 +48,24 @@ export interface LaunchWorkflowRunDeps {
 }
 
 const activeRuns = new Map<string, AbortController>()
+const runResolvers = new Map<string, () => void>()
 
 /** Abort a task-launched workflow run for a session. Returns whether one was found. */
 export function abortRunnerRun(sessionId: string): boolean {
   const controller = activeRuns.get(sessionId)
   if (!controller) return false
   controller.abort()
+  return true
+}
+
+/** Abort a task-launched workflow run and wait for it to fully settle. */
+export async function abortRunnerRunAndWait(sessionId: string): Promise<boolean> {
+  const controller = activeRuns.get(sessionId)
+  if (!controller) return false
+  await new Promise<void>((resolve) => {
+    runResolvers.set(sessionId, resolve)
+    controller.abort()
+  })
   return true
 }
 
@@ -161,6 +173,12 @@ export function launchWorkflowRun(deps: LaunchWorkflowRunDeps, payload: Workflow
         onFinished?.()
       } catch {
         // Session may have been deleted during execution
+      } finally {
+        const resolve = runResolvers.get(sessionId)
+        if (resolve) {
+          runResolvers.delete(sessionId)
+          resolve()
+        }
       }
     })
 }

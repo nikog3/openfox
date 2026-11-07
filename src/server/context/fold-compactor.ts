@@ -12,13 +12,33 @@ export interface SequentialFoldOptions {
   messages: ContextMessage[]
   contextWindow: number
   signal?: AbortSignal
+  /**
+   * Live progress hook, called when a summary step starts, with its 1-based
+   * step number and the estimated total step count. Lets the UI show a
+   * progress indicator while the fold runs.
+   */
+  onStep?: (step: number, totalSteps: number) => void
 }
+
+export type FoldFailureReason = 'truncated' | 'too-short' | 'llm-error'
 
 export interface SequentialFoldResult {
   summary: string | undefined
   steps: number
+  totalSteps: number
   promptTokens?: number
   completionTokens?: number
+  /**
+   * Set when summary is undefined: why the fold failed after the per-step
+   * retry and the lossy truncateToBudget fallback.
+   */
+  failureReason?: FoldFailureReason
+}
+
+class FoldStepError extends Error {
+  constructor(readonly reason: FoldFailureReason) {
+    super(`Compaction fold step failed: ${reason}`)
+  }
 }
 
 const MAX_FOLD_DEPTH = 8
@@ -35,18 +55,28 @@ const MAX_FOLD_DEPTH = 8
  * The trailing COMPACTION_PROMPT (already present in rebuilt conversation
  * messages) is stripped up front; each summary call appends it itself.
  *
- * Any failure (truncated summary, too-short summary, LLM error) returns
- * `{ summary: undefined }` so the caller can roll back the compaction prompt
- * and continue with the full context. An aborted signal rethrows 'Aborted'.
+ * A failing summary step (truncated, too short, LLM error) is retried once,
+ * then re-summarized from a budget-halved copy of that chunk only (lossy):
+ * the fold finishes with a partial (degraded) summary instead of giving up.
+ * Only when the fallback fails too does the fold return
+ * `{ summary: undefined, failureReason }` so the caller can roll back the
+ * compaction prompt and continue with the full context. An aborted signal
+ * rethrows 'Aborted'.
  */
 export async function runSequentialFold(options: SequentialFoldOptions): Promise<SequentialFoldResult> {
-  const { client, systemPrompt, contextWindow, signal } = options
+  const { client, systemPrompt, contextWindow, signal, onStep } = options
   const last = options.messages[options.messages.length - 1]
   const messages =
     last !== undefined && last.content === COMPACTION_PROMPT ? options.messages.slice(0, -1) : options.messages
 
   const inputBudgetChars =
     Math.max(0, contextWindow - COMPACTION_SUMMARY_BUDGET_TOKENS - OUTPUT_RESERVE_TOKENS) * DENSE_CHARS_PER_TOKEN
+  // The fold recurses until each leaf fits one budget, so the number of
+  // summary calls is the number of budget-sized chunks the conversation
+  // spans (1 when it fits, a degenerate window falls back to a single
+  // truncated call).
+  const totalWireChars = messages.reduce((sum, message) => sum + messageWireSize(message), 0)
+  const totalSteps = inputBudgetChars > 0 ? Math.max(1, Math.ceil(totalWireChars / inputBudgetChars)) : 1
   const usage = { promptTokens: 0, completionTokens: 0 }
   let steps = 0
 
@@ -56,8 +86,7 @@ export async function runSequentialFold(options: SequentialFoldOptions): Promise
     return chars <= inputBudgetChars
   }
 
-  const summarize = async (candidate: ContextMessage[]): Promise<string> => {
-    steps += 1
+  const summarizeOnce = async (candidate: ContextMessage[]): Promise<string> => {
     const response = await client.complete({
       messages: [...candidate, { role: 'user', content: COMPACTION_PROMPT }],
       maxTokens: COMPACTION_SUMMARY_BUDGET_TOKENS,
@@ -67,9 +96,37 @@ export async function runSequentialFold(options: SequentialFoldOptions): Promise
     usage.promptTokens = response.usage.promptTokens
     usage.completionTokens = response.usage.completionTokens
     const summary = response.content || ''
-    if (response.finishReason === 'length') throw new Error('Compaction fold summary truncated')
-    if (summary.length < MIN_COMPACTION_SUMMARY_LENGTH) throw new Error('Compaction fold summary too short')
+    if (response.finishReason === 'length') throw new FoldStepError('truncated')
+    if (summary.length < MIN_COMPACTION_SUMMARY_LENGTH) throw new FoldStepError('too-short')
     return summary
+  }
+
+  // A failed step must not abort the whole fold: retry it once, then fall
+  // back to a lossy summary of a budget-halved copy of this chunk only, so
+  // the fold still finishes with a partial (degraded) summary.
+  const summarizeResilient = async (candidate: ContextMessage[]): Promise<string> => {
+    let lastReason: FoldFailureReason = 'llm-error'
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await summarizeOnce(candidate)
+      } catch (error) {
+        if (signal?.aborted) throw new Error('Aborted')
+        lastReason = error instanceof FoldStepError ? error.reason : 'llm-error'
+      }
+    }
+    const degraded = truncateToBudget(candidate, systemPrompt, Math.floor(inputBudgetChars / 2))
+    try {
+      return await summarizeOnce(degraded)
+    } catch {
+      if (signal?.aborted) throw new Error('Aborted')
+      throw new FoldStepError(lastReason)
+    }
+  }
+
+  const summarize = async (candidate: ContextMessage[]): Promise<string> => {
+    steps += 1
+    onStep?.(steps, totalSteps)
+    return summarizeResilient(candidate)
   }
 
   const fold = async (candidate: ContextMessage[], depth: number): Promise<string> => {
@@ -84,13 +141,21 @@ export async function runSequentialFold(options: SequentialFoldOptions): Promise
 
   try {
     const summary = await fold(messages, 0)
-    return { summary, steps, promptTokens: usage.promptTokens, completionTokens: usage.completionTokens }
+    return {
+      summary,
+      steps,
+      totalSteps,
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+    }
   } catch (error) {
     if (signal?.aborted) throw new Error('Aborted')
+    const failureReason: FoldFailureReason = error instanceof FoldStepError ? error.reason : 'llm-error'
     logger.warn('Sequential fold compaction failed', {
+      reason: failureReason,
       error: error instanceof Error ? error.message : String(error),
     })
-    return { summary: undefined, steps }
+    return { summary: undefined, steps, totalSteps, failureReason }
   }
 }
 

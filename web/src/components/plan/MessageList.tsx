@@ -11,6 +11,7 @@ import { SCOPE_LABELS } from '../../lib/workflow-scope'
 import { useDisplaySettings } from '../../hooks/useDisplaySettings'
 import { ChatFeedItems } from './ChatFeedItems'
 import { PrefillIndicator } from './PrefillIndicator'
+import { CompactionProgressIndicator } from './CompactionProgressIndicator'
 import { CloseButton } from '../shared/CloseButton'
 import { Modal } from '../shared/Modal'
 import { ChevronUpIcon, InfoIcon } from '../shared/icons'
@@ -172,6 +173,12 @@ export const MessageList = memo(function MessageList({
     scopeId,
     (pane) => pane.prefill ?? null,
     (state) => state.prefill,
+    null,
+  )
+  const compactionProgress = useScopedPaneState(
+    scopeId,
+    (pane) => pane.compactionProgress ?? null,
+    (state) => state.compactionProgress,
     null,
   )
   const liveTurnStats = useScopedPaneState(
@@ -363,6 +370,12 @@ export const MessageList = memo(function MessageList({
                   lastPrefillSpeed={liveTurnStats?.prefillSpeed}
                   tokenIncrement={prefillTokenIncrement}
                 />
+              </div>
+            )}
+
+            {compactionProgress && isRunning && (
+              <div className="flex justify-center feed-item">
+                <CompactionProgressIndicator compaction={compactionProgress} />
               </div>
             )}
 

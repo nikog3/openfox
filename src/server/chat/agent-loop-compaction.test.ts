@@ -430,6 +430,47 @@ describe('agentLoop compaction loop', () => {
     expect(chatDone.length).toBeGreaterThanOrEqual(1)
   })
 
+  it('re-injects the last user messages verbatim into the fresh window after compaction', async () => {
+    const append = makeAppend()
+    const store = getEventStore() as unknown as { append: (e: unknown) => void }
+    // Two real user messages exist in the conversation before the compaction.
+    store.append({
+      type: 'message.start',
+      data: { messageId: 'u-1', role: 'user', content: 'Fix the bug in src/foo.ts and update the tests' },
+    })
+    store.append({ type: 'message.done', data: { messageId: 'u-1' } })
+    store.append({
+      type: 'message.start',
+      data: { messageId: 'u-2', role: 'user', content: 'Also check the path of bar.ts while you are at it' },
+    })
+    store.append({ type: 'message.done', data: { messageId: 'u-2' } })
+
+    const summaryText =
+      'The conversation covered the compaction loop fix, its tests and the production database repair.'
+
+    ;(consumeStreamGenerator as any)
+      .mockResolvedValueOnce(makeStreamResult({ content: 'Normal response', finishReason: 'stop' }))
+      .mockResolvedValueOnce(makeStreamResult({ content: summaryText, finishReason: 'stop' }))
+      .mockResolvedValueOnce(makeStreamResult({ content: 'Final after compaction', finishReason: 'stop' }))
+    ;(shouldCompact as any).mockReturnValueOnce(true)
+
+    await runTopLevelAgentLoop(makeConfig({ append }), turnMetrics)
+
+    // Both user messages were re-injected verbatim, in chronological order,
+    // so the fresh window keeps the user's actual requests and file paths.
+    const continuations = eventsOf(append).filter(
+      (e) => e.type === 'message.start' && e.data?.messageKind === 'context-continuation',
+    )
+    expect(continuations.length).toBe(2)
+    expect(continuations[0]!.data.content).toBe('Fix the bug in src/foo.ts and update the tests')
+    expect(continuations[1]!.data.content).toBe('Also check the path of bar.ts while you are at it')
+    for (const continuation of continuations) {
+      expect(continuation.data.role).toBe('user')
+      expect(continuation.data.isSystemGenerated).toBe(true)
+      expect(continuation.data.contextWindowId).toBeDefined()
+    }
+  })
+
   it('finalizes the assistant message when compaction triggers right after an LLM success', async () => {
     const append = makeAppend()
     const summaryText =
