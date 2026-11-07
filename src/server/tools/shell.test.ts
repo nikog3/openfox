@@ -4,6 +4,37 @@ import type { ToolContext } from './types.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { EventEmitter } from 'node:events'
+
+const rtkMock = vi.hoisted<{ useRtk: string; spawnImpl: (command: string, args?: readonly string[]) => unknown }>(
+  () => ({
+    useRtk: 'false',
+    spawnImpl: (_command: string, _args?: readonly string[]) => {
+      throw new Error('rtk should not be spawned')
+    },
+  }),
+)
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  const actualSpawn = actual.spawn as (command: string, args?: readonly string[], options?: object) => unknown
+  return {
+    ...actual,
+    spawn: (command: string, args?: readonly string[], options?: object) =>
+      command === 'rtk' ? rtkMock.spawnImpl(command, args) : actualSpawn(command, args, options),
+  }
+})
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    access: (path: string) =>
+      path === '/usr/local/bin/rtk'
+        ? Promise.reject(new Error("ENOENT: no such file or directory, access '/usr/local/bin/rtk'"))
+        : actual.access(path),
+  }
+})
 
 // Force the fr display locale for every test in this file: the LLM-facing
 // run_command error strings must remain English no matter the UI locale.
@@ -11,7 +42,11 @@ vi.mock('../db/settings.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../db/settings.js')>()
   return {
     ...actual,
-    getSetting: (key: string) => (key === actual.SETTINGS_KEYS.DISPLAY_LOCALE ? 'fr' : 'false'),
+    getSetting: (key: string) => {
+      if (key === actual.SETTINGS_KEYS.DISPLAY_LOCALE) return 'fr'
+      if (key === actual.SETTINGS_KEYS.TOOLS_USE_RTK) return rtkMock.useRtk
+      return 'false'
+    },
   }
 })
 
@@ -443,6 +478,97 @@ describe('run_command LLM-facing errors under fr locale (module mock forces disp
   }, 15000)
 })
 
+describe('run_command RTK rewrite', () => {
+  let tempDir: string
+  let context: ToolContext
+  let shellModule: typeof import('./shell.js')
+
+  beforeEach(async () => {
+    vi.resetModules()
+    shellModule = await import('./shell.js')
+    rtkMock.useRtk = 'false'
+    rtkMock.spawnImpl = (_command: string, _args?: readonly string[]) => {
+      throw new Error('rtk should not be spawned')
+    }
+    tempDir = await mkdtemp(join(tmpdir(), 'shell-rtk-test-'))
+    context = baseContext(tempDir)
+  })
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true })
+  })
+
+  it('rewrites the command through rtk when enabled and available', async () => {
+    rtkMock.useRtk = 'true'
+    rtkMock.spawnImpl = (command: string, args?: readonly string[]) => {
+      if (args?.[0] === '--version') return fakeRtkProc('rtk 0.2.0\n', 0)
+      if (args?.[0] === 'rewrite') return fakeRtkProc('echo rewritten\n', 0)
+      throw new Error(`unexpected rtk spawn: ${command} ${args?.join(' ')}`)
+    }
+
+    const result = await shellModule.runCommandTool.execute({ command: 'echo hi', timeout: 10000 }, context)
+
+    expect(result.success).toBe(true)
+    expect(result.output).toContain('rewritten')
+    expect(result.output).not.toContain('hi')
+  }, 15000)
+
+  it('never spawns rtk when the setting is off', async () => {
+    rtkMock.useRtk = 'false'
+
+    const result = await shellModule.runCommandTool.execute({ command: 'echo hi', timeout: 10000 }, context)
+
+    expect(result.success).toBe(true)
+    expect(result.output).toContain('hi')
+  }, 15000)
+
+  it('falls back to the original command when rtk is unavailable', async () => {
+    rtkMock.useRtk = 'true'
+    rtkMock.spawnImpl = () => fakeRtkProc('', 1)
+
+    const result = await shellModule.runCommandTool.execute({ command: 'echo hi', timeout: 10000 }, context)
+
+    expect(result.success).toBe(true)
+    expect(result.output).toContain('hi')
+  }, 15000)
+
+  it('falls back to the original command when the rewrite fails', async () => {
+    rtkMock.useRtk = 'true'
+    rtkMock.spawnImpl = (command: string, args?: readonly string[]) => {
+      if (args?.[0] === '--version') return fakeRtkProc('rtk 0.2.0\n', 0)
+      if (args?.[0] === 'rewrite') return fakeRtkProc('', 2)
+      throw new Error(`unexpected rtk spawn: ${command} ${args?.join(' ')}`)
+    }
+
+    const result = await shellModule.runCommandTool.execute({ command: 'echo hi', timeout: 10000 }, context)
+
+    expect(result.success).toBe(true)
+    expect(result.output).toContain('hi')
+  }, 15000)
+})
+
+describe('probeRtkAvailability', () => {
+  let shellModule: typeof import('./shell.js')
+
+  beforeEach(async () => {
+    vi.resetModules()
+    shellModule = await import('./shell.js')
+  })
+
+  it('returns true when rtk --version prints an rtk banner', async () => {
+    rtkMock.spawnImpl = (command: string, args?: readonly string[]) => {
+      if (args?.[0] === '--version') return fakeRtkProc('rtk 0.2.0\n', 0)
+      throw new Error(`unexpected rtk spawn: ${command} ${args?.join(' ')}`)
+    }
+    expect(await shellModule.probeRtkAvailability()).toBe(true)
+  })
+
+  it('returns false when the version output is not an rtk banner', async () => {
+    rtkMock.spawnImpl = () => fakeRtkProc('not rtk\n', 0)
+    expect(await shellModule.probeRtkAvailability()).toBe(false)
+  })
+})
+
 function baseContext(tempDir: string): ToolContext {
   return {
     sessionManager: {
@@ -458,4 +584,13 @@ function baseContext(tempDir: string): ToolContext {
 function parseDurationMs(match: RegExpMatchArray): number {
   if (match[1]) return Number(match[1]) * (match[2] === 'ms' ? 1 : 1000)
   return Number(match[3]) * 60_000 + Number(match[4]) * 1000
+}
+
+function fakeRtkProc(output: string, code: number) {
+  const proc = Object.assign(new EventEmitter(), { stdout: new EventEmitter() })
+  queueMicrotask(() => {
+    proc.stdout.emit('data', Buffer.from(output))
+    proc.emit('close', code)
+  })
+  return proc
 }

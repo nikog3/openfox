@@ -2023,6 +2023,12 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
     res.json({ key, value })
   })
 
+  // RTK availability check
+  app.get('/api/tools/rtk-check', async (_req, res) => {
+    const { probeRtkAvailability } = await import('./tools/shell.js')
+    res.json({ available: await probeRtkAvailability() })
+  })
+
   // Shells available for the tools.shell setting (Windows only; empty elsewhere)
   app.get('/api/tools/shells', async (_req, res) => {
     const { listAvailableShells } = await import('./utils/platform.js')
