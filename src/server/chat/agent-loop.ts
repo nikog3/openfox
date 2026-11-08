@@ -60,7 +60,6 @@ import { createRetryLimiter, type RetryLimiter } from './retry-limiter.js'
 import { drainQueue } from './drain-queue.js'
 import { COMPACTION_PROMPT, CONTINUE_PROMPT, CONTINUE_AFTER_STREAM_ERROR_PROMPT } from './prompts.js'
 import {
-  COMPACTION_SUMMARY_BUDGET_TOKENS,
   COMPACTION_HEADROOM_TOKENS,
   MAX_COMPACTION_ATTEMPTS,
   MAX_COMPACTION_TOOLCALL_REJECTIONS,
@@ -70,6 +69,7 @@ import {
   appendCompactionPrompt,
   fitSummaryInput,
   messageWireSize,
+  summaryBudgetTokens,
 } from '../context/compactor.js'
 import { runSequentialFold, type FoldFailureReason } from '../context/fold-compactor.js'
 import { DENSE_CHARS_PER_TOKEN } from '../tools/output-cap.js'
@@ -740,13 +740,14 @@ export async function runTopLevelAgentLoop(
       }
 
       if (compacting) {
-        // The compaction summary always gets the full COMPACTION_SUMMARY_BUDGET_TOKENS.
-        // Capping it at availableForOutput collapsed the budget to the 256-token
-        // floor when the window was nearly full: the summary hit its output
-        // limit, the compaction was abandoned, and the re-trigger looped. The
-        // input side is fitted below with fitSummaryInput instead, so
-        // input + budget can never overflow the window.
-        modelSettings = { ...(modelSettings ?? {}), maxTokens: COMPACTION_SUMMARY_BUDGET_TOKENS }
+        // The compaction summary always gets its window-relative budget
+        // (summaryBudgetTokens). Capping it at availableForOutput collapsed the
+        // budget to the 256-token floor when the window was nearly full: the
+        // summary hit its output limit, the compaction was abandoned, and the
+        // re-trigger looped. The input side is fitted below with
+        // fitSummaryInput against the same budget, so input + budget can
+        // never overflow the window.
+        modelSettings = { ...(modelSettings ?? {}), maxTokens: summaryBudgetTokens(contextWindow) }
       } else if (modelSettings) {
         const requestedMaxTokens = modelSettings.maxTokens ?? profileDefaultMaxTokens
         modelSettings = { ...modelSettings, maxTokens: Math.min(requestedMaxTokens, availableForOutput) }

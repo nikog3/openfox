@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { appendCompactionPrompt, shouldCompact, fitSummaryInput } from './compactor.js'
+import { appendCompactionPrompt, shouldCompact, fitSummaryInput, summaryBudgetTokens } from './compactor.js'
 import type { TurnEvent } from '../events/types.js'
 import type { ContextMessage } from '../events/fold-types.js'
 
@@ -63,18 +63,32 @@ describe('fitSummaryInput', () => {
   })
 
   it('trims from the front (oldest first) until the input fits', () => {
-    // 25k window → allowedChars ≈ (25000 - 4096 - 2048) * 2.4 ≈ 45k chars.
+    // 25k window → 16384 summary budget → allowedChars ≈ (25000 - 16384 - 2048) * 2.4 ≈ 15.7k chars.
     const messages: ContextMessage[] = [
-      msg('user', 20_000),
-      msg('assistant', 20_000),
-      msg('user', 20_000),
+      msg('user', 10_000),
+      msg('assistant', 10_000),
+      msg('user', 10_000),
       msg('user', 100), // last (compaction prompt)
     ]
     const result = fitSummaryInput(messages, 'sys', 25_000)
-    // The two oldest 20k messages are dropped; the 3rd (20k) + prompt (100) fit.
-    expect(result[0]?.content).toHaveLength(20_000)
+    // The two oldest 10k messages are dropped; the 3rd (10k) + prompt (100) fit.
+    expect(result[0]?.content).toHaveLength(10_000)
     expect(result[result.length - 1]?.content).toHaveLength(100)
     expect(result.length).toBeLessThan(messages.length)
+  })
+
+  it('fits the input against the dynamic budget on a 25k window (not the 4k floor)', () => {
+    // A ~21k-char conversation fits the old 4096-based budget (~45k chars) but
+    // overflows the 16384-based one (~15.7k chars) → it must be trimmed.
+    const messages: ContextMessage[] = [
+      msg('user', 7_000),
+      msg('assistant', 7_000),
+      msg('user', 7_000),
+      msg('user', 100), // last (compaction prompt)
+    ]
+    const result = fitSummaryInput(messages, 'sys', 25_000)
+    expect(result.length).toBeLessThan(messages.length)
+    expect(result[result.length - 1]?.content).toHaveLength(100)
   })
 
   it('never drops the last message (the compaction prompt)', () => {
@@ -98,7 +112,7 @@ describe('fitSummaryInput', () => {
   })
 
   it('counts thinkingContent so a thinking-heavy message is trimmed to fit the window', () => {
-    // 25k window → allowedChars ≈ (25000 - 4096 - 2048) * 2.4 ≈ 45k chars.
+    // 25k window → 16384 summary budget → allowedChars ≈ (25000 - 16384 - 2048) * 2.4 ≈ 15.7k chars.
     // The assistant message has a tiny content but a huge thinkingContent
     // (convertMessages re-echoes prior thinking into the wire, gated by
     // sendReasoningInMessages — not by the summary call's reasoningEffort:'none').
@@ -122,6 +136,29 @@ describe('fitSummaryInput', () => {
   it('is a no-op when the window is unknown (<= 0)', () => {
     const messages = [msg('user', 100), msg('user', 100)]
     expect(fitSummaryInput(messages, 'sys', 0)).toBe(messages)
+  })
+})
+
+describe('summaryBudgetTokens', () => {
+  it('keeps the 4k floor on windows that cannot afford the max budget', () => {
+    expect(summaryBudgetTokens(8_000)).toBe(4_096)
+    expect(summaryBudgetTokens(16_000)).toBe(4_096)
+    expect(summaryBudgetTokens(20_000)).toBe(4_096)
+  })
+
+  it('grants the whole space up to the 16k max on larger windows', () => {
+    expect(summaryBudgetTokens(25_000)).toBe(16_384)
+    expect(summaryBudgetTokens(200_000)).toBe(16_384)
+  })
+
+  it('switches from floor to max exactly when max budget + reserve + a 4k input fit', () => {
+    expect(summaryBudgetTokens(22_527)).toBe(4_096)
+    expect(summaryBudgetTokens(22_528)).toBe(16_384)
+  })
+
+  it('falls back to the floor when the window is unknown (<= 0)', () => {
+    expect(summaryBudgetTokens(0)).toBe(4_096)
+    expect(summaryBudgetTokens(-1)).toBe(4_096)
   })
 })
 

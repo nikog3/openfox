@@ -44,6 +44,7 @@ vi.mock('../context/compactor.js', async (importOriginal) => {
     MAX_COMPACTION_TOOLCALL_REJECTIONS: actual.MAX_COMPACTION_TOOLCALL_REJECTIONS,
     MIN_COMPACTION_SUMMARY_LENGTH: actual.MIN_COMPACTION_SUMMARY_LENGTH,
     fitSummaryInput: actual.fitSummaryInput,
+    summaryBudgetTokens: actual.summaryBudgetTokens,
     shouldCompact: vi.fn().mockReturnValue(false),
     appendCompactionPrompt: vi.fn((_sessionId: string, append: (event: any) => void) => {
       append({

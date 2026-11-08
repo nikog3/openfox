@@ -1,7 +1,7 @@
 import { COMPACTION_PROMPT } from '../chat/prompts.js'
 import { OUTPUT_RESERVE_TOKENS } from '../chat/measured-backstop.js'
 import { DENSE_CHARS_PER_TOKEN } from '../tools/output-cap.js'
-import { COMPACTION_SUMMARY_BUDGET_TOKENS, MIN_COMPACTION_SUMMARY_LENGTH, messageWireSize } from './compactor.js'
+import { MIN_COMPACTION_SUMMARY_LENGTH, messageWireSize, summaryBudgetTokens } from './compactor.js'
 import type { LLMClientWithModel } from '../llm/client.js'
 import type { ContextMessage } from '../events/fold-types.js'
 import { logger } from '../utils/logger.js'
@@ -69,8 +69,8 @@ export async function runSequentialFold(options: SequentialFoldOptions): Promise
   const messages =
     last !== undefined && last.content === COMPACTION_PROMPT ? options.messages.slice(0, -1) : options.messages
 
-  const inputBudgetChars =
-    Math.max(0, contextWindow - COMPACTION_SUMMARY_BUDGET_TOKENS - OUTPUT_RESERVE_TOKENS) * DENSE_CHARS_PER_TOKEN
+  const summaryBudget = summaryBudgetTokens(contextWindow)
+  const inputBudgetChars = Math.max(0, contextWindow - summaryBudget - OUTPUT_RESERVE_TOKENS) * DENSE_CHARS_PER_TOKEN
   // The fold recurses until each leaf fits one budget, so the number of
   // summary calls is the number of budget-sized chunks the conversation
   // spans (1 when it fits, a degenerate window falls back to a single
@@ -89,7 +89,7 @@ export async function runSequentialFold(options: SequentialFoldOptions): Promise
   const summarizeOnce = async (candidate: ContextMessage[]): Promise<string> => {
     const response = await client.complete({
       messages: [...candidate, { role: 'user', content: COMPACTION_PROMPT }],
-      maxTokens: COMPACTION_SUMMARY_BUDGET_TOKENS,
+      maxTokens: summaryBudget,
       reasoningEffort: 'none',
       ...(signal ? { signal } : {}),
     })

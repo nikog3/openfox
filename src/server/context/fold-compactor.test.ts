@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { runSequentialFold } from './fold-compactor.js'
 import { COMPACTION_PROMPT } from '../chat/prompts.js'
-import { COMPACTION_SUMMARY_BUDGET_TOKENS } from './compactor.js'
+import { COMPACTION_SUMMARY_BUDGET_MAX_TOKENS, COMPACTION_SUMMARY_BUDGET_TOKENS } from './compactor.js'
 import type { LLMClientWithModel } from '../llm/client.js'
 import type { LLMCompletionRequest, LLMCompletionResponse } from '../llm/types.js'
 import type { ContextMessage } from '../events/fold-types.js'
@@ -77,13 +77,25 @@ describe('runSequentialFold', () => {
     expect(calls[0]!.messages[calls[0]!.messages.length - 1]?.content).toBe(COMPACTION_PROMPT)
   })
 
-  it('uses the summary budget and disables reasoning on every call', async () => {
+  it('uses the max summary budget and disables reasoning on a 200k window', async () => {
     const { client, calls } = makeClient([{ content: SUMMARY_1 }])
     await runSequentialFold({
       client,
       systemPrompt: 'sys',
       messages: [msg('user', 1_000)],
       contextWindow: 200_000,
+    })
+    expect(calls[0]!.maxTokens).toBe(COMPACTION_SUMMARY_BUDGET_MAX_TOKENS)
+    expect(calls[0]!.reasoningEffort).toBe('none')
+  })
+
+  it('falls back to the floor summary budget on a small window', async () => {
+    const { client, calls } = makeClient([{ content: SUMMARY_1 }])
+    await runSequentialFold({
+      client,
+      systemPrompt: 'sys',
+      messages: [msg('user', 1_000)],
+      contextWindow: 8_000,
     })
     expect(calls[0]!.maxTokens).toBe(COMPACTION_SUMMARY_BUDGET_TOKENS)
     expect(calls[0]!.reasoningEffort).toBe('none')

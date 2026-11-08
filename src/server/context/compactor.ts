@@ -50,15 +50,40 @@ export function appendCompactionPrompt(
 export const COMPACTION_HEADROOM_TOKENS = 5_000
 
 /**
- * Output budget for the compaction summary call. Measured on a real model the
- * summary is stable at 600-850 tokens for ~15k-token conversations, but a
- * large (50k+) context can need more, so the budget is 4096 to give the
- * summary room to finish (a truncated summary aborts compaction and leaves the
- * context over-full). It is ALWAYS granted in full — the input side is fitted
- * to the window instead (see fitSummaryInput), so the call can never overflow
- * (no 400s) even when the context is already over-full.
+ * Floor output budget for the compaction summary call. Measured on a real
+ * model the summary is stable at 600-850 tokens for ~15k-token conversations,
+ * so 4096 gives the summary room to finish (a truncated summary aborts
+ * compaction and leaves the context over-full). It is ALWAYS granted in full
+ * — the input side is fitted to the window instead (see fitSummaryInput), so
+ * the call can never overflow (no 400s) even when the context is already
+ * over-full.
  */
 export const COMPACTION_SUMMARY_BUDGET_TOKENS = 4_096
+
+/**
+ * Max output budget for the compaction summary call. A large (50k+) context
+ * can need much more than the floor: windows that can afford it (max budget
+ * + reserve + a floor-sized input still fit under the window) get it, so the
+ * summary has room to carry the content of a big conversation without
+ * truncating (the root cause of "compaction forgets the prompt").
+ */
+export const COMPACTION_SUMMARY_BUDGET_MAX_TOKENS = 16_384
+
+/**
+ * Window-relative summary budget: the max budget when the window can afford
+ * it, the floor otherwise. A single function so fitSummaryInput, the agent
+ * loop and the sequential fold always agree on how much output the summary
+ * call may produce.
+ */
+export function summaryBudgetTokens(contextWindow: number): number {
+  if (
+    contextWindow - OUTPUT_RESERVE_TOKENS - COMPACTION_SUMMARY_BUDGET_MAX_TOKENS >=
+    COMPACTION_SUMMARY_BUDGET_TOKENS
+  ) {
+    return COMPACTION_SUMMARY_BUDGET_MAX_TOKENS
+  }
+  return COMPACTION_SUMMARY_BUDGET_TOKENS
+}
 
 /**
  * Max summary LLM calls per compaction trigger. A failed attempt (empty or
@@ -108,9 +133,9 @@ export function messageWireSize(message: ContextMessage): number {
 /**
  * Trim the summarization input so the call can never overflow the window.
  *
- * The summary always gets COMPACTION_SUMMARY_BUDGET_TOKENS (decoupled from
- * `availableForOutput`, which floors at 256 exactly when the context is
- * over-full — the state where compaction is needed). To keep
+ * The summary always gets its window-relative budget (summaryBudgetTokens,
+ * decoupled from `availableForOutput`, which floors at 256 exactly when the
+ * context is over-full — the state where compaction is needed). To keep
  * `input + budget + reserve ≤ window`, the conversation is trimmed from the
  * FRONT (oldest first): the oldest content is the least relevant, and the
  * window already starts with the previous summary, so nothing essential is
@@ -125,7 +150,7 @@ export function fitSummaryInput(
   if (contextWindow <= 0 || messages.length === 0) return messages
 
   const allowedChars =
-    Math.max(0, contextWindow - COMPACTION_SUMMARY_BUDGET_TOKENS - OUTPUT_RESERVE_TOKENS) * DENSE_CHARS_PER_TOKEN
+    Math.max(0, contextWindow - summaryBudgetTokens(contextWindow) - OUTPUT_RESERVE_TOKENS) * DENSE_CHARS_PER_TOKEN
 
   let total = systemPrompt.length
   for (const message of messages) total += messageWireSize(message)

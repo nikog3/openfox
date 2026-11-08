@@ -66,7 +66,7 @@ import { executeTools } from './execute-tools.js'
 import { getEventStore } from '../events/store.js'
 import { getAllInstructions } from '../context/instructions.js'
 import { getEnabledSkillMetadata } from '../skills/registry.js'
-import { COMPACTION_SUMMARY_BUDGET_TOKENS } from '../context/compactor.js'
+import { summaryBudgetTokens } from '../context/compactor.js'
 import { buildAgentContinuationReminder } from './prompts.js'
 
 describe('executeTools', () => {
@@ -1127,10 +1127,10 @@ describe('maxTokens clamping', () => {
 
     const callArgs = (streamLLMPure as any).mock.calls[0]?.[0]
     expect(callArgs).toBeDefined()
-    // The compaction summary always gets the full budget (decoupled from
-    // availableForOutput, which would floor at 256 here). The input is fitted
-    // to the window instead, so the call never overflows.
-    expect(callArgs.modelSettings?.maxTokens).toBe(COMPACTION_SUMMARY_BUDGET_TOKENS)
+    // The compaction summary always gets the window-relative budget
+    // (decoupled from availableForOutput, which would floor at 256 here).
+    // The input is fitted to the window instead, so the call never overflows.
+    expect(callArgs.modelSettings?.maxTokens).toBe(summaryBudgetTokens(200_000))
   })
 
   it('does not clamp when context is empty', async () => {
@@ -2231,7 +2231,7 @@ describe('compaction under context overflow', () => {
     // summary budget to it — producing truncated summaries and a re-trigger
     // loop. The budget is now decoupled (always full); the INPUT is fitted to
     // the window by fitSummaryInput so the call never overflows (no 400s).
-    expect(callArgs.modelSettings?.maxTokens).toBe(COMPACTION_SUMMARY_BUDGET_TOKENS)
+    expect(callArgs.modelSettings?.maxTokens).toBe(summaryBudgetTokens(200_000))
   })
 
   it('gives the compaction summary the full budget when there is room in the window', async () => {
@@ -2243,7 +2243,7 @@ describe('compaction under context overflow', () => {
     expect(callArgs).toBeDefined()
     // Roomy context → availableForOutput is large, so the summary gets the full
     // budget.
-    expect(callArgs.modelSettings?.maxTokens).toBe(COMPACTION_SUMMARY_BUDGET_TOKENS)
+    expect(callArgs.modelSettings?.maxTokens).toBe(summaryBudgetTokens(200_000))
   })
 
   it('disables reasoning on the compaction call so the budget goes to the summary', async () => {
@@ -2317,11 +2317,12 @@ describe('compaction under context overflow', () => {
         currentTokens = prompt + completion
       }),
     }
-    // Dense conversation that overflows the fitted input budget (~45k chars):
-    // fitSummaryInput must trim the oldest messages.
-    const dense = Array.from({ length: 10 }, (_, i) => ({
+    // Dense conversation that overflows the fitted input budget (~15.7k chars
+    // with the 16k summary budget): fitSummaryInput must trim the oldest
+    // message, and the trim stays under half so the one-shot path is kept.
+    const dense = Array.from({ length: 3 }, (_, i) => ({
       role: 'user' as const,
-      content: `msg-${i}-` + 'x'.repeat(7_990),
+      content: `msg-${i}-` + 'x'.repeat(6_990),
     }))
     assembleRequestMock.mockReturnValue({ systemPrompt: 'sys', messages: dense })
     // The user's current question, recoverable from the event log.
@@ -2339,8 +2340,8 @@ describe('compaction under context overflow', () => {
     // One summary call + one normal call (the turn then completes).
     expect(streamLLMPure).toHaveBeenCalledTimes(2)
     const summaryCall = (streamLLMPure as any).mock.calls[0]?.[0]
-    // The summary call got the full (decoupled) budget and a fitted input.
-    expect(summaryCall.modelSettings?.maxTokens).toBe(COMPACTION_SUMMARY_BUDGET_TOKENS)
+    // The summary call got the window-relative (decoupled) budget and a fitted input.
+    expect(summaryCall.modelSettings?.maxTokens).toBe(summaryBudgetTokens(25_000))
     expect(summaryCall.messages.length).toBeLessThan(dense.length)
     // Compaction succeeded.
     const events = emittedEvents(config)
