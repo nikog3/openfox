@@ -349,6 +349,7 @@ Summarize the conversation history concisely, preserving:
 7. Next steps or pending actions that should be continued after compaction
 8. The user's current question, prompt, or active request — preserved VERBATIM (word for word), even if long
 9. Working data needed to continue the task: concrete lists, identifiers (PR/issue numbers, commit hashes, file paths), counts, intermediate results, and any scratch/working file paths — not just the narrative
+10. The current workspace/workdir: if the session switched to a workspace during this conversation, state it explicitly (e.g. "Workspace: fix-foo at /path/to/workspace"). File paths in the summary MUST use the workspace path, never the original repo root.
 
 Do not respond to any questions in the conversation, only output the summary.
 Be thorough but concise. Output as a structured summary.
@@ -362,3 +363,9 @@ export const CONTINUE_AFTER_STREAM_ERROR_PROMPT =
   'The LLM stream was interrupted mid-response. Continue exactly where you left off — do not repeat what was already written.'
 
 export const MAX_FORMAT_RETRIES = 10
+
+export function buildWorkspaceReminderContent(effectiveWorkdir: string, branch?: string): string {
+  const wsLabel = basename(effectiveWorkdir)
+  const branchLabel = branch ?? 'unknown'
+  return `<system-reminder>\nThis session is now operating in workspace "${wsLabel}" on branch "${branchLabel}" at ${effectiveWorkdir}.\nAll file and git operations should use this directory.\n</system-reminder>`
+}

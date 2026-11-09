@@ -499,4 +499,78 @@ describe('agentLoop compaction loop', () => {
     // message.done for the pre-compaction message comes BEFORE the compaction prompt
     expect(firstDoneIdx).toBeLessThan(events.indexOf(promptStart))
   })
+
+  it('calls injectWorkspaceReminder and injectContinuationReminder after compaction', async () => {
+    const injectWorkspaceReminder = vi.fn()
+    const injectContinuationReminder = vi.fn()
+    const rebuildCachedContext = vi.fn()
+    const append = makeAppend()
+
+    const summaryText =
+      'The conversation covered the workspace compaction fix. Workspace: my-ws at /workspaces/test/my-ws. All tasks completed successfully with no errors encountered during the session.'
+
+    ;(consumeStreamGenerator as any)
+      .mockResolvedValueOnce(makeStreamResult({ content: 'Normal response', finishReason: 'stop' }))
+      .mockResolvedValueOnce(makeStreamResult({ content: summaryText, finishReason: 'stop' }))
+      .mockResolvedValueOnce(makeStreamResult({ content: 'Final', finishReason: 'stop' }))
+    ;(shouldCompact as any).mockReturnValueOnce(true)
+
+    const sessionManager = createMockSessionManager({
+      requireSession: vi.fn().mockReturnValue({
+        workdir: '/original-repo',
+        workspace: '/workspaces/test/my-ws',
+        projectId: 'test-project',
+        branch: 'develop',
+        executionState: null,
+        criteria: [],
+        isRunning: false,
+      }),
+    })
+
+    await runTopLevelAgentLoop(
+      makeConfig({ append, sessionManager, injectWorkspaceReminder, injectContinuationReminder, rebuildCachedContext }),
+      turnMetrics,
+    )
+
+    expect(injectWorkspaceReminder).toHaveBeenCalledTimes(1)
+    expect(injectContinuationReminder).toHaveBeenCalledTimes(1)
+    expect(rebuildCachedContext).toHaveBeenCalledTimes(1)
+  })
+
+  it('calls injectWorkspaceReminder even without an active workspace (no-op is in orchestrator)', async () => {
+    const injectWorkspaceReminder = vi.fn()
+    const injectContinuationReminder = vi.fn()
+    const rebuildCachedContext = vi.fn()
+    const append = makeAppend()
+
+    const summaryText =
+      'The conversation covered a simple task. No workspace was active during this session. All file operations were performed in the original repository directory as expected.'
+
+    ;(consumeStreamGenerator as any)
+      .mockResolvedValueOnce(makeStreamResult({ content: 'Normal response', finishReason: 'stop' }))
+      .mockResolvedValueOnce(makeStreamResult({ content: summaryText, finishReason: 'stop' }))
+      .mockResolvedValueOnce(makeStreamResult({ content: 'Final', finishReason: 'stop' }))
+    ;(shouldCompact as any).mockReturnValueOnce(true)
+
+    const sessionManager = createMockSessionManager({
+      requireSession: vi.fn().mockReturnValue({
+        workdir: '/original-repo',
+        workspace: null,
+        projectId: 'test-project',
+        executionState: null,
+        criteria: [],
+        isRunning: false,
+      }),
+    })
+
+    await runTopLevelAgentLoop(
+      makeConfig({ append, sessionManager, injectWorkspaceReminder, injectContinuationReminder, rebuildCachedContext }),
+      turnMetrics,
+    )
+
+    // The agent-loop always calls the callback; the no-op (early return when
+    // session.workspace is null) lives in the orchestrator's injectWorkspaceReminder.
+    expect(injectWorkspaceReminder).toHaveBeenCalledTimes(1)
+    expect(injectContinuationReminder).toHaveBeenCalledTimes(1)
+  })
 })

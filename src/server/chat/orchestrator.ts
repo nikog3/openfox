@@ -23,7 +23,9 @@ import {
   buildAgentSmallReminder,
   buildAgentContinuationReminder,
   buildTopLevelSystemPrompt,
+  buildWorkspaceReminderContent,
 } from './prompts.js'
+import { basename } from 'node:path'
 import { createSnapshotCadence } from './snapshot-cadence.js'
 import { serverT } from '../i18n.js'
 import {
@@ -377,6 +379,7 @@ function appendAgentAutoPromptMessage(
   name: string,
   color: string,
   kind: 'definition' | 'reminder' | 'continuation',
+  extraMetadata?: Record<string, string>,
 ): void {
   const eventStore = getEventStore()
   const currentWindowId = getCurrentContextWindowId(sessionId)
@@ -392,7 +395,7 @@ function appendAgentAutoPromptMessage(
       ...(currentWindowMessageOptions ?? {}),
       isSystemGenerated: true,
       messageKind: 'auto-prompt',
-      metadata: { type: 'agent', name, color, kind },
+      metadata: { type: 'agent', name, color, kind, ...extraMetadata },
     },
   })
   eventStore.append(sessionId, {
@@ -416,6 +419,24 @@ function injectContinuationReminder(sessionId: string, agentDef: AgentDefinition
     agentDef.metadata.color ?? '#6b7280',
     'continuation',
   )
+}
+
+/**
+ * Re-inject the active workspace reminder into the fresh context window after
+ * compaction. Ensures the effective workdir survives context compaction so the
+ * agent does not fall back to stale absolute paths from the original repo.
+ */
+function injectWorkspaceReminder(sessionManager: SessionManager, sessionId: string): void {
+  const session = sessionManager.requireSession(sessionId)
+  if (!session.workspace) return
+  const effectiveWorkdir = sessionManager.getEffectiveWorkdir(sessionId)
+  const branch = session.branch
+  const content = buildWorkspaceReminderContent(effectiveWorkdir, branch)
+  const wsLabel = basename(effectiveWorkdir)
+  appendAgentAutoPromptMessage(sessionId, content, 'Workspace', '#22c55e', 'definition', {
+    workspaceName: wsLabel,
+    ...(branch ? { branchName: branch } : {}),
+  })
 }
 
 export async function runAgentTurn(
@@ -544,6 +565,7 @@ export async function runAgentTurn(
       getConversationMessages: buildGetConversationMessages(options.sessionId, resolveAgentClient, append),
       injectAgentReminder: () => injectAgentReminder(options.sessionId, agentDef),
       injectContinuationReminder: () => injectContinuationReminder(options.sessionId, agentDef),
+      injectWorkspaceReminder: () => injectWorkspaceReminder(options.sessionManager, options.sessionId),
       rebuildCachedContext: async () => {
         const { applyDynamicContext } = await import('./dynamic-context.js')
         await applyDynamicContext(options.sessionManager, options.sessionId, agentLlmClient.getModel())

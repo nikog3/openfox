@@ -209,6 +209,9 @@ export interface TopLevelLoopConfig {
    *  continuation reminder (not the full onboarding definition) so the agent
    *  resumes from the summary instead of restarting the task. */
   injectContinuationReminder?: (() => void) | undefined
+  /** Called after a compaction to re-inject the active workspace reminder,
+   *  ensuring the effective workdir survives context compaction. */
+  injectWorkspaceReminder?: (() => void) | undefined
   /** Called after a compaction creates a new context window, so the fresh
    *  system prompt + tools become canonical for that window. */
   rebuildCachedContext?: (() => Promise<void> | void) | undefined
@@ -1719,6 +1722,7 @@ ${COMPACTION_PROMPT}`,
           append({ type: 'message.done', data: { messageId: continuationMsgId } })
         }
         config.injectContinuationReminder?.()
+        config.injectWorkspaceReminder?.()
       }
       compacting = false
 

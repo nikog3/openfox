@@ -94,6 +94,7 @@ import {
 } from '../events/index.js'
 import type { Message, CriterionStatus } from '../../shared/types.js'
 import { isInDangerZone, canCompact } from '../context/tokenizer.js'
+import { clearAllowedPaths } from '../tools/path-security.js'
 import { serverT } from '../i18n.js'
 
 // ============================================================================
@@ -2213,6 +2214,10 @@ export class SessionManager {
       } catch (err) {
         logger.error('Error shutting down LSP for workspace switch', { sessionId, error: err })
       }
+
+      // Invalidate any previously approved "outside workdir" paths — they were
+      // approved relative to the old workspace and must not leak across.
+      clearAllowedPaths(sessionId)
 
       // Read the actual branch we're now on
       const wsDirForBranch = await getWorkspacesDir(project.name, project.workdir)

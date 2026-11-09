@@ -564,9 +564,8 @@ export async function buildCachedPrompt(
 
   const allAgents = await loadAllAgentsDefault(sessionManager.getProjectWorkdir(sessionId))
   const subAgentDefs = getSubAgents(allAgents)
-  const session = sessionManager.requireSession(sessionId)
   const systemPrompt = buildTopLevelSystemPrompt(
-    session.workdir,
+    sessionManager.getEffectiveWorkdir(sessionId),
     instructionContent || undefined,
     skills,
     subAgentDefs,
