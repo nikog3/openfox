@@ -278,6 +278,9 @@ export interface LLMCallStats {
   cacheSource?: CacheSource
   contextSize?: number
   retries?: number
+  // Engine identity of the request (llama.cpp), when the prefill poller identified it.
+  slotId?: number
+  taskId?: number
 }
 
 // Single data point for session stats progression charts

@@ -636,7 +636,7 @@ describe('stream-pure', () => {
         78_000,
         undefined,
         undefined,
-        { processedTokens: 12_000, prefillTimeMs: 1_200 },
+        { processedTokens: 12_000, prefillTimeMs: 1_200, slotId: 3 },
       )
 
       const stats = metrics.buildStats(
@@ -664,7 +664,7 @@ describe('stream-pure', () => {
         78_000,
         undefined,
         undefined,
-        { processedTokens: 12_000, prefillTimeMs: 1_200 },
+        { processedTokens: 12_000, prefillTimeMs: 1_200, slotId: 3 },
       )
       metrics.addLLMCall({ ttft: 0.4, completionTime: 1.5, tps: 20, prefillTps: 0 }, 83_000, 400, 80_000)
 
@@ -676,6 +676,42 @@ describe('stream-pure', () => {
       // 12k measured + 3k heuristic = 15k over 1.2s + 0.4s = 1.6s
       expect(stats.prefTokenIncrement).toBe(15_000)
       expect(stats.prefillSpeed).toBe(9_375) // 15000 / 1.6
+    })
+
+    it('records the engine slot and task ids on the call when the poller identified the request', () => {
+      const metrics = new TurnMetrics()
+      metrics.addLLMCall(
+        { ttft: 0.5, completionTime: 2, tps: 15, prefillTps: 0 },
+        80_000,
+        500,
+        78_000,
+        undefined,
+        undefined,
+        { processedTokens: 12_000, prefillTimeMs: 1_200, slotId: 3 },
+        2,
+        1337,
+      )
+
+      const stats = metrics.buildStats(
+        { providerId: 'p', providerName: 'vLLM', backend: 'vllm', model: 'm' },
+        'builder',
+      )
+
+      expect(stats.llmCalls?.[0]?.slotId).toBe(2)
+      expect(stats.llmCalls?.[0]?.taskId).toBe(1337)
+    })
+
+    it('omits slotId and taskId when the poller did not identify the request', () => {
+      const metrics = new TurnMetrics()
+      metrics.addLLMCall({ ttft: 0.5, completionTime: 2, tps: 15, prefillTps: 0 }, 80_000, 500, 78_000)
+
+      const stats = metrics.buildStats(
+        { providerId: 'p', providerName: 'vLLM', backend: 'vllm', model: 'm' },
+        'builder',
+      )
+
+      expect(stats.llmCalls?.[0]?.slotId).toBeUndefined()
+      expect(stats.llmCalls?.[0]?.taskId).toBeUndefined()
     })
   })
 

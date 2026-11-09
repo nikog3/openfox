@@ -65,6 +65,10 @@ export interface PrefillProgressSample {
 export interface PrefillProgressFinal {
   processedTokens: number
   prefillTimeMs: number
+  /** The engine slot that handled the request (llama.cpp slot id). */
+  slotId: number
+  /** The engine task id of the request (llama.cpp id_task), when reported. */
+  taskId?: number
 }
 
 export interface SlotInfo {
@@ -398,13 +402,15 @@ export function startPrefillProgressPolling(options: PrefillProgressOptions): ()
       const res = await fetchImpl(url, {
         ...(options.signal ? { signal: options.signal } : {}),
       })
+      if (stopped) return
       if (!res.ok) throw new Error(`slots endpoint returned ${res.status}`)
       const data = (await res.json()) as SlotInfo[]
       failures = 0
       const slots = Array.isArray(data) ? data : []
+      const knownTaskIds = options.knownTaskIds
       const otherClaims = new Set(claims)
       if (myTaskId !== undefined) otherClaims.delete(myTaskId)
-      const slot = selectPrefillSlot(slots, options.expectedPromptTokens, options.knownTaskIds, otherClaims)
+      const slot = selectPrefillSlot(slots, options.expectedPromptTokens, knownTaskIds, otherClaims)
       if (slot) {
         if (slot.id_task !== undefined && myTaskId !== slot.id_task) {
           myTaskId = slot.id_task
@@ -437,9 +443,49 @@ export function startPrefillProgressPolling(options: PrefillProgressOptions): ()
           // poll — estimate completion at the midpoint.
           const now = Date.now()
           const completedAt = ((samples[samples.length - 1]?.at ?? startedAt) + now) / 2
-          options.onComplete?.({ processedTokens: done, prefillTimeMs: Math.max(0, completedAt - startedAt) })
+          options.onComplete?.({
+            processedTokens: done,
+            prefillTimeMs: Math.max(0, completedAt - startedAt),
+            slotId: finished.id,
+            ...(myTaskId !== undefined ? { taskId: myTaskId } : {}),
+          })
           stop()
           return
+        }
+        // A fast (warm) prefill can finish before the slot is ever seen busy:
+        // its fresh task is still reported on the finished slot, so adopt it
+        // when it is the only fresh, plausible, finished task. Several
+        // finished fresh tasks are disambiguated by prompt size (mirroring
+        // the busy path) rather than guessed.
+        if (myTaskId === undefined && lastSlotId === undefined && knownTaskIds !== undefined) {
+          const freshFinished = slots.filter(
+            (s) =>
+              s.n_prompt_tokens > 0 &&
+              s.id_task !== undefined &&
+              !knownTaskIds.has(s.id_task) &&
+              !otherClaims.has(s.id_task) &&
+              slotDone(s, options.expectedPromptTokens) >= slotWork(s, options.expectedPromptTokens) &&
+              slotIsPlausible(s, options.expectedPromptTokens),
+          )
+          const fresh =
+            freshFinished.length === 1
+              ? (freshFinished[0] ?? null)
+              : selectByPromptSize(freshFinished, options.expectedPromptTokens)
+          if (fresh && fresh.id_task !== undefined) {
+            myTaskId = fresh.id_task
+            lastSlotId = fresh.id
+            claims.add(fresh.id_task)
+            const now = Date.now()
+            const completedAt = (startedAt + now) / 2
+            options.onComplete?.({
+              processedTokens: slotDone(fresh, options.expectedPromptTokens),
+              prefillTimeMs: Math.max(0, completedAt - startedAt),
+              slotId: fresh.id,
+              taskId: fresh.id_task,
+            })
+            stop()
+            return
+          }
         }
       }
     } catch {
@@ -458,7 +504,10 @@ export function startPrefillProgressPolling(options: PrefillProgressOptions): ()
     }
   }
 
-  timer = setTimeout(poll, intervalMs)
+  // The first poll is immediate: a fast (warm) prefill can finish before the
+  // first interval tick, and the just-finished adoption below needs an
+  // early observation to catch it.
+  void poll()
   options.signal?.addEventListener('abort', stop, { once: true })
   return stop
 }

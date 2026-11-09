@@ -21,11 +21,33 @@ export function useMessageContextMenu(message: Message, onCopy: () => void, onFo
         onClick: () => void activatePluginAction(action.pluginId, action.onActivate, { messageId: message.id }),
       }
     })
+  const requestCall = message.stats?.llmCalls?.find((call) => call.slotId !== undefined)
+  const requestIdLabel =
+    requestCall?.slotId !== undefined
+      ? t({
+          en:
+            requestCall.taskId !== undefined
+              ? `Request #${requestCall.slotId} · task ${requestCall.taskId}`
+              : `Request #${requestCall.slotId}`,
+          fr:
+            requestCall.taskId !== undefined
+              ? `Requête #${requestCall.slotId} · task ${requestCall.taskId}`
+              : `Requête #${requestCall.slotId}`,
+        })
+      : null
   return [
     {
       label: formatDateTime(message.timestamp),
       info: true,
     },
+    ...(requestIdLabel
+      ? [
+          {
+            label: requestIdLabel,
+            info: true,
+          },
+        ]
+      : []),
     {
       label: t({ en: 'Copy', fr: 'Copier' }),
       icon: <CopyIcon className="w-4 h-4" />,

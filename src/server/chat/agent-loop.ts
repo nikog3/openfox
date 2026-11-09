@@ -629,6 +629,10 @@ export async function runTopLevelAgentLoop(
     let assistantMsgId: string
     let assistantMessageStarted = false
     let prefillMeasurement: PrefillProgressFinal | undefined
+    let lastPrefillSnapshot: PrefillProgressSnapshot | undefined
+    // Identity captured when the poller observes the slot finish (covers fast
+    // warm prefills that complete before any live snapshot is taken).
+    let prefillIdentity: PrefillProgressFinal | undefined
 
     for (;;) {
       // Resolve fresh per attempt: resolveClient() supports provider switches
@@ -899,8 +903,9 @@ export async function runTopLevelAgentLoop(
         // Per-round: a measurement captured by a previous round's poller must
         // not leak into this round's stats.
         prefillMeasurement = undefined
+        lastPrefillSnapshot = undefined
+        prefillIdentity = undefined
         let stopPrefillProgress = () => {}
-        let lastPrefillSnapshot: PrefillProgressSnapshot | undefined
         let prefillStartedAt: number | undefined
         if (slotProgressUrl) {
           // Snapshot the engine's known task ids BEFORE the request is sent:
@@ -920,6 +925,7 @@ export async function runTopLevelAgentLoop(
             },
             onComplete: (final) => {
               prefillMeasurement = final
+              prefillIdentity = final
             },
             ...(signal ? { signal } : {}),
           })
@@ -935,7 +941,10 @@ export async function runTopLevelAgentLoop(
             prefillMeasurement = {
               processedTokens: lastPrefillSnapshot.processedTokens,
               prefillTimeMs: Math.max(0, Date.now() - prefillStartedAt),
+              slotId: lastPrefillSnapshot.slotId,
+              ...(lastPrefillSnapshot.taskId !== undefined ? { taskId: lastPrefillSnapshot.taskId } : {}),
             }
+            prefillIdentity ??= prefillMeasurement
           }
           ensureAssistantMessage()
           // While the LLM streams an edit_file call, enrich its preparing events
@@ -1212,6 +1221,8 @@ export async function runTopLevelAgentLoop(
       result.modelParams,
       result.usage,
       prefillMeasurement,
+      lastPrefillSnapshot?.slotId ?? prefillIdentity?.slotId,
+      lastPrefillSnapshot?.taskId ?? prefillIdentity?.taskId,
     )
     // Accumulate wall-clock thinking time across LLM attempts in this turn.
     if (result.thinkingDurationMs !== undefined) {

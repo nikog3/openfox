@@ -403,7 +403,7 @@ describe('startPrefillProgressPolling', () => {
         intervalMs: 100,
       })
 
-      await vi.advanceTimersByTimeAsync(100)
+      await vi.advanceTimersByTimeAsync(0)
       expect(onProgress).toHaveBeenCalledTimes(1)
       expect(onProgress.mock.calls[0]?.[0].percent).toBe(25)
 
@@ -414,8 +414,8 @@ describe('startPrefillProgressPolling', () => {
       expect(onProgress).toHaveBeenCalledTimes(3)
 
       // Prefill complete: the slot leaves the busy set, no further snapshots
-      // are emitted — the agent loop stops the poller on the first token.
-      await vi.advanceTimersByTimeAsync(1000)
+      // are emitted — the poller stops itself when the tracked slot finishes.
+      await vi.advanceTimersByTimeAsync(100)
       expect(onProgress).toHaveBeenCalledTimes(3)
       stop()
     } finally {
@@ -442,7 +442,7 @@ describe('startPrefillProgressPolling', () => {
       })
 
       for (let i = 1; i <= 3; i++) {
-        await vi.advanceTimersByTimeAsync(100)
+        await vi.advanceTimersByTimeAsync(i === 1 ? 0 : 100)
         expect(onProgress).toHaveBeenCalledTimes(i)
         expect(onProgress.mock.calls[i - 1]?.[0].promptTokens).toBe(9620)
       }
@@ -451,8 +451,7 @@ describe('startPrefillProgressPolling', () => {
       expect(onProgress.mock.calls[2]?.[0].percent).toBe(75)
 
       // Work done (processed >= known total): the slot leaves the busy set,
-      // no further snapshots — the agent loop stops the poller on the first
-      // token.
+      // no further snapshots — the poller stops itself on the finished slot.
       await vi.advanceTimersByTimeAsync(1000)
       expect(onProgress).toHaveBeenCalledTimes(3)
       stop()
@@ -495,13 +494,13 @@ describe('startPrefillProgressPolling', () => {
         fetchImpl,
         intervalMs: 100,
       })
-      await vi.advanceTimersByTimeAsync(100)
+      await vi.advanceTimersByTimeAsync(0)
       expect(onProgress).toHaveBeenCalledTimes(1)
       expect(onProgress.mock.calls[0]?.[0].percent).toBe(50)
 
       // Work done (processed >= total - cache): the slot leaves the busy
-      // set, no further snapshots — the agent loop stops the poller on
-      // the first token.
+      // set, no further snapshots — the poller stops itself on the finished
+      // slot.
       await vi.advanceTimersByTimeAsync(500)
       expect(onProgress).toHaveBeenCalledTimes(1)
       stop()
@@ -553,7 +552,7 @@ describe('startPrefillProgressPolling', () => {
         fetchImpl,
         intervalMs: 100,
       })
-      await vi.advanceTimersByTimeAsync(100)
+      await vi.advanceTimersByTimeAsync(0)
       // Slot 1 (our fresh task) at 10250/41000 = 25% — not slot 0's numbers,
       // even though slot 0's size (40k) is closer to the 41k estimate.
       expect(onProgress).toHaveBeenCalledTimes(1)
@@ -660,7 +659,8 @@ describe('startPrefillProgressPolling', () => {
         fetchImpl,
         intervalMs: 100,
       })
-      for (let i = 0; i < 4; i++) {
+      await vi.advanceTimersByTimeAsync(0)
+      for (let i = 0; i < 3; i++) {
         await vi.advanceTimersByTimeAsync(100)
       }
       expect(a).toHaveBeenCalledTimes(4)
@@ -721,7 +721,7 @@ describe('startPrefillProgressPolling', () => {
       })
       // The own request has not landed yet: the only fresh task (56k) does
       // not match the 26.9k estimate → no adoption, no emission.
-      await vi.advanceTimersByTimeAsync(300)
+      await vi.advanceTimersByTimeAsync(400)
       expect(onProgress).not.toHaveBeenCalled()
       landed = true
       await vi.advanceTimersByTimeAsync(100)
@@ -750,8 +750,9 @@ describe('startPrefillProgressPolling', () => {
         fetchImpl,
         intervalMs: 100,
       })
-      await vi.advanceTimersByTimeAsync(100)
+      await vi.advanceTimersByTimeAsync(0)
       expect(first).toHaveBeenCalledTimes(1)
+      expect(first.mock.calls[0]?.[0].taskId).toBe(24)
       stopFirst()
       // After the first poller stops, a new poller for the same server can
       // adopt the same task again (the next call of the same session).
@@ -764,7 +765,7 @@ describe('startPrefillProgressPolling', () => {
         fetchImpl,
         intervalMs: 100,
       })
-      await vi.advanceTimersByTimeAsync(100)
+      await vi.advanceTimersByTimeAsync(0)
       expect(second).toHaveBeenCalledTimes(1)
       expect(second.mock.calls[0]?.[0].taskId).toBe(24)
       stopSecond()
@@ -791,16 +792,16 @@ describe('startPrefillProgressPolling', () => {
         fetchImpl,
         intervalMs: 100,
       })
-      await vi.advanceTimersByTimeAsync(100)
+      await vi.advanceTimersByTimeAsync(0)
       expect(onProgress).toHaveBeenCalledTimes(1)
       expect(onComplete).not.toHaveBeenCalled()
 
       // The tracked slot left the busy set: the measured result is reported
       // once, with the completion estimated at the midpoint between the last
-      // busy sample (t=100) and this poll (t=200).
+      // busy sample (t=0) and this poll (t=100).
       await vi.advanceTimersByTimeAsync(100)
       expect(onComplete).toHaveBeenCalledTimes(1)
-      expect(onComplete.mock.calls[0]?.[0]).toEqual({ processedTokens: 10000, prefillTimeMs: 150 })
+      expect(onComplete.mock.calls[0]?.[0]).toEqual({ processedTokens: 10000, prefillTimeMs: 50, slotId: 0 })
       stop()
     } finally {
       vi.useRealTimers()
@@ -825,6 +826,166 @@ describe('startPrefillProgressPolling', () => {
       // A slot already done on the first poll belongs to a neighbor session —
       // it is never tracked, so it never completes.
       expect(onProgress).not.toHaveBeenCalled()
+      expect(onComplete).not.toHaveBeenCalled()
+      stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('polls immediately on start (no initial interval delay)', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchImpl = vi.fn(async () => Response.json([busySlot(0, 40000, 1000)])) as unknown as typeof fetch
+      const onProgress = vi.fn()
+      const stop = startPrefillProgressPolling({
+        serverBaseUrl: 'http://localhost:8080/v1',
+        expectedPromptTokens: 40000,
+        onProgress,
+        fetchImpl,
+        intervalMs: 100,
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+      expect(onProgress).toHaveBeenCalledTimes(1)
+      stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('adopts a just-finished fresh task when the slot is no longer busy', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchImpl = (async () =>
+        Response.json([
+          {
+            id: 2,
+            is_processing: false,
+            n_prompt_tokens: 40000,
+            n_prompt_tokens_processed: 40000,
+            id_task: 101,
+          },
+        ])) as unknown as typeof fetch
+      const onComplete = vi.fn()
+      const stop = startPrefillProgressPolling({
+        serverBaseUrl: 'http://localhost:9105/v1',
+        expectedPromptTokens: 40000,
+        onProgress: () => {},
+        onComplete,
+        fetchImpl,
+        intervalMs: 100,
+        knownTaskIds: new Set([100]),
+      })
+      // A fast (warm) prefill finished before the first interval tick: the
+      // fresh finished task is adopted and the measured result is reported.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(onComplete).toHaveBeenCalledTimes(1)
+      expect(onComplete.mock.calls[0]?.[0]).toEqual({
+        processedTokens: 40000,
+        prefillTimeMs: 0,
+        slotId: 2,
+        taskId: 101,
+      })
+      stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not adopt a finished task that predates the request', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchImpl = (async () =>
+        Response.json([
+          {
+            id: 2,
+            is_processing: false,
+            n_prompt_tokens: 40000,
+            n_prompt_tokens_processed: 40000,
+            id_task: 100,
+          },
+        ])) as unknown as typeof fetch
+      const onComplete = vi.fn()
+      const stop = startPrefillProgressPolling({
+        serverBaseUrl: 'http://localhost:9106/v1',
+        expectedPromptTokens: 40000,
+        onProgress: () => {},
+        onComplete,
+        fetchImpl,
+        intervalMs: 100,
+        knownTaskIds: new Set([100]),
+      })
+      await vi.advanceTimersByTimeAsync(500)
+      expect(onComplete).not.toHaveBeenCalled()
+      stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not adopt a just-finished fresh task whose size is implausible', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchImpl = (async () =>
+        Response.json([
+          {
+            id: 2,
+            is_processing: false,
+            n_prompt_tokens: 90000,
+            n_prompt_tokens_processed: 90000,
+            id_task: 101,
+          },
+        ])) as unknown as typeof fetch
+      const onComplete = vi.fn()
+      const stop = startPrefillProgressPolling({
+        serverBaseUrl: 'http://localhost:9107/v1',
+        expectedPromptTokens: 40000,
+        onProgress: () => {},
+        onComplete,
+        fetchImpl,
+        intervalMs: 100,
+        knownTaskIds: new Set([100]),
+      })
+      await vi.advanceTimersByTimeAsync(500)
+      expect(onComplete).not.toHaveBeenCalled()
+      stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not adopt when several just-finished fresh tasks are ambiguous', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchImpl = (async () =>
+        Response.json([
+          {
+            id: 2,
+            is_processing: false,
+            n_prompt_tokens: 40000,
+            n_prompt_tokens_processed: 40000,
+            id_task: 101,
+          },
+          {
+            id: 3,
+            is_processing: false,
+            n_prompt_tokens: 41000,
+            n_prompt_tokens_processed: 41000,
+            id_task: 102,
+          },
+        ])) as unknown as typeof fetch
+      const onComplete = vi.fn()
+      const stop = startPrefillProgressPolling({
+        serverBaseUrl: 'http://localhost:9108/v1',
+        expectedPromptTokens: 40000,
+        onProgress: () => {},
+        onComplete,
+        fetchImpl,
+        intervalMs: 100,
+        knownTaskIds: new Set([100]),
+      })
+      await vi.advanceTimersByTimeAsync(500)
       expect(onComplete).not.toHaveBeenCalled()
       stop()
     } finally {

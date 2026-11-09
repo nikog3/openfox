@@ -813,6 +813,8 @@ export class TurnMetrics {
   /** Add metrics from an LLM call.
    * @param previousContextTokens - context size BEFORE this LLM call (for computing the non-cached increment)
    * @param prefillMeasurement - engine-measured prefill work (authoritative over the context-diff heuristic when present)
+   * @param prefillSlotId - engine slot handling the request (llama.cpp slot id), when the poller identified it
+   * @param prefillTaskId - engine task id of the request (llama.cpp id_task), when reported
    */
   addLLMCall(
     timing: StreamTiming,
@@ -822,6 +824,8 @@ export class TurnMetrics {
     modelParams?: ModelParams,
     providerUsage?: Partial<TokenUsage>,
     prefillMeasurement?: PrefillProgressFinal,
+    prefillSlotId?: number,
+    prefillTaskId?: number,
   ): void {
     const callIndex = this.llmCalls.length + 1
     this.totalPrefillTokens += promptTokens
@@ -876,6 +880,8 @@ export class TurnMetrics {
         ...(this.modelParams.topP !== undefined && { topP: this.modelParams.topP }),
         ...(this.modelParams.topK !== undefined && { topK: this.modelParams.topK }),
         ...(this.modelParams.maxTokens !== undefined && { maxTokens: this.modelParams.maxTokens }),
+        ...(prefillSlotId !== undefined && { slotId: prefillSlotId }),
+        ...(prefillTaskId !== undefined && { taskId: prefillTaskId }),
       },
     ]
   }
