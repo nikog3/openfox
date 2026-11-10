@@ -174,6 +174,7 @@ export function ChatInput({
   const sttStop = useSttStore((s) => s.stop)
   const sttReset = useSttStore((s) => s.reset)
   const sttBaseInputRef = useRef('')
+  const sttDiscardOnFinalRef = useRef(false)
   const [sttElapsed, setSttElapsed] = useState(0)
   useEffect(() => {
     if (sttStatus !== 'listening' && sttStatus !== 'loading' && sttStatus !== 'transcribing') return
@@ -337,6 +338,11 @@ export function ChatInput({
 
   useEffect(() => {
     if (sttFinalText === null) return
+    if (sttDiscardOnFinalRef.current) {
+      sttDiscardOnFinalRef.current = false
+      sttReset()
+      return
+    }
     const base = sttBaseInputRef.current
     if (sttFinalText.trim() === '') {
       setInput(base)
@@ -550,6 +556,13 @@ export function ChatInput({
     fileInputRef.current?.click()
   }, [])
 
+  const stopDictation = () => {
+    if (sttStatus === 'idle') return
+    sttDiscardOnFinalRef.current = true
+    sttBaseInputRef.current = ''
+    sttStop()
+  }
+
   const handleSend = () => {
     if (sendingRef.current) return
     if (!input.trim() && attachments.length === 0) return
@@ -584,6 +597,7 @@ export function ChatInput({
         }
         launchWorkflow(undefined, undefined, slashResult.workflowId, undefined, slashResult.params, scope)
         clearInput()
+        stopDictation()
         sendingRef.current = false
         return
       }
@@ -605,6 +619,7 @@ export function ChatInput({
             }
             onSendCommand(prompt, full.metadata.agentMode)
             clearInput()
+            stopDictation()
           }
           sendingRef.current = false
           // If fetch fails (null), leave input intact so user can retry
@@ -615,6 +630,7 @@ export function ChatInput({
 
     sendMessage(input, attachments)
     clearInput()
+    stopDictation()
     sendingRef.current = false
   }
 
@@ -738,6 +754,7 @@ export function ChatInput({
     const isListening = sttStatus === 'listening'
     const isLoading = sttStatus === 'loading'
     const isTranscribing = sttStatus === 'transcribing'
+    const isMicActive = isListening || isLoading || isTranscribing
     const label = isListening
       ? t({ en: 'Stop dictation', fr: 'Arrêter la dictée' })
       : isLoading
@@ -754,6 +771,7 @@ export function ChatInput({
             sttStop()
           } else {
             sttBaseInputRef.current = input
+            sttDiscardOnFinalRef.current = false
             void sttStart(sessionId)
           }
         }}
@@ -763,6 +781,8 @@ export function ChatInput({
         aria-label={label}
         {...(mobile ? { onMouseDown: keepComposerFocus } : {})}
         className={`flex items-center justify-center px-3 py-2 rounded transition-colors ${
+          isMicActive ? 'gap-1.5' : ''
+        } ${
           isListening
             ? 'bg-accent-error/30 text-accent-error animate-pulse'
             : isTranscribing
@@ -776,6 +796,13 @@ export function ChatInput({
           <XCloseIcon className="w-4 h-4" />
         ) : (
           <MicIcon className="w-4 h-4" />
+        )}
+        {isMicActive && (
+          <span
+            data-testid={mobile ? 'chat-mic-recording-dot-touch' : 'chat-mic-recording-dot'}
+            className="w-2 h-2 rounded-full bg-accent-error animate-pulse"
+            aria-hidden
+          />
         )}
       </button>
     )
