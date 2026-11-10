@@ -799,6 +799,8 @@ export interface WorkspaceInfo {
   branch: string | null
   ahead: number | null
   behind: number | null
+  setupStatus: 'running' | 'done' | 'error' | null
+  setupError: string | null
 }
 
 export interface ProjectMainSync {

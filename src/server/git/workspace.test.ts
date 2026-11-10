@@ -15,6 +15,12 @@ import {
   getSyncWithUpstream,
   getProjectSync,
   refreshRemoteRefs,
+  startWorkspaceSetup,
+  getWorkspaceSetupStatus,
+  getWorkspaceSetupState,
+  resumeWorkspaceSetupIfNeeded,
+  retryWorkspaceSetup,
+  clearWorkspaceSetupState,
 } from './workspace.js'
 
 vi.mock('node:child_process', () => ({
@@ -43,10 +49,15 @@ vi.mock('../db/projects.js', () => ({
   getProjectByWorkdir: vi.fn(),
 }))
 
+vi.mock('../utils/process-tree.js', () => ({
+  terminateProcessTree: vi.fn(async () => {}),
+}))
+
 import { spawn, execSync, execFileSync } from 'node:child_process'
 import { readFile, readdir, mkdir, rm, stat } from 'node:fs/promises'
 import { loadWorkspaceConfig } from './workspace-config.js'
 import { getProjectByWorkdir } from '../db/projects.js'
+import { terminateProcessTree } from '../utils/process-tree.js'
 
 type MockProc = {
   stdout: { on: (event: string, cb: (d: Buffer) => void) => void }
@@ -72,11 +83,34 @@ function makeMockProc(stdout: string, stderr = '', exitCode = 0): MockProc {
   }
 }
 
+interface ControllableProc extends MockProc {
+  close: (code: number) => void
+  kill: () => void
+}
+
+function makeControllableProc(stderrText = ''): ControllableProc {
+  let closeCb: (code: number) => void = () => {}
+  return {
+    stdout: { on: () => {} },
+    stderr: {
+      on: (event, cb) => {
+        if (event === 'data' && stderrText) cb(Buffer.from(stderrText))
+      },
+    },
+    on: (event, cb) => {
+      if (event === 'close') closeCb = cb
+    },
+    close: (code) => closeCb(code),
+    kill: () => {},
+  }
+}
+
 const CWD = '/tmp/project'
 const PROJECT_NAME = 'test-project'
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.resetAllMocks()
+  await clearWorkspaceSetupState()
 })
 
 describe('getGitBranch', () => {
@@ -205,18 +239,20 @@ describe('listWorkspaces', () => {
 
 describe('ensureWorkspace', () => {
   it('creates workspace via shared clone', async () => {
+    vi.mocked(spawn).mockReturnValue(makeControllableProc() as any)
     vi.mocked(spawn).mockReturnValueOnce(makeMockProc('') as any) // git clone --shared
     vi.mocked(mkdir).mockResolvedValue(undefined)
     vi.mocked(stat)
       .mockResolvedValueOnce(null as any) // wsPath doesn't exist → triggers clone
       .mockResolvedValueOnce({ isDirectory: () => true } as any) // post-clone check
     vi.mocked(loadWorkspaceConfig).mockResolvedValue({ setup: ['echo hello'] })
-    vi.mocked(execSync).mockReturnValue(Buffer.from('') as any)
 
     const result = await ensureWorkspace(CWD, 'my-experiment', PROJECT_NAME)
     expect(result.name).toBe('my-experiment')
     expect(result.path).toContain('my-experiment')
-    expect(execSync).toHaveBeenCalledWith('echo hello', expect.any(Object))
+    const setupCall = vi.mocked(spawn).mock.calls.find((c) => c[0] === 'echo hello')
+    expect(setupCall).toBeDefined()
+    expect(setupCall?.[1]).toMatchObject({ shell: true, cwd: result.path })
   })
 
   it('checks out specific branch when requested', async () => {
@@ -611,5 +647,170 @@ describe('listWorkspaces sync fields', () => {
     vi.mocked(spawn).mockReturnValueOnce(makeMockProc('', '', 1) as any) // branch fails
     const result = await listWorkspaces(PROJECT_NAME, CWD)
     expect(result[0]).toMatchObject({ name: 'detached', branch: null, ahead: null, behind: null })
+  })
+})
+
+describe('workspace setup (background)', () => {
+  async function wsPath(): Promise<string> {
+    return resolve(await getWorkspacesDir(PROJECT_NAME, CWD), 'setup-ws')
+  }
+
+  function mockSpawnForSetup(proc: ControllableProc, gitOutput = ''): void {
+    vi.mocked(spawn).mockImplementation(((cmd: string) =>
+      cmd === 'npm install' ? proc : makeMockProc(gitOutput)) as any)
+  }
+
+  it('ensureWorkspace starts setup in the background and returns immediately', async () => {
+    mockSpawnForSetup(makeControllableProc())
+    vi.mocked(mkdir).mockResolvedValue(undefined)
+    vi.mocked(stat)
+      .mockResolvedValueOnce(null as any) // wsPath doesn't exist → clone
+      .mockResolvedValueOnce({ isDirectory: () => true } as any) // post-clone check
+    vi.mocked(loadWorkspaceConfig).mockResolvedValue({ setup: ['npm install'] })
+
+    const result = await ensureWorkspace(CWD, 'setup-ws', PROJECT_NAME)
+    expect(getWorkspaceSetupStatus(result.path)).toBe('running')
+  })
+
+  it('reports done after all commands succeed', async () => {
+    const proc = makeControllableProc()
+    mockSpawnForSetup(proc)
+    vi.mocked(mkdir).mockResolvedValue(undefined)
+    vi.mocked(stat)
+      .mockResolvedValueOnce(null as any)
+      .mockResolvedValueOnce({ isDirectory: () => true } as any)
+    vi.mocked(loadWorkspaceConfig).mockResolvedValue({ setup: ['npm install'] })
+
+    const result = await ensureWorkspace(CWD, 'setup-ws', PROJECT_NAME)
+    proc.close(0)
+    await vi.waitFor(() => expect(getWorkspaceSetupStatus(result.path)).toBe('done'))
+  })
+
+  it('reports error with stderr when a command fails', async () => {
+    const proc = makeControllableProc('npm ERR! something broke')
+    mockSpawnForSetup(proc)
+    vi.mocked(mkdir).mockResolvedValue(undefined)
+    vi.mocked(stat)
+      .mockResolvedValueOnce(null as any)
+      .mockResolvedValueOnce({ isDirectory: () => true } as any)
+    vi.mocked(loadWorkspaceConfig).mockResolvedValue({ setup: ['npm install'] })
+
+    const result = await ensureWorkspace(CWD, 'setup-ws', PROJECT_NAME)
+    proc.close(1)
+    await vi.waitFor(() => expect(getWorkspaceSetupStatus(result.path)).toBe('error'))
+    expect(getWorkspaceSetupState(result.path)?.error).toContain('npm ERR!')
+  })
+
+  it('does not start a second setup while one is running', async () => {
+    mockSpawnForSetup(makeControllableProc())
+    const path = await wsPath()
+    startWorkspaceSetup(path, ['npm install'])
+    startWorkspaceSetup(path, ['npm install'])
+    const installCalls = vi.mocked(spawn).mock.calls.filter((c) => c[0] === 'npm install')
+    expect(installCalls).toHaveLength(1)
+  })
+
+  it('listWorkspaces exposes setupStatus', async () => {
+    mockSpawnForSetup(makeControllableProc(), 'main\n')
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'setup-ws', isDirectory: () => true, isSymbolicLink: () => false },
+    ] as any)
+    const path = await wsPath()
+    startWorkspaceSetup(path, ['npm install'])
+
+    const result = await listWorkspaces(PROJECT_NAME, CWD)
+    expect(result[0]).toMatchObject({ name: 'setup-ws', setupStatus: 'running', setupError: null })
+  })
+
+  it('listWorkspaces exposes setupError when a setup failed', async () => {
+    const proc = makeControllableProc('npm ERR! something broke')
+    mockSpawnForSetup(proc, 'main\n')
+    vi.mocked(readdir).mockResolvedValue([
+      { name: 'setup-ws', isDirectory: () => true, isSymbolicLink: () => false },
+    ] as any)
+    const path = await wsPath()
+    startWorkspaceSetup(path, ['npm install'])
+    proc.close(1)
+    await vi.waitFor(() => expect(getWorkspaceSetupStatus(path)).toBe('error'))
+
+    const result = await listWorkspaces(PROJECT_NAME, CWD)
+    expect(result[0]).toMatchObject({
+      name: 'setup-ws',
+      setupStatus: 'error',
+      setupError: expect.stringContaining('npm ERR!'),
+    })
+  })
+
+  it('deleteWorkspace kills a running setup and clears its state', async () => {
+    const proc = makeControllableProc()
+    mockSpawnForSetup(proc)
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as any)
+    const path = await wsPath()
+    startWorkspaceSetup(path, ['npm install'])
+
+    await deleteWorkspace(PROJECT_NAME, 'setup-ws', CWD)
+
+    expect(terminateProcessTree).toHaveBeenCalledWith(proc)
+    expect(getWorkspaceSetupStatus(path)).toBeNull()
+  })
+
+  it('resumeWorkspaceSetupIfNeeded restarts setup when node_modules is missing', async () => {
+    mockSpawnForSetup(makeControllableProc())
+    vi.mocked(stat).mockRejectedValue({ code: 'ENOENT' })
+    vi.mocked(loadWorkspaceConfig).mockResolvedValue({ setup: ['npm install'] })
+    const path = await wsPath()
+
+    const started = await resumeWorkspaceSetupIfNeeded(path, CWD)
+    expect(started).toBe(true)
+    expect(getWorkspaceSetupStatus(path)).toBe('running')
+  })
+
+  it('does not resume when node_modules exists', async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as any)
+    vi.mocked(loadWorkspaceConfig).mockResolvedValue({ setup: ['npm install'] })
+    const path = await wsPath()
+
+    const started = await resumeWorkspaceSetupIfNeeded(path, CWD)
+    expect(started).toBe(false)
+    expect(getWorkspaceSetupStatus(path)).toBeNull()
+  })
+
+  it('does not resume when no setup is configured', async () => {
+    vi.mocked(stat).mockRejectedValue({ code: 'ENOENT' })
+    vi.mocked(loadWorkspaceConfig).mockResolvedValue(null)
+    const path = await wsPath()
+
+    const started = await resumeWorkspaceSetupIfNeeded(path, CWD)
+    expect(started).toBe(false)
+  })
+
+  it('does not resume when setup state is already known', async () => {
+    mockSpawnForSetup(makeControllableProc())
+    vi.mocked(loadWorkspaceConfig).mockResolvedValue({ setup: ['npm install'] })
+    const path = await wsPath()
+    startWorkspaceSetup(path, ['npm install'])
+
+    const started = await resumeWorkspaceSetupIfNeeded(path, CWD)
+    expect(started).toBe(false)
+  })
+
+  it('retryWorkspaceSetup restarts a setup that failed', async () => {
+    const proc = makeControllableProc('npm ERR! something broke')
+    mockSpawnForSetup(proc)
+    vi.mocked(loadWorkspaceConfig).mockResolvedValue({ setup: ['npm install'] })
+    const path = await wsPath()
+    startWorkspaceSetup(path, ['npm install'])
+    proc.close(1)
+    await vi.waitFor(() => expect(getWorkspaceSetupStatus(path)).toBe('error'))
+
+    const started = await retryWorkspaceSetup(path, CWD)
+    expect(started).toBe(true)
+    expect(getWorkspaceSetupStatus(path)).toBe('running')
+  })
+
+  it('retryWorkspaceSetup returns false when no setup is configured', async () => {
+    vi.mocked(loadWorkspaceConfig).mockResolvedValue(null)
+    const started = await retryWorkspaceSetup(resolve(CWD, 'setup-ws'), CWD)
+    expect(started).toBe(false)
   })
 })

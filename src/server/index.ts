@@ -857,6 +857,24 @@ export async function createServerHandle(config: Config): Promise<ServerHandle> 
     res.json({ workspaces: workspacesList, main })
   })
 
+  /** Re-run the setup for a workspace whose previous setup run failed */
+  app.post('/api/projects/:id/workspaces/:name/retry-setup', async (req, res) => {
+    const project = getProject(req.params.id)
+    if (!project) return res.status(404).json({ error: 'Project not found' })
+    const name = req.params.name
+    if (name === 'original' || name.includes('/') || name.includes('\\') || name === '.' || name === '..') {
+      return res.status(400).json({ error: 'Invalid workspace name' })
+    }
+    const { workspaceExists, retryWorkspaceSetup, getWorkspacesDir } = await import('./git/workspace.js')
+    if (!(await workspaceExists(project.name, name, project.workdir))) {
+      return res.status(404).json({ error: 'Workspace not found' })
+    }
+    const dir = await getWorkspacesDir(project.name, project.workdir)
+    const started = await retryWorkspaceSetup(resolve(dir, name), project.workdir)
+    if (!started) return res.status(400).json({ error: 'No setup configured for this workspace' })
+    res.json({ ok: true, status: 'running' })
+  })
+
   // Session endpoints (REST)
 
   app.get('/api/sessions', async (req, res) => {

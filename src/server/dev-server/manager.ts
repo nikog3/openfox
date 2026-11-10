@@ -7,6 +7,7 @@ import { logger } from '../utils/logger.js'
 import { spawnShell } from '../utils/shell.js'
 import type { DevServerConfig, DevServerState, DevServerStatus } from '../../shared/dev-server.js'
 import { startInspectProxy } from './inspect-proxy.js'
+import { getWorkspaceSetupStatus } from '../git/workspace.js'
 import type { SessionManager } from '../session/manager.js'
 import { emitPluginHook } from '../plugins/hook-emitter.js'
 import { getProjectByWorkdir } from '../db/projects.js'
@@ -299,6 +300,10 @@ class DevServerManager {
   }
 
   async start(workdir: string): Promise<DevServerStatus> {
+    if (getWorkspaceSetupStatus(this.resolveWorkdir(workdir)) === 'running') {
+      throw new Error('Workspace setup is still running in this directory — try again in a moment.')
+    }
+
     const instance = this.getInstance(workdir)
 
     // Stop existing process if running

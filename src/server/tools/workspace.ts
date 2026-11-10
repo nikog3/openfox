@@ -1,5 +1,5 @@
 import { createTool, requestUserConfirmation } from './tool-helpers.js'
-import { getGitBranch, listWorkspaces, isGitRepository } from '../git/workspace.js'
+import { getGitBranch, listWorkspaces, isGitRepository, getWorkspaceSetupStatus } from '../git/workspace.js'
 
 interface WorkspaceArgs {
   action: 'switch' | 'list' | 'delete'
@@ -25,7 +25,8 @@ export const workspaceTool = createTool<WorkspaceArgs>(
         'If the requested branch does not exist, it will be created. By default it is based on the\n' +
         'default branch of the project (origin/HEAD). You can specify sourceBranch to base the new\n' +
         'branch on a different existing branch.\n\n' +
-        'Setup commands (e.g. npm install) are configured via .openfox/workspace.json.\n\n' +
+        'Setup commands (e.g. npm install) are configured via .openfox/workspace.json and run in the\n' +
+        'background. Their status ("running" | "done" | "error" | null) is reported in switch/list results.\n\n' +
         'Actions:\n' +
         '- switch: Switch to a workspace (target: "original" or a name, optional branch for new workspaces)\n' +
         '- list: List all workspaces with their current branch and active status\n' +
@@ -98,18 +99,22 @@ export const workspaceTool = createTool<WorkspaceArgs>(
           )
 
         const updated = await sessionManager.switchWorkspace(sessionId, args.target, args.branch, args.sourceBranch)
+        const wsPath = updated.workspace ?? updated.workdir
         const wsName = args.target === 'original' ? 'original' : (updated.workspace?.split('/').pop() ?? args.target)
-        const branch = await getGitBranch(updated.workspace ?? updated.workdir)
+        const branch = await getGitBranch(wsPath)
+        const setup = getWorkspaceSetupStatus(wsPath)
+        const setupNote = setup === 'running' ? ' — setup is running in the background' : ''
         return helpers.success(
           JSON.stringify(
             {
               workspace: wsName,
-              path: updated.workspace ?? updated.workdir,
+              path: wsPath,
               branch,
+              setup,
               message:
                 args.target === 'original'
-                  ? 'Switched to original project'
-                  : `Switched to workspace "${wsName}" on branch "${branch ?? 'unknown'}"`,
+                  ? `Switched to original project${setupNote}`
+                  : `Switched to workspace "${wsName}" on branch "${branch ?? 'unknown'}"${setupNote}`,
             },
             null,
             2,
@@ -129,11 +134,13 @@ export const workspaceTool = createTool<WorkspaceArgs>(
         const activeWsName = session.workspace?.split('/').pop() ?? null
 
         const workspaces = [
-          { name: 'original', branch: currentBranch, active: !session.workspace },
+          { name: 'original', branch: currentBranch, active: !session.workspace, setup: null },
           ...named.map((ws) => ({
             name: ws.name,
             branch: ws.branch,
             active: ws.name === activeWsName,
+            setup: ws.setupStatus,
+            ...(ws.setupError ? { setupError: ws.setupError } : {}),
           })),
         ]
 

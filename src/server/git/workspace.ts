@@ -1,8 +1,9 @@
-import { spawn, execSync } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, rm } from 'node:fs/promises'
 import { resolve, join, isAbsolute } from 'node:path'
 import { homedir, platform } from 'node:os'
 import { logger } from '../utils/logger.js'
+import { terminateProcessTree } from '../utils/process-tree.js'
 import { isDirectoryEntry } from '../utils/fs.js'
 import { gitSpawnEnv } from './env.js'
 import type { GitStatusSync } from '../../shared/protocol.js'
@@ -261,12 +262,125 @@ export async function checkoutBranchFromSharedSource(wsPath: string, branch: str
   }
 }
 
+export type WorkspaceSetupStatus = 'running' | 'done' | 'error'
+
+export interface WorkspaceSetupState {
+  status: WorkspaceSetupStatus
+  command: string
+  error?: string
+}
+
+const setupStates = new Map<string, WorkspaceSetupState>()
+const setupProcesses = new Map<string, ChildProcess>()
+
+export function getWorkspaceSetupStatus(wsPath: string): WorkspaceSetupStatus | null {
+  return setupStates.get(wsPath)?.status ?? null
+}
+
+export function getWorkspaceSetupState(wsPath: string): WorkspaceSetupState | undefined {
+  return setupStates.get(wsPath)
+}
+
+export async function killWorkspaceSetup(wsPath: string): Promise<void> {
+  setupStates.delete(wsPath)
+  const proc = setupProcesses.get(wsPath)
+  if (proc) {
+    setupProcesses.delete(wsPath)
+    await terminateProcessTree(proc).catch(() => {})
+  }
+}
+
+export async function clearWorkspaceSetupState(): Promise<void> {
+  for (const wsPath of [...setupStates.keys()]) {
+    await killWorkspaceSetup(wsPath)
+  }
+}
+
+export function startWorkspaceSetup(wsPath: string, commands: string[]): void {
+  if (setupStates.get(wsPath)?.status === 'running') return
+  if (commands.length === 0) return
+
+  setupStates.set(wsPath, { status: 'running', command: commands[0] ?? '' })
+
+  const runNext = (index: number): void => {
+    if (index >= commands.length) {
+      setupStates.set(wsPath, { status: 'done', command: '' })
+      return
+    }
+    const command = commands[index]
+    if (!command) return
+    logger.info('Running workspace setup command in background', { command, cwd: wsPath })
+    const proc = spawn(command, {
+      cwd: wsPath,
+      shell: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      detached: true,
+    })
+    setupProcesses.set(wsPath, proc)
+    let stderr = ''
+    proc.stderr?.on('data', (d: Buffer) => {
+      stderr += d.toString()
+      if (stderr.length > 65536) stderr = stderr.slice(-65536)
+    })
+    proc.on('close', (code) => {
+      if (setupProcesses.get(wsPath) !== proc) return
+      setupProcesses.delete(wsPath)
+      if (code === 0) {
+        runNext(index + 1)
+      } else {
+        const error = stderr.trim() || `command exited with code ${code}`
+        setupStates.set(wsPath, { status: 'error', command, error })
+        logger.warn('Workspace setup command failed', { command, error })
+      }
+    })
+    proc.on('error', (err) => {
+      if (setupProcesses.get(wsPath) !== proc) return
+      setupProcesses.delete(wsPath)
+      setupStates.set(wsPath, { status: 'error', command, error: String(err) })
+      logger.warn('Workspace setup command failed to start', { command, error: String(err) })
+    })
+  }
+
+  runNext(0)
+}
+
+/**
+ * Re-run the setup for a workspace whose previous setup run failed (or whose
+ * state was lost). Kills any lingering setup process, then starts a fresh run.
+ * Returns true when a new setup run was started.
+ */
+export async function retryWorkspaceSetup(wsPath: string, projectDir: string): Promise<boolean> {
+  const config = await loadWorkspaceConfig(projectDir)
+  if (!config?.setup || config.setup.length === 0) return false
+  await killWorkspaceSetup(wsPath)
+  startWorkspaceSetup(wsPath, config.setup)
+  return true
+}
+
+/**
+ * Re-run background setup after a server restart when a workspace's setup state
+ * is unknown (in-memory state is lost) and node_modules is missing.
+ * Returns true when a new setup run was started.
+ */
+export async function resumeWorkspaceSetupIfNeeded(wsPath: string, projectDir: string): Promise<boolean> {
+  if (setupStates.has(wsPath)) return false
+  const config = await loadWorkspaceConfig(projectDir)
+  if (!config?.setup || config.setup.length === 0) return false
+  const nodeModules = await statSafe(join(wsPath, 'node_modules'))
+  if (nodeModules?.isDirectory()) return false
+  startWorkspaceSetup(wsPath, config.setup)
+  return true
+}
+
 export interface WorkspaceInfo {
   path: string
   name: string
   branch: string | null
   ahead: number | null
   behind: number | null
+  setupStatus: WorkspaceSetupStatus | null
+  setupError: string | null
 }
 
 export async function workspaceExists(projectName: string, name: string, projectDir: string): Promise<boolean> {
@@ -292,12 +406,15 @@ export async function listWorkspaces(projectName: string, projectDir: string): P
         const wsPath = resolve(dir, name)
         const branch = await getGitBranch(wsPath)
         const sync = branch ? await getSyncWithUpstream(wsPath, projectDir, branch) : null
+        const state = getWorkspaceSetupState(wsPath)
         return {
           path: wsPath,
           name,
           branch,
           ahead: sync?.ahead ?? null,
           behind: sync?.behind ?? null,
+          setupStatus: state?.status ?? null,
+          setupError: state?.status === 'error' ? (state.error ?? null) : null,
         }
       }),
     )
@@ -395,14 +512,8 @@ export async function ensureWorkspace(
 
   const config = await loadWorkspaceConfig(projectDir)
   if (config?.setup && config.setup.length > 0) {
-    for (const cmd of config.setup) {
-      logger.info('Running workspace setup command', { command: cmd, cwd: wsPath })
-      try {
-        execSync(cmd, { cwd: wsPath, stdio: 'inherit', env: { ...process.env } })
-      } catch (err) {
-        logger.warn('Workspace setup command failed', { command: cmd, error: String(err) })
-      }
-    }
+    logger.info('Starting workspace setup in background', { cwd: wsPath, commands: config.setup })
+    startWorkspaceSetup(wsPath, config.setup)
   }
 
   return { path: wsPath, name }
@@ -415,6 +526,7 @@ export async function deleteWorkspace(projectName: string, name: string, project
   if (!st?.isDirectory()) {
     throw new Error(`Workspace "${name}" does not exist`)
   }
+  await killWorkspaceSetup(wsPath)
   await rm(wsPath, { recursive: true, force: true, maxRetries: 3 })
   logger.info('Deleted workspace', { projectName, name, path: wsPath })
 }

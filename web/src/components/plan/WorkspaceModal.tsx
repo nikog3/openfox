@@ -7,6 +7,7 @@ import type { ProjectMainSync, WorkspaceInfo } from '../../lib/resources'
 import { useSessionModalState } from '../../hooks/useSessionModalState'
 import { toSync } from '../../hooks/useUpstreamSync'
 import { ModalShell } from '../shared/ModalShell'
+import { Spinner } from '../shared/Spinner'
 import { FolderIcon } from '../shared/icons'
 import { CreateInputSection } from '../shared/CreateInputSection'
 import { SyncBadge } from './SyncBadge'
@@ -177,7 +178,60 @@ export function WorkspaceModal({
     }
   }, [newName, sessionId, refreshSession, onClose, setError, setBusy, t])
 
+  const handleRetrySetup = useCallback(
+    async (name: string) => {
+      setError(null)
+      setBusy(true)
+      try {
+        const res = await authFetch(`/api/projects/${projectId}/workspaces/${name}/retry-setup`, {
+          method: 'POST',
+        })
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({
+            error: t({ en: 'Failed to restart setup', fr: 'Échec de la relance de l’installation' }),
+          }))
+          setError(err.error)
+          setBusy(false)
+          return
+        }
+        const data = await workspacesResource
+          .refresh(projectId)
+          .then((d) => d)
+          .catch(() => null)
+        if (data) {
+          setWorkspaces(data.workspaces)
+          setMainSync(data.main)
+        }
+        setBusy(false)
+      } catch (e) {
+        setError(
+          e instanceof Error
+            ? e.message
+            : t({ en: 'Failed to restart setup', fr: 'Échec de la relance de l’installation' }),
+        )
+        setBusy(false)
+      }
+    },
+    [projectId, setError, setBusy, t],
+  )
+
   const originalSync = toSync(mainSync?.ahead ?? null, mainSync?.behind ?? null)
+
+  const hasRunningSetup = workspaces.some((ws) => ws.setupStatus === 'running')
+
+  useEffect(() => {
+    if (!isOpen || !hasRunningSetup) return
+    const timer = setInterval(() => {
+      workspacesResource
+        .refresh(projectId)
+        .then((data) => {
+          setWorkspaces(data?.workspaces ?? [])
+          setMainSync(data?.main ?? null)
+        })
+        .catch(() => {})
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [isOpen, projectId, hasRunningSetup])
 
   return (
     <ModalShell
@@ -261,6 +315,17 @@ export function WorkspaceModal({
                         <span className="text-xs text-text-muted ml-auto">
                           {ws.branch ?? t({ en: 'unknown', fr: 'inconnue' })}
                           {wsSync && <SyncBadge sync={wsSync} className="ml-1.5" />}
+                          {ws.setupStatus === 'running' && (
+                            <span className="ml-1.5 flex items-center gap-1 text-accent-warning">
+                              <Spinner size="sm" />
+                              {t({ en: 'installing…', fr: 'installation…' })}
+                            </span>
+                          )}
+                          {ws.setupStatus === 'error' && (
+                            <span className="ml-1.5 text-accent-error" title={ws.setupError || undefined}>
+                              {t({ en: 'setup failed', fr: 'setup en échec' })}
+                            </span>
+                          )}
                         </span>
                         {ws.name === currentWorkspace && (
                           <span className="text-[10px] text-accent-primary ml-1">
@@ -268,6 +333,19 @@ export function WorkspaceModal({
                           </span>
                         )}
                       </button>
+                      {ws.setupStatus === 'error' && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleRetrySetup(ws.name)
+                          }}
+                          disabled={busy}
+                          className="absolute right-7 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 text-xs text-text-muted hover:text-accent-warning transition-opacity px-1 py-0.5 rounded disabled:opacity-50"
+                          title={t({ en: 'Retry setup', fr: 'Relancer l’installation' })}
+                        >
+                          ↻
+                        </button>
+                      )}
                       {ws.name !== currentWorkspace && !busy && (
                         <button
                           onClick={(e) => {

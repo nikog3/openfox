@@ -13,6 +13,7 @@ vi.mock('../git/workspace.js', () => ({
   getGitBranch: (...args: unknown[]) => mockGetGitBranch(...args),
   listWorkspaces: (...args: unknown[]) => mockListWorkspaces(...args),
   isGitRepository: (...args: unknown[]) => mockIsGitRepository(...args),
+  getWorkspaceSetupStatus: vi.fn(() => null),
 }))
 
 vi.mock('./path-security.js', () => ({
@@ -143,14 +144,16 @@ describe('workspaceTool', () => {
       mockGetSession.mockReturnValue({ projectId: 'p1', workspace: null, workdir: '/tmp/project' })
       mockGetProject.mockReturnValue({ name: 'test-project' })
       mockGetGitBranch.mockResolvedValue('develop')
-      mockListWorkspaces.mockResolvedValue([{ name: 'my-exp', branch: 'feat-x', path: '/ws/my-exp' }])
+      mockListWorkspaces.mockResolvedValue([
+        { name: 'my-exp', branch: 'feat-x', path: '/ws/my-exp', setupStatus: null, setupError: null },
+      ])
 
       const result = await workspaceTool.execute({ action: 'list' }, makeContext())
       expect(result.success).toBe(true)
       const parsed = JSON.parse(result.output!)
       expect(parsed.workspaces).toHaveLength(2)
-      expect(parsed.workspaces[0]).toEqual({ name: 'original', branch: 'develop', active: true })
-      expect(parsed.workspaces[1]).toEqual({ name: 'my-exp', branch: 'feat-x', active: false })
+      expect(parsed.workspaces[0]).toEqual({ name: 'original', branch: 'develop', active: true, setup: null })
+      expect(parsed.workspaces[1]).toEqual({ name: 'my-exp', branch: 'feat-x', active: false, setup: null })
     })
 
     it('lists workspaces with active status when in a named workspace', async () => {
@@ -158,17 +161,17 @@ describe('workspaceTool', () => {
       mockGetProject.mockReturnValue({ name: 'test-project' })
       mockGetGitBranch.mockResolvedValue('feat-x')
       mockListWorkspaces.mockResolvedValue([
-        { name: 'my-exp', branch: 'feat-x', path: '/ws/my-exp' },
-        { name: 'other', branch: 'main', path: '/ws/other' },
+        { name: 'my-exp', branch: 'feat-x', path: '/ws/my-exp', setupStatus: null, setupError: null },
+        { name: 'other', branch: 'main', path: '/ws/other', setupStatus: null, setupError: null },
       ])
 
       const result = await workspaceTool.execute({ action: 'list' }, makeContext())
       expect(result.success).toBe(true)
       const parsed = JSON.parse(result.output!)
       expect(parsed.workspaces).toHaveLength(3)
-      expect(parsed.workspaces[0]).toEqual({ name: 'original', branch: 'feat-x', active: false })
-      expect(parsed.workspaces[1]).toEqual({ name: 'my-exp', branch: 'feat-x', active: true })
-      expect(parsed.workspaces[2]).toEqual({ name: 'other', branch: 'main', active: false })
+      expect(parsed.workspaces[0]).toEqual({ name: 'original', branch: 'feat-x', active: false, setup: null })
+      expect(parsed.workspaces[1]).toEqual({ name: 'my-exp', branch: 'feat-x', active: true, setup: null })
+      expect(parsed.workspaces[2]).toEqual({ name: 'other', branch: 'main', active: false, setup: null })
     })
   })
 

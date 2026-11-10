@@ -11,8 +11,8 @@ vi.mock('../lib/api', () => ({
 
 const data: WorkspacesData = {
   workspaces: [
-    { path: '/ws/a', name: 'alpha', branch: 'feat/a', ahead: 2, behind: 1 },
-    { path: '/ws/b', name: 'beta', branch: 'main', ahead: null, behind: null },
+    { path: '/ws/a', name: 'alpha', branch: 'feat/a', ahead: 2, behind: 1, setupStatus: null, setupError: null },
+    { path: '/ws/b', name: 'beta', branch: 'main', ahead: null, behind: null, setupStatus: null, setupError: null },
   ],
   main: { branch: 'main', ahead: 0, behind: 3 },
 }

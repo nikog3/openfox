@@ -66,6 +66,7 @@ import {
   checkoutBranchFromSharedSource,
   deleteWorkspace as deleteWorkspaceDir,
   validateWorkspaceName,
+  resumeWorkspaceSetupIfNeeded,
 } from '../git/workspace.js'
 import { resolve } from 'node:path'
 import { SessionNotFoundError, WorkspaceInUseError } from '../utils/errors.js'
@@ -2191,8 +2192,12 @@ export class SessionManager {
             const inheritedBranch =
               branch ?? (await getGitBranch(this.getEffectiveWorkdir(sessionId))) ?? session.branch ?? undefined
             await ensureWorkspace(project.workdir, target, project.name, inheritedBranch, sourceBranch)
-          } else if (branch) {
-            await this.applyBranchIfNeeded(project.workdir, project.name, target, branch, sourceBranch)
+          } else {
+            if (branch) {
+              await this.applyBranchIfNeeded(project.workdir, project.name, target, branch, sourceBranch)
+            }
+            const wsDirForSetup = await getWorkspacesDir(project.name, project.workdir)
+            await resumeWorkspaceSetupIfNeeded(resolve(wsDirForSetup, target), project.workdir)
           }
         })()
         this.workspaceCreationLocks.set(createLockKey, createLockPromise)
