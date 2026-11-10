@@ -781,29 +781,28 @@ export function ChatInput({
         aria-label={label}
         {...(mobile ? { onMouseDown: keepComposerFocus } : {})}
         className={`flex items-center justify-center px-3 py-2 rounded transition-colors ${
-          isMicActive ? 'gap-1.5' : ''
-        } ${
-          isListening
-            ? 'bg-accent-error/30 text-accent-error animate-pulse'
-            : isTranscribing
-              ? 'bg-accent-error/20 text-accent-error hover:bg-accent-error/30'
-              : 'bg-accent-primary/10 text-accent-primary hover:bg-accent-primary/20 disabled:opacity-30 disabled:cursor-not-allowed'
+          isMicActive
+            ? 'bg-accent-error/10 text-accent-primary hover:bg-accent-error/30'
+            : 'bg-accent-primary/10 text-accent-primary hover:bg-accent-primary/20 disabled:opacity-30 disabled:cursor-not-allowed'
         }`}
       >
-        {isListening ? (
-          <StopIcon className="w-4 h-4" />
-        ) : isLoading || isTranscribing ? (
-          <XCloseIcon className="w-4 h-4" />
-        ) : (
+        <span className="relative inline-flex">
           <MicIcon className="w-4 h-4" />
-        )}
-        {isMicActive && (
-          <span
-            data-testid={mobile ? 'chat-mic-recording-dot-touch' : 'chat-mic-recording-dot'}
-            className="w-2 h-2 rounded-full bg-accent-error animate-pulse"
-            aria-hidden
-          />
-        )}
+          {isListening && (
+            <span
+              data-testid={mobile ? 'chat-mic-recording-dot-touch' : 'chat-mic-recording-dot'}
+              className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-accent-error ring-2 ring-bg-primary animate-pulse"
+              aria-hidden
+            />
+          )}
+          {(isLoading || isTranscribing) && (
+            <span
+              data-testid={mobile ? 'chat-mic-spinner-touch' : 'chat-mic-spinner'}
+              className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2 border-accent-error/30 border-t-accent-error animate-spin"
+              aria-hidden
+            />
+          )}
+        </span>
       </button>
     )
   }

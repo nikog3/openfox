@@ -134,31 +134,54 @@ function resetSttState() {
   sttState.error = null
 }
 
-describe('ChatInput dictation recording dot', () => {
+describe('ChatInput dictation mic indicator', () => {
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()
     resetSttState()
   })
 
-  it.each(['loading', 'listening', 'transcribing'] as const)(
-    'shows a pulsing red dot on the mic button while %s',
-    (status) => {
+  it('shows a pulsing red dot on the mic icon while listening', () => {
+    sttState.status = 'listening'
+    renderChatInput()
+
+    const dot = screen.getByTestId('chat-mic-recording-dot')
+    const micBtn = screen.getByTestId('chat-mic-button')
+    expect(dot).toBeInTheDocument()
+    expect(dot.className).toContain('bg-accent-error')
+    expect(dot.className).toContain('animate-pulse')
+    expect(micBtn).toContainElement(dot)
+    expect(screen.queryByTestId('chat-mic-spinner')).not.toBeInTheDocument()
+  })
+
+  it.each(['loading', 'transcribing'] as const)('shows a spinner on the mic icon while %s', (status) => {
+    sttState.status = status
+    renderChatInput()
+
+    const spinner = screen.getByTestId('chat-mic-spinner')
+    const micBtn = screen.getByTestId('chat-mic-button')
+    expect(spinner).toBeInTheDocument()
+    expect(spinner.className).toContain('animate-spin')
+    expect(spinner.className).toContain('border-t-accent-error')
+    expect(micBtn).toContainElement(spinner)
+    expect(screen.queryByTestId('chat-mic-recording-dot')).not.toBeInTheDocument()
+  })
+
+  it('keeps the mic icon visible in every state', () => {
+    for (const status of ['loading', 'listening', 'transcribing'] as const) {
       sttState.status = status
       renderChatInput()
+      expect(screen.getByTestId('chat-mic-button').querySelector('svg')).not.toBeNull()
+      cleanup()
+    }
+    renderChatInput()
+    expect(screen.getByTestId('chat-mic-button').querySelector('svg')).not.toBeNull()
+  })
 
-      const dot = screen.getByTestId('chat-mic-recording-dot')
-      const micBtn = screen.getByTestId('chat-mic-button')
-      expect(dot).toBeInTheDocument()
-      expect(dot.className).toContain('bg-accent-error')
-      expect(dot.className).toContain('animate-pulse')
-      expect(micBtn).toContainElement(dot)
-    },
-  )
-
-  it('hides the dot when the mic is idle', () => {
+  it('hides both indicators when the mic is idle', () => {
     renderChatInput()
     expect(screen.queryByTestId('chat-mic-recording-dot')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('chat-mic-spinner')).not.toBeInTheDocument()
   })
 })
 
