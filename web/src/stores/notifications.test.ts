@@ -1,9 +1,15 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
-const { wsSendMock } = vi.hoisted(() => ({
+const { wsSendMock, subscribeSpy } = vi.hoisted(() => ({
   wsSendMock: vi.fn(() => 'message-id'),
+  subscribeSpy: vi.fn(() => () => undefined),
 }))
+
+vi.mock('../lib/resourceCache', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../lib/resourceCache')>()
+  return { ...original, subscribe: subscribeSpy }
+})
 
 vi.mock('../lib/ws', () => ({
   wsClient: {
@@ -29,6 +35,15 @@ describe('notifications store', () => {
       settings: { ...DEFAULT_SETTINGS },
       loaded: false,
     })
+  })
+
+  it('load() subscribes to the resource cache at most once', () => {
+    const store = useNotificationSettingsStore.getState()
+    store.load()
+    const calls = subscribeSpy.mock.calls.length
+    store.load()
+    store.load()
+    expect(subscribeSpy.mock.calls.length).toBe(calls)
   })
 
   it('starts with default settings', () => {

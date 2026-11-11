@@ -112,6 +112,11 @@ export function resolveEventConfig(
   }
 }
 
+// One resource-cache watcher for the app's lifetime: `load()` is called from
+// every WS (re)connect and from the settings panel, so subscribing on each
+// call would stack a permanent listener per connect.
+let settingsWatcher: (() => void) | null = null
+
 interface NotificationSettingsState {
   settings: NotificationSettings
   loaded: boolean
@@ -142,20 +147,20 @@ export const useNotificationSettingsStore = create<NotificationSettingsState>((s
       }
     }
 
-    let last = snapshot<string>(key).data
-    if (last !== undefined) apply(last)
+    if (settingsWatcher === null) {
+      let last = snapshot<string>(key).data
+      if (last !== undefined) apply(last)
 
-    const unsubscribe = subscribe(() => {
-      const snap = snapshot<string>(key)
-      if (snap.data !== undefined && snap.data !== last) {
-        last = snap.data
-        apply(snap.data)
-      }
-    })
+      settingsWatcher = subscribe(() => {
+        const snap = snapshot<string>(key)
+        if (snap.data !== undefined && snap.data !== last) {
+          last = snap.data
+          apply(snap.data)
+        }
+      })
+    }
 
     loadResource(key, () => settingResource.fetch(SETTINGS_KEYS.NOTIFICATION_SETTINGS), settingResource.maxAgeMs)
-
-    return unsubscribe
   },
 
   update: (settings) => {

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ScrollArea } from '../shared/ScrollArea'
 import { PencilIcon } from '../shared/icons'
 import { Spinner } from '../shared/Spinner'
@@ -62,6 +62,14 @@ export function GitStatusPanel() {
   const [diffTarget, setDiffTarget] = useState<{ path: string; staged: boolean } | null>(null)
   const [listHeight, setListHeight] = useState(150)
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null)
+  const dragCleanupRef = useRef<() => void>(() => {})
+
+  useEffect(
+    () => () => {
+      dragCleanupRef.current()
+    },
+    [],
+  )
 
   if (diff.loading) {
     return (
@@ -106,10 +114,12 @@ export function GitStatusPanel() {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
       window.removeEventListener('pointercancel', onUp)
+      dragCleanupRef.current = () => {}
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
     window.addEventListener('pointercancel', onUp)
+    dragCleanupRef.current = onUp
   }
 
   return (

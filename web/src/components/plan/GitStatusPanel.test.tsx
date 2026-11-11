@@ -195,6 +195,18 @@ describe('GitStatusPanel — rendering', () => {
 
     fireEvent.pointerUp(window)
   })
+
+  it('removes window pointer listeners when unmounted mid-drag', () => {
+    const removeSpy = vi.spyOn(window, 'removeEventListener')
+    const { unmount } = render(<GitStatusPanel />)
+    const handle = screen.getByTestId('git-list-resize')
+    fireEvent.pointerDown(handle, { clientY: 200 })
+    unmount()
+    expect(removeSpy).toHaveBeenCalledWith('pointermove', expect.any(Function))
+    expect(removeSpy).toHaveBeenCalledWith('pointerup', expect.any(Function))
+    expect(removeSpy).toHaveBeenCalledWith('pointercancel', expect.any(Function))
+    removeSpy.mockRestore()
+  })
 })
 
 /* ------------------------------------------------------------------ */

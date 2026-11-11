@@ -20,6 +20,10 @@ interface BackgroundProcessStore {
   handleMessage: (type: string, payload: Record<string, unknown>) => void
 }
 
+const MAX_LOG_LINES = 2000
+
+const capLogs = (logs: LogLine[]): LogLine[] => (logs.length > MAX_LOG_LINES ? logs.slice(-MAX_LOG_LINES) : logs)
+
 let logBuffer: { processId: string; stream: 'stdout' | 'stderr'; content: string }[] = []
 
 export const useBackgroundProcessesStore = create<BackgroundProcessStore>()((set, get) => {
@@ -31,10 +35,11 @@ export const useBackgroundProcessesStore = create<BackgroundProcessStore>()((set
       const newLogs = { ...state.logs }
       for (const chunk of chunks) {
         const existing = newLogs[chunk.processId] ?? []
-        newLogs[chunk.processId] = [
+        const nextOffset = (existing[0]?.offset ?? 0) + existing.length
+        newLogs[chunk.processId] = capLogs([
           ...existing,
-          { offset: existing.length, content: chunk.content, timestamp: Date.now(), stream: chunk.stream },
-        ]
+          { offset: nextOffset, content: chunk.content, timestamp: Date.now(), stream: chunk.stream },
+        ])
       }
       return { logs: newLogs }
     })

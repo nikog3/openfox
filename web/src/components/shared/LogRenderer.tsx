@@ -9,6 +9,7 @@ interface LogEntry {
   stream: 'stdout' | 'stderr'
   content: string
   type?: 'marker'
+  offset?: number
 }
 
 interface LogRendererProps {
@@ -40,11 +41,11 @@ export function LogRenderer({
         ) : (
           logs.map((chunk, i) =>
             chunk.type === 'marker' ? (
-              <Fragment key={i}>
+              <Fragment key={chunk.offset ?? i}>
                 <hr className="border-t border-border my-1" />
               </Fragment>
             ) : (
-              <span key={i} className={chunk.stream === 'stderr' ? 'text-accent-warning' : ''}>
+              <span key={chunk.offset ?? i} className={chunk.stream === 'stderr' ? 'text-accent-warning' : ''}>
                 {ansiToReact(chunk.content)}
               </span>
             ),

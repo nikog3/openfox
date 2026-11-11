@@ -62,16 +62,21 @@ export function TerminalDrawer({ isOpen, onClose }: TerminalDrawerProps) {
   }, [isOpen, sessions.length, isLoading, createSession, currentSession?.projectId, currentProject?.id])
 
   useEffect(() => {
-    if (isOpen) {
-      justOpenedRef.current = true
-      setTimeout(() => {
-        if (shouldAutofocus()) terminalRef.current?.focus()
-        setTimeout(() => {
-          justOpenedRef.current = false
-        }, 200)
-      }, 100)
-    } else {
+    if (!isOpen) {
       hasAutoCreatedForOpenCycleRef.current = false
+      return
+    }
+    justOpenedRef.current = true
+    let inner: number | undefined
+    const outer = window.setTimeout(() => {
+      if (shouldAutofocus()) terminalRef.current?.focus()
+      inner = window.setTimeout(() => {
+        justOpenedRef.current = false
+      }, 200)
+    }, 100)
+    return () => {
+      window.clearTimeout(outer)
+      if (inner !== undefined) window.clearTimeout(inner)
     }
   }, [isOpen])
 

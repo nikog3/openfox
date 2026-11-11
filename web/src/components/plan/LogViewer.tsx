@@ -12,7 +12,7 @@ import type { OverlayScrollbarsComponentRef } from 'overlayscrollbars-react'
 interface LogViewerProps {
   title: string
   subtitle?: string
-  logs: { stream: 'stdout' | 'stderr'; content: string; type?: 'marker' }[]
+  logs: { stream: 'stdout' | 'stderr'; content: string; type?: 'marker'; offset?: number }[]
   onClose: () => void
   onClear?: () => void
   onInsertMarker?: () => void
