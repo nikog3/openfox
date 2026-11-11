@@ -41,7 +41,10 @@ export function OptionalScrollArea({
   style,
   scope = 'toolCalls',
 }: OptionalScrollAreaProps) {
-  const { useNativeScrollbars, useNativeScrollbarsCodeBlocks } = useDisplaySettings()
+  const { useNativeScrollbars, useNativeScrollbarsCodeBlocks } = useDisplaySettings((s) => ({
+    useNativeScrollbars: s.useNativeScrollbars,
+    useNativeScrollbarsCodeBlocks: s.useNativeScrollbarsCodeBlocks,
+  }))
   const native = scope === 'codeBlocks' ? useNativeScrollbarsCodeBlocks : useNativeScrollbars
 
   if (native) {

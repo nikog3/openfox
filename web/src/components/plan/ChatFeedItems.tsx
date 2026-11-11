@@ -79,7 +79,7 @@ export const ChatFeedItems = memo(function ChatFeedItems({
 }: ChatFeedItemsProps) {
   const t = useT()
   const totalItems = displayItems.length
-  const { feedVirtualization } = useDisplaySettings()
+  const { feedVirtualization } = useDisplaySettings((s) => ({ feedVirtualization: s.feedVirtualization }))
   const windowing = virtualization ?? feedVirtualization
   // Absolute index of the first mounted item. New items appended at the end
   // (streaming) keep the window stable — only the reveal moves it up.

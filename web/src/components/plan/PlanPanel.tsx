@@ -104,7 +104,7 @@ export function PlanPanel({
 
   const messages = propRawMessages ?? storeMessages
 
-  const { maxVisibleItems } = useDisplaySettings()
+  const { maxVisibleItems } = useDisplaySettings((s) => ({ maxVisibleItems: s.maxVisibleItems }))
 
   const { agents } = useAgents(session?.workdir)
   const topLevelAgents = agents.filter((a) => !a.subagent)

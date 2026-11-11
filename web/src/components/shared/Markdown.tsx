@@ -55,6 +55,62 @@ function cacheMarkdown(key: string, node: React.ReactNode): React.ReactNode {
   return node
 }
 
+// Streaming: the prefix (complete blocks) is rendered once and its node kept,
+// so only the active (incomplete) suffix is re-parsed per flush. The node
+// reference stays stable across frames, so React reuses the prefix DOM.
+const streamingPrefixCache = new Map<string, React.ReactNode>()
+const STREAMING_PREFIX_MAX = 64
+const STREAMING_PREFIX_MAX_BYTES = 8 * 1024 * 1024
+let streamingPrefixBytes = 0
+
+function cacheStreamingPrefix(key: string, node: React.ReactNode): React.ReactNode {
+  streamingPrefixCache.set(key, node)
+  streamingPrefixBytes += key.length
+  while (streamingPrefixCache.size > STREAMING_PREFIX_MAX || streamingPrefixBytes > STREAMING_PREFIX_MAX_BYTES) {
+    const firstKey = streamingPrefixCache.keys().next().value
+    if (firstKey === undefined) break
+    streamingPrefixCache.delete(firstKey)
+    streamingPrefixBytes -= firstKey.length
+  }
+  return node
+}
+
+// The streamed prefix only ever grows, so its preprocessing (bullet fixes,
+// numbered-list merges, line-number stripping, detached-list separation) can
+// be computed once per prefix and cached: only the active suffix is
+// re-preprocessed on each flush, then the two parts are re-joined.
+const streamingPrefixPreprocessCache = new Map<string, string>()
+const STREAMING_PREFIX_PREPROCESS_MAX = 64
+const STREAMING_PREFIX_PREPROCESS_MAX_BYTES = 8 * 1024 * 1024
+let streamingPrefixPreprocessBytes = 0
+let streamingPrefixPreprocessMisses = 0
+
+// Exposed for tests: proves the prefix preprocessing runs once per prefix
+// instead of on the full content at every flush.
+export function getStreamingPrefixPreprocessMissesForTest(): number {
+  return streamingPrefixPreprocessMisses
+}
+
+function getPreprocessedPrefix(prefix: string): string {
+  const cached = streamingPrefixPreprocessCache.get(prefix)
+  if (cached !== undefined) return cached
+  streamingPrefixPreprocessMisses++
+  const processed = preprocessMarkdown(prefix)
+  streamingPrefixPreprocessCache.set(prefix, processed)
+  streamingPrefixPreprocessBytes += prefix.length + processed.length
+  while (
+    streamingPrefixPreprocessCache.size > STREAMING_PREFIX_PREPROCESS_MAX ||
+    streamingPrefixPreprocessBytes > STREAMING_PREFIX_PREPROCESS_MAX_BYTES
+  ) {
+    const firstKey = streamingPrefixPreprocessCache.keys().next().value
+    if (firstKey === undefined) break
+    const value = streamingPrefixPreprocessCache.get(firstKey)
+    streamingPrefixPreprocessCache.delete(firstKey)
+    if (value !== undefined) streamingPrefixPreprocessBytes -= firstKey.length + value.length
+  }
+  return processed
+}
+
 const CodeBlock = memo(function CodeBlock({
   language,
   codeString,
@@ -246,7 +302,10 @@ export const Markdown = memo(function Markdown({
   muted = false,
   isStreaming = false,
 }: MarkdownProps) {
-  const { showSyntaxHighlighting, deferCodeHighlightWhileStreaming } = useDisplaySettings()
+  const { showSyntaxHighlighting, deferCodeHighlightWhileStreaming } = useDisplaySettings((s) => ({
+    showSyntaxHighlighting: s.showSyntaxHighlighting,
+    deferCodeHighlightWhileStreaming: s.deferCodeHighlightWhileStreaming,
+  }))
 
   // While streaming, defer syntax highlighting while a code block is still open
   // (odd number of ``` fences) so the block is not re-highlighted on every frame.
@@ -268,6 +327,8 @@ export const Markdown = memo(function Markdown({
   // The cache key includes the render options (muted, syntax highlighting):
   // the same content can legitimately render in different contexts.
   const body = useMemo(() => {
+    if (isStreaming)
+      return renderStreamingMarkdown(content, components, muted, showSyntaxHighlighting, deferCodeHighlight)
     const processed = preprocessForRender(content)
     if (!containsMarkdownSyntax(processed)) {
       if (!processed.trim()) return null
@@ -278,9 +339,8 @@ export const Markdown = memo(function Markdown({
         </p>
       )
     }
-    if (isStreaming) return renderMarkdown(processed, components)
     return getCachedMarkdown(processed, components, muted, showSyntaxHighlighting)
-  }, [content, isStreaming, components, muted, showSyntaxHighlighting])
+  }, [content, isStreaming, components, muted, showSyntaxHighlighting, deferCodeHighlight])
 
   return <div className={`markdown-content [&_li>p]:inline ${className}`}>{body}</div>
 })
@@ -346,6 +406,78 @@ function getCachedMarkdown(
   if (cached !== undefined) return cached
   const node = renderMarkdown(content, components)
   return cacheMarkdown(key, node)
+}
+
+// Splits streamed content at the last top-level block boundary (a blank line
+// outside a fenced code block). Everything before it is complete and can be
+// rendered once; only the active suffix is re-parsed on each flush.
+export function splitStreamingSuffix(content: string): { prefix: string; suffix: string } {
+  const lines = content.split('\n')
+  let inFence = false
+  let lastBoundary = -1
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line === undefined) continue
+    if (/^(```|~~~)/.test(line)) inFence = !inFence
+    if (!inFence && line.trim() === '') lastBoundary = i
+  }
+  if (lastBoundary <= 0) return { prefix: '', suffix: content }
+  const prefix = lines.slice(0, lastBoundary).join('\n')
+  const suffix = lines.slice(lastBoundary + 1).join('\n')
+  return { prefix, suffix }
+}
+
+function renderStreamingMarkdown(
+  content: string,
+  components: ReturnType<typeof createMarkdownComponents>,
+  muted: boolean,
+  showSyntaxHighlighting: boolean,
+  deferCodeHighlight: boolean,
+): React.ReactNode {
+  let { prefix, suffix } = splitStreamingSuffix(content)
+  // preprocessMarkdown merges a bare "N." line with the following text even
+  // across a blank line, so a prefix ending in such a marker is not separable:
+  // fold the marker into the suffix so the cached prefix stays independent of it.
+  const marker = prefix === '' ? '' : prefix.slice(prefix.lastIndexOf('\n') + 1)
+  if (/^\d+\.\s*$/.test(marker) && /^\S/.test(suffix)) {
+    prefix = prefix.length > marker.length ? prefix.slice(0, prefix.length - marker.length - 1) : ''
+    suffix = marker + '\n' + suffix
+  }
+  const prefixProcessed = prefix === '' ? '' : getPreprocessedPrefix(prefix)
+  const suffixProcessed = suffix === '' ? '' : preprocessForRender(suffix)
+  if (!containsMarkdownSyntax(prefixProcessed) && !containsMarkdownSyntax(suffixProcessed)) {
+    const text =
+      prefixProcessed === '' || suffixProcessed === ''
+        ? prefixProcessed + suffixProcessed
+        : prefixProcessed + '\n\n' + suffixProcessed
+    if (!text.trim()) return null
+    const color = muted ? 'text-text-muted' : 'text-text-primary'
+    return (
+      <p className={`${color} mb-1.5 last:mb-0 leading-tight break-words whitespace-pre-line`}>
+        {linkifyBareUrls(text.trimEnd())}
+      </p>
+    )
+  }
+  let prefixNode: React.ReactNode = null
+  if (prefixProcessed !== '') {
+    const key = `${muted ? 'm' : 'n'}|${showSyntaxHighlighting ? 'h' : 'p'}|${deferCodeHighlight ? 'd' : 'x'}|${prefixProcessed}`
+    const cached = streamingPrefixCache.get(key)
+    if (cached !== undefined) {
+      prefixNode = cached
+    } else {
+      prefixNode = cacheStreamingPrefix(key, renderMarkdown(prefixProcessed, components))
+    }
+  }
+  const suffixNode = suffixProcessed === '' ? null : renderMarkdown(suffixProcessed, components)
+  // The blank-line boundary emits exactly one newline between the adjacent
+  // blocks in the full parse; re-adding it keeps the split render byte-identical.
+  return (
+    <>
+      {prefixNode}
+      {prefixNode !== null && suffixNode !== null ? '\n' : null}
+      {suffixNode}
+    </>
+  )
 }
 
 /**

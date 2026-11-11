@@ -148,7 +148,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   // calls still expand, so a live stream never collapses mid-run).
   // A tool call waiting for user authorization (pendingConfirmation) is always
   // expanded so the user sees and can interact with the action buttons.
-  const { collapseLargeToolCalls } = useDisplaySettings()
+  const { collapseLargeToolCalls } = useDisplaySettings((s) => ({ collapseLargeToolCalls: s.collapseLargeToolCalls }))
   const shouldAutoExpand =
     Boolean(pendingConfirmation) ||
     (!forceCompact &&

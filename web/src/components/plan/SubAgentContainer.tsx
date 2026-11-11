@@ -76,7 +76,10 @@ export const SubAgentContainer = memo(function SubAgentContainer({
   const [expanded, setExpanded] = useState(false)
   const { agents } = useAgents()
   const contextState = useSessionStore((state) => state.subAgentContextStates[subAgentId])
-  const { showThinking, showVerboseToolOutput } = useDisplaySettings()
+  const { showThinking, showVerboseToolOutput } = useDisplaySettings((s) => ({
+    showThinking: s.showThinking,
+    showVerboseToolOutput: s.showVerboseToolOutput,
+  }))
 
   const getViewport = useViewport(scrollRef)
 

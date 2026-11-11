@@ -1,5 +1,5 @@
 import { ScrollArea } from './components/shared/ScrollArea'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import {
   SETTINGS_KEYS,
   DISPLAY_SETTINGS_KEYS,
@@ -34,16 +34,11 @@ if (typeof window !== 'undefined') {
 import { Header } from './components/layout/Header'
 import { Sidebar } from './components/layout/Sidebar'
 import { PageTitle } from './components/layout/PageTitle'
-import { HomePage } from './components/HomePage'
 import { NewSessionHandler } from './components/NewSessionHandler'
 import { EmptyProjectView } from './components/EmptyProjectView'
-import { PlanPanel } from './components/plan/PlanPanel'
-import { ReadonlySessionView } from './components/plan/ReadonlySessionView'
-import { SplitView } from './components/split/SplitView'
 import { useIsSplit, readSplitLayout } from './lib/splitPersistence'
 import { Spinner, SpinnerWithText } from './components/shared/Spinner'
 import { PasswordModal } from './components/PasswordModal'
-import { OnboardingWizard } from './components/onboarding/OnboardingWizard'
 import { EffortChangeGateProvider } from './components/plan/EffortChangeGate'
 import { CrossSessionConfirmationBanner } from './components/shared/CrossSessionConfirmationBanner'
 import { UpdateBanner } from './components/UpdateBanner'
@@ -51,6 +46,16 @@ import { PluginPanelHost } from './components/plugins/PluginPanelHost'
 import { NotificationToasts } from './components/notifications/NotificationToasts'
 import { ChangelogModal } from './components/ChangelogModal'
 import { getStoredLastVersion, getStoredPreviousVersion, isVersionNewerThan, trackVersion } from './lib/versionTracking'
+
+const HomePage = lazy(() => import('./components/HomePage').then((m) => ({ default: m.HomePage })))
+const PlanPanel = lazy(() => import('./components/plan/PlanPanel').then((m) => ({ default: m.PlanPanel })))
+const ReadonlySessionView = lazy(() =>
+  import('./components/plan/ReadonlySessionView').then((m) => ({ default: m.ReadonlySessionView })),
+)
+const SplitView = lazy(() => import('./components/split/SplitView').then((m) => ({ default: m.SplitView })))
+const OnboardingWizard = lazy(() =>
+  import('./components/onboarding/OnboardingWizard').then((m) => ({ default: m.OnboardingWizard })),
+)
 
 function LoadingSpinner() {
   return (
@@ -150,11 +155,13 @@ function ProjectSessionView({
       <Sidebar projectId={projectId!} isOpen={sidebarOpen} overlay={sidebarOverlay} onClose={onSidebarToggle} />
       <div className="flex-1 min-w-0 bg-primary flex flex-col">
         <CrossSessionConfirmationBanner projectId={projectId} />
-        <PlanPanel
-          criteriaSidebarOpen={rightSidebarOpen}
-          criteriaSidebarOverlay={rightSidebarOverlay}
-          onCriteriaSidebarToggle={onRightSidebarToggle}
-        />
+        <Suspense fallback={<LoadingSpinner />}>
+          <PlanPanel
+            criteriaSidebarOpen={rightSidebarOpen}
+            criteriaSidebarOverlay={rightSidebarOverlay}
+            onCriteriaSidebarToggle={onRightSidebarToggle}
+          />
+        </Suspense>
       </div>
     </>
   )
@@ -173,7 +180,9 @@ function OnboardingPage() {
 
   return (
     <ScrollArea className="flex-1">
-      <OnboardingWizard onComplete={handleComplete} />
+      <Suspense fallback={<LoadingSpinner />}>
+        <OnboardingWizard onComplete={handleComplete} />
+      </Suspense>
     </ScrollArea>
   )
 }
@@ -501,7 +510,11 @@ function App() {
   }
 
   if (isReadonly) {
-    return <ReadonlySessionView />
+    return (
+      <Suspense fallback={<LoadingSpinner />}>
+        <ReadonlySessionView />
+      </Suspense>
+    )
   }
 
   return (
@@ -525,7 +538,13 @@ function App() {
               <OnboardingPage />
             </Route>
             <Route path="/split-view">
-              {splitReady ? <SplitView controlOpen={splitControlOpen} /> : <LoadingSpinner />}
+              {splitReady ? (
+                <Suspense fallback={<LoadingSpinner />}>
+                  <SplitView controlOpen={splitControlOpen} />
+                </Suspense>
+              ) : (
+                <LoadingSpinner />
+              )}
             </Route>
             <Route path="/p/:projectId/s/:sessionId">
               <ProjectSessionView
@@ -548,7 +567,9 @@ function App() {
               />
             </Route>
             <Route path="/">
-              <HomePage />
+              <Suspense fallback={<LoadingSpinner />}>
+                <HomePage />
+              </Suspense>
             </Route>
           </Switch>
         </div>

@@ -1,13 +1,15 @@
 import { ScrollArea } from '../shared/ScrollArea'
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { lazy, Suspense, useEffect, useState, useRef, useCallback } from 'react'
 import { useTerminalStore } from '../../stores/terminal'
 import { useCurrentProject } from '../../hooks/useCurrentProject'
 import { useSessionStore } from '../../stores/session/store'
-import { TerminalPane } from './TerminalPane'
+import { Spinner } from '../shared/Spinner'
 import { PlusSquareIcon, XCloseIcon } from '../shared/icons'
 import { focusChatTextarea } from '../../lib/focusChatTextarea'
 import { shouldAutofocus } from '../../lib/device'
 import { useT } from '../../hooks/useT'
+
+const TerminalPane = lazy(() => import('./TerminalPane').then((m) => ({ default: m.TerminalPane })))
 
 interface TerminalDrawerProps {
   isOpen: boolean
@@ -153,17 +155,25 @@ export function TerminalDrawer({ isOpen, onClose }: TerminalDrawerProps) {
               </div>
             </div>
           ) : (
-            <div className={`grid ${getGridClass(sessions.length)} gap-2 h-full auto-rows-fr`}>
-              {sessions.map((session) => (
-                <TerminalPane
-                  key={session.id}
-                  sessionId={session.id}
-                  onClose={() => killSession(session.id)}
-                  onEscape={handleClose}
-                  autoFocus={sessions.length === 1 && shouldAutofocus()}
-                />
-              ))}
-            </div>
+            <Suspense
+              fallback={
+                <div className="flex items-center justify-center h-full">
+                  <Spinner />
+                </div>
+              }
+            >
+              <div className={`grid ${getGridClass(sessions.length)} gap-2 h-full auto-rows-fr`}>
+                {sessions.map((session) => (
+                  <TerminalPane
+                    key={session.id}
+                    sessionId={session.id}
+                    onClose={() => killSession(session.id)}
+                    onEscape={handleClose}
+                    autoFocus={sessions.length === 1 && shouldAutofocus()}
+                  />
+                ))}
+              </div>
+            </Suspense>
           )}
         </ScrollArea>
       </div>

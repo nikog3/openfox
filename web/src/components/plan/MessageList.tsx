@@ -213,7 +213,14 @@ export const MessageList = memo(function MessageList({
     if (!llmRetry) setShowRetryError(false)
   }, [llmRetry])
   const { showThinking, showVerboseToolOutput, showStats, showAgentDefinitions, showWorkflowBars, showContextState } =
-    useDisplaySettings()
+    useDisplaySettings((s) => ({
+      showThinking: s.showThinking,
+      showVerboseToolOutput: s.showVerboseToolOutput,
+      showStats: s.showStats,
+      showAgentDefinitions: s.showAgentDefinitions,
+      showWorkflowBars: s.showWorkflowBars,
+      showContextState: s.showContextState,
+    }))
   const { contextState } = useScopedContext()
 
   const { workflows } = useWorkflows(useSessionWorkdir())

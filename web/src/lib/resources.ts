@@ -745,6 +745,68 @@ export const DISPLAY_SETTINGS_KEYS = [
   SETTINGS_KEYS.DISPLAY_DANGER_LEVEL_AUTO_LIST_THRESHOLD,
 ] as const
 
+export interface DisplaySettings {
+  showThinking: boolean
+  showVerboseToolOutput: boolean
+  showStats: boolean
+  showContextState: boolean
+  showAgentDefinitions: boolean
+  showWorkflowBars: boolean
+  showSyntaxHighlighting: boolean
+  maxVisibleItems: number
+  useNativeScrollbars: boolean
+  useNativeScrollbarsCodeBlocks: boolean
+  collapseLargeToolCalls: boolean
+  deferCodeHighlightWhileStreaming: boolean
+  feedVirtualization: boolean
+  modelSelectorHeight: string
+  collapseProvidersByDefault: boolean
+  collapseFavoritesByDefault: boolean
+  modelFavoritesRaw: string
+}
+
+function displayRaw(key: string, fallback: string): string {
+  return readSetting(key) ?? fallback
+}
+
+/** Derive the display settings object from the per-key cache, applying the
+ * documented default for any key not yet loaded (matching useSetting). */
+export function deriveDisplaySettings(): DisplaySettings {
+  return {
+    showThinking: displayRaw(SETTINGS_KEYS.DISPLAY_SHOW_THINKING, 'true') === 'true',
+    showVerboseToolOutput: displayRaw(SETTINGS_KEYS.DISPLAY_SHOW_VERBOSE_TOOL_OUTPUT, 'true') === 'true',
+    showStats: displayRaw(SETTINGS_KEYS.DISPLAY_SHOW_STATS, 'true') === 'true',
+    showContextState: displayRaw(SETTINGS_KEYS.DISPLAY_SHOW_CONTEXT_STATE, 'false') === 'true',
+    showAgentDefinitions: displayRaw(SETTINGS_KEYS.DISPLAY_SHOW_AGENT_DEFINITIONS, 'true') === 'true',
+    showWorkflowBars: displayRaw(SETTINGS_KEYS.DISPLAY_SHOW_WORKFLOW_BARS, 'true') === 'true',
+    showSyntaxHighlighting: displayRaw(SETTINGS_KEYS.DISPLAY_SHOW_SYNTAX_HIGHLIGHTING, 'true') === 'true',
+    maxVisibleItems: Number(displayRaw(SETTINGS_KEYS.DISPLAY_MAX_VISIBLE_ITEMS, '100')),
+    useNativeScrollbars: displayRaw(SETTINGS_KEYS.DISPLAY_USE_NATIVE_SCROLLBARS, 'false') === 'true',
+    useNativeScrollbarsCodeBlocks:
+      displayRaw(SETTINGS_KEYS.DISPLAY_USE_NATIVE_SCROLLBARS_CODE_BLOCKS, 'false') === 'true',
+    collapseLargeToolCalls: displayRaw(SETTINGS_KEYS.DISPLAY_COLLAPSE_LARGE_TOOL_CALLS, 'false') === 'true',
+    deferCodeHighlightWhileStreaming:
+      displayRaw(SETTINGS_KEYS.DISPLAY_DEFER_CODE_HIGHLIGHT_WHILE_STREAMING, 'false') === 'true',
+    feedVirtualization: displayRaw(SETTINGS_KEYS.DISPLAY_FEED_VIRTUALIZATION, 'true') === 'true',
+    modelSelectorHeight: displayRaw(SETTINGS_KEYS.DISPLAY_MODEL_SELECTOR_HEIGHT, 'default') || 'default',
+    collapseProvidersByDefault: displayRaw(SETTINGS_KEYS.DISPLAY_COLLAPSE_PROVIDERS_BY_DEFAULT, 'false') === 'true',
+    collapseFavoritesByDefault: displayRaw(SETTINGS_KEYS.DISPLAY_COLLAPSE_FAVORITES_BY_DEFAULT, 'false') === 'true',
+    modelFavoritesRaw: displayRaw(SETTINGS_KEYS.DISPLAY_MODEL_FAVORITES, '[]'),
+  }
+}
+
+/** Single composite subscription for all display settings: one batched fetch
+ * warms the per-key entries, and consumers derive from the per-key cache so any
+ * per-key write (save, WS push) converges without a refetch. */
+export const displaySettingsResource = resource<DisplaySettings, []>({
+  key: () => 'settings:display',
+  maxAgeMs: 60_000,
+  fetch: async () => {
+    await fetchSettingsBulk(DISPLAY_SETTINGS_KEYS)
+    return deriveDisplaySettings()
+  },
+})
+
 export async function fetchChangelog(since?: string): Promise<string> {
   const url = since ? `/api/changelog?since=${encodeURIComponent(since)}` : '/api/changelog'
   const res = await authFetch(url)

@@ -1,10 +1,17 @@
-import { createHighlighter, type Highlighter, bundledLanguages } from 'shiki'
-import type { ShikiTransformer } from 'shiki'
+import type { Highlighter, ShikiTransformer } from 'shiki'
 import { useThemeStore } from '../stores/theme'
 import { pathBasename } from './path'
 
 let highlighter: Highlighter | null = null
 let highlighterPromise: Promise<Highlighter> | null = null
+let shikiModule: typeof import('shiki') | null = null
+
+async function loadShikiModule() {
+  if (!shikiModule) {
+    shikiModule = await import('shiki')
+  }
+  return shikiModule
+}
 const loadedLanguages = new Set<string>()
 const loadingPromises = new Map<string, Promise<void>>()
 
@@ -80,11 +87,13 @@ export function lineNumbersTransformer(): ShikiTransformer {
 
 export async function getHighlighter() {
   if (!highlighterPromise) {
-    highlighterPromise = createHighlighter({ themes, langs: coreLangs }).then((h) => {
+    highlighterPromise = (async () => {
+      const { createHighlighter } = await loadShikiModule()
+      const h = await createHighlighter({ themes, langs: coreLangs })
       highlighter = h
       coreLangs.forEach((lang) => loadedLanguages.add(lang))
       return h
-    })
+    })()
   }
   return highlighterPromise
 }
@@ -99,6 +108,7 @@ export async function loadLanguage(lang: string): Promise<void> {
 
   const loadPromise = (async () => {
     const h = await getHighlighter()
+    const { bundledLanguages } = await loadShikiModule()
 
     // Try to load from bundledLanguages first
     const langDef = bundledLanguages[lang as keyof typeof bundledLanguages]

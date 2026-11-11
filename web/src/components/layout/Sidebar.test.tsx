@@ -147,4 +147,15 @@ describe('Sidebar', () => {
     const html = renderToStaticMarkup(<Sidebar projectId="project-1" isOpen={false} overlay={false} />)
     expect(html).toContain('w-0')
   })
+
+  it('constrains the session list scroll area with flex so long lists can scroll', () => {
+    const html = renderToStaticMarkup(<Sidebar projectId="project-1" />)
+
+    // The zone wrappers must form a flex column chain down to the flex-1
+    // ScrollArea — otherwise the list takes its natural height, overflows the
+    // overflow-hidden aside, and cannot scroll.
+    expect(html).toContain('class="flex flex-col flex-1 min-h-0" data-plugin-zone="sidebar"')
+    expect(html).toContain('class="flex flex-col flex-1 min-h-0" data-plugin-zone="sidebar.sessions_list"')
+    expect(html).toContain('flex-1 min-h-0')
+  })
 })

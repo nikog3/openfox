@@ -35,6 +35,9 @@ describe('syntax-highlighter', () => {
     const promise1 = mod.getHighlighter()
     const promise2 = mod.getHighlighter()
 
+    // The shiki module is now loaded via dynamic import, so the mock's
+    // createHighlighter is only reached after a microtask tick.
+    await vi.waitFor(() => expect(resolveCreate).not.toBeNull())
     resolveCreate!(mockHighlighter)
 
     const [h1, h2] = await Promise.all([promise1, promise2])

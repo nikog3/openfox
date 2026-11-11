@@ -40,8 +40,15 @@ export function ReadonlySessionView() {
     loadSession()
   }, [sessionId])
 
-  const { showThinking, showVerboseToolOutput, showStats, showAgentDefinitions, showWorkflowBars } =
-    useDisplaySettings()
+  const { showThinking, showVerboseToolOutput, showStats, showAgentDefinitions, showWorkflowBars } = useDisplaySettings(
+    (s) => ({
+      showThinking: s.showThinking,
+      showVerboseToolOutput: s.showVerboseToolOutput,
+      showStats: s.showStats,
+      showAgentDefinitions: s.showAgentDefinitions,
+      showWorkflowBars: s.showWorkflowBars,
+    }),
+  )
 
   const displayItems = useMemo((): DisplayItem[] => {
     return groupMessages(messages)

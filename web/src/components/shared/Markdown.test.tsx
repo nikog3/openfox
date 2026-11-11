@@ -1,6 +1,15 @@
 // @vitest-environment happy-dom
-import { describe, it, expect } from 'vitest'
-import { Markdown, getMarkdownCacheBytesForTest, setMarkdownCacheMaxBytesForTest } from './Markdown'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import {
+  Markdown,
+  getMarkdownCacheBytesForTest,
+  getStreamingPrefixPreprocessMissesForTest,
+  setMarkdownCacheMaxBytesForTest,
+  splitStreamingSuffix,
+} from './Markdown'
 import { renderToString } from 'react-dom/server'
 
 describe('Markdown', () => {
@@ -329,6 +338,101 @@ describe('Markdown', () => {
       expect(html).toContain('Path')
       expect(html).toContain('Purpose')
       expect(html).toContain('/test')
+    })
+  })
+
+  describe('streaming incremental render', () => {
+    let container: HTMLDivElement
+    let root: Root
+
+    beforeEach(() => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 200 })))
+      container = document.createElement('div')
+      document.body.appendChild(container)
+      root = createRoot(container)
+    })
+
+    afterEach(() => {
+      act(() => root.unmount())
+      container.remove()
+      vi.unstubAllGlobals()
+    })
+
+    describe('splitStreamingSuffix', () => {
+      it('returns an empty prefix when no blank line boundary exists', () => {
+        expect(splitStreamingSuffix('single paragraph')).toEqual({ prefix: '', suffix: 'single paragraph' })
+      })
+
+      it('splits at the last blank line outside fences', () => {
+        expect(splitStreamingSuffix('a\n\nb\n\nc')).toEqual({ prefix: 'a\n\nb', suffix: 'c' })
+      })
+
+      it('ignores blank lines inside fenced code blocks', () => {
+        expect(splitStreamingSuffix('intro\n\n```js\n\ncode\n```\n\nnext')).toEqual({
+          prefix: 'intro\n\n```js\n\ncode\n```',
+          suffix: 'next',
+        })
+      })
+
+      it('yields an empty prefix for content that starts with blank lines', () => {
+        expect(splitStreamingSuffix('\n\na')).toEqual({ prefix: '', suffix: 'a' })
+      })
+    })
+
+    it('keeps the prefix DOM stable across streaming flushes', () => {
+      act(() => root.render(<Markdown content={'## Title\n\nFirst body text'} isStreaming />))
+      const heading = container.querySelector('h2')
+      expect(heading).not.toBeNull()
+
+      act(() => root.render(<Markdown content={'## Title\n\nFirst body text\n\nMore text'} isStreaming />))
+      expect(container.querySelector('h2')).toBe(heading)
+    })
+
+    it('renders identical HTML to the full parse at each flush', () => {
+      const flush = '## Title\n\nFirst body text\n\nMore text'
+      const streamingHtml = renderToString(<Markdown content={flush} isStreaming />)
+      const fullHtml = renderToString(<Markdown content={flush} />)
+      expect(streamingHtml).toBe(fullHtml)
+    })
+
+    it('matches the full parse when streaming ends', () => {
+      const flush1 = '## Title\n\nFirst body text'
+      const final = '## Title\n\nFirst body text\n\nMore text'
+      const reference = renderToString(<Markdown content={final} />)
+
+      act(() => root.render(<Markdown content={flush1} isStreaming />))
+      act(() => root.render(<Markdown content={final} isStreaming />))
+      act(() => root.render(<Markdown content={final} />))
+      // happy-dom's innerHTML does not escape ">" in attribute values while
+      // React SSR emits "&gt;": normalize so the comparison is on the DOM, not
+      // the serializer.
+      const normalize = (html: string) => html.replace(/&gt;/g, '>')
+      expect(normalize(container.innerHTML)).toBe(normalize(reference))
+    })
+
+    it('preprocesses the prefix once and only the suffix on later flushes', () => {
+      const baseline = getStreamingPrefixPreprocessMissesForTest()
+      const flush1 = 'Intro paragraph.\n\nSecond paragraph.'
+      renderToString(<Markdown content={flush1} isStreaming />)
+      expect(getStreamingPrefixPreprocessMissesForTest()).toBe(baseline + 1)
+
+      const flush2 = `${flush1}\n\nThird paragraph.`
+      renderToString(<Markdown content={flush2} isStreaming />)
+      expect(getStreamingPrefixPreprocessMissesForTest()).toBe(baseline + 2)
+
+      // The grown prefix was already preprocessed: re-rendering hits the cache.
+      renderToString(<Markdown content={flush2} isStreaming />)
+      expect(getStreamingPrefixPreprocessMissesForTest()).toBe(baseline + 2)
+    })
+
+    it('keeps streaming parity with the full parse when preprocessing reshapes blocks', () => {
+      let flush = '**Part 2**\n3. New item\n4. Second item'
+      for (const addition of ['\n\n• Bullet A\n• Bullet B', '\n\n```py\nprint(1)']) {
+        flush += addition
+        expect(renderToString(<Markdown content={flush} isStreaming />)).toBe(
+          renderToString(<Markdown content={flush} />),
+        )
+      }
     })
   })
 })

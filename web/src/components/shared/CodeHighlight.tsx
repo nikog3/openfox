@@ -26,7 +26,7 @@ export const CodeHighlight = memo(function CodeHighlight({
   showLineNumbers = false,
   startLine = 1,
 }: CodeHighlightProps) {
-  const { showSyntaxHighlighting } = useDisplaySettings()
+  const { showSyntaxHighlighting } = useDisplaySettings((s) => ({ showSyntaxHighlighting: s.showSyntaxHighlighting }))
   const [html, setHtml] = useState<string | null>(null)
   const shikiTheme = useShikiTheme()
   const latestCodeRef = useRef(code)

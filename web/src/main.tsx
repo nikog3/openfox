@@ -5,7 +5,6 @@ import App from './App'
 import { appBasePath } from './lib/basePath'
 import { prefetchSession } from './lib/sessionPrefetch'
 import './styles/globals.css'
-import '@xterm/xterm/css/xterm.css'
 
 // Start the session fetch before React mounts — it is the critical path of the
 // initial page load and boot would otherwise delay it by hundreds of ms.
