@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../config.js'
 import { closeDatabase, initDatabase } from '../db/index.js'
 import { createProject } from '../db/projects.js'
+import { addTaskLink } from '../db/tasks.js'
 import { createTasksService, isTaskGateError, isTaskConflictError } from './service.js'
 import type { TasksService } from './service.js'
 import type { TasksUpdatePayload } from '../../shared/protocol.js'
@@ -359,6 +360,43 @@ describe('project tasks service', () => {
       expect(result.task.activeSessionId).toBe('sess-agent')
       expect(result.task.runState).toBe('running')
       expect(sm.reminders[0]?.sessionId).toBe('sess-agent')
+    })
+
+    it('agent move queues the task when the slot limit is reached', async () => {
+      await service.setSettings(projectId, { slotLimit: 2 })
+      const a = create('Task A')
+      const b = create('Task B')
+      await service.move(projectId, a.id, 'in_progress', { actor: 'human' })
+      await service.move(projectId, b.id, 'in_progress', { actor: 'human' })
+      // Board is full (2 running). The agent claims a third task → queued, no overflow.
+      const c = create('Task C')
+      const agentSession = { id: 'sess-agent', projectId }
+      sm.sessions.set('sess-agent', agentSession)
+      const result = await service.move(projectId, c.id, 'in_progress', {
+        actor: 'agent',
+        sessionId: 'sess-agent',
+      })
+      expect(result.task.runState).toBe('queued')
+      expect(result.task.activeSessionId).toBeUndefined()
+      expect(sm.createdSessions).toHaveLength(2) // nothing seeded at queue time
+    })
+
+    it('agent move rejects a task actively owned by another session', async () => {
+      const task = create('Other job task')
+      // Simulate a task already actively bound to another session (slot 1).
+      addTaskLink(task.id, 'sess-other', true)
+      const agentSession = { id: 'sess-agent', projectId }
+      sm.sessions.set('sess-agent', agentSession)
+
+      await expect(
+        service.move(projectId, task.id, 'in_progress', {
+          actor: 'agent',
+          sessionId: 'sess-agent',
+        }),
+      ).rejects.toThrow(/another session/i)
+      // The other session's active binding is preserved.
+      const fresh = service.get(projectId, task.id)!
+      expect(fresh.activeSessionId).toBe('sess-other')
     })
 
     it('reverting a running task to To Do frees the slot and auto-launches the next queued task', async () => {

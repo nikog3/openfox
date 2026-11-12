@@ -370,6 +370,12 @@ export function createTasksService(deps: TasksServiceDeps): TasksService {
 
       dbSetTaskStatus(taskId, 'in_progress')
       const settings = dbGetTaskSettings(projectId)
+      // A free slot launches, a full board (or paused queue) queues.
+      const runningCount = activeCount(projectId)
+      const launched = runningCount < settings.slotLimit && !settings.queuePaused
+      // A planned task that is started (by an agent or a human) is no longer
+      // "planned" — it becomes a plain task.
+      if (task.schedule) dbClearTaskSchedule(taskId)
 
       if (opts.actor === 'agent') {
         if (!opts.sessionId) {
@@ -380,22 +386,30 @@ export function createTasksService(deps: TasksServiceDeps): TasksService {
             }),
           )
         }
-        // Current-session rule: the agent is working in its own session NOW.
-        dbSetTaskRunState(taskId, 'running')
-        dbAddTaskLink(taskId, opts.sessionId, true)
-        dbAddAuditEntry(taskId, 'agent', 'move', `Moved to In Progress (running)`, opts.actorName)
-        emitReminder(opts.sessionId, reminderForInProgress(task, opts.sessionId, from))
-        sessionId = opts.sessionId
+        // An agent may not claim a task already actively owned by another
+        // session — doing so would yank the other job's task into this one.
+        if (task.activeSessionId && task.activeSessionId !== opts.sessionId) {
+          throw new Error(
+            serverT({
+              en: 'This task is already being worked on by another session',
+              fr: 'Cette tâche est déjà traitée par une autre session',
+            }),
+          )
+        }
+        dbSetTaskRunState(taskId, launched ? 'running' : 'queued')
+        if (launched) {
+          dbAddTaskLink(taskId, opts.sessionId, true)
+          dbAddAuditEntry(taskId, 'agent', 'move', `Moved to In Progress (running)`, opts.actorName)
+          emitReminder(opts.sessionId, reminderForInProgress(task, opts.sessionId, from))
+          sessionId = opts.sessionId
+        } else {
+          dbAppendToBottom(taskId, 'in_progress')
+          dbAddTaskLink(taskId, opts.sessionId, false)
+          dbAddAuditEntry(taskId, 'agent', 'move', `Moved to In Progress (queued)`, opts.actorName)
+        }
       } else {
         // Human drag / Start task / system trigger: allocate a slot or queue.
-        const runningCount = activeCount(projectId)
-        const launched = runningCount < settings.slotLimit && !settings.queuePaused
         dbSetTaskRunState(taskId, launched ? 'running' : 'queued')
-        if (task.schedule) {
-          // A planned task manually started (or system-triggered) is no longer
-          // "planned" — it becomes a plain task.
-          dbClearTaskSchedule(taskId)
-        }
         if (launched) {
           // Reuse the session the human is already in when it's still fresh
           // (Up-next Start) — otherwise seed a new one.
