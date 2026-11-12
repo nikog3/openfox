@@ -1,7 +1,44 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Provider } from '../../../shared/types.js'
 import { createTransportLLMClient } from './transport-client.js'
 import type { ProviderTransportAdapter } from '../../../provider/index.js'
+
+const tokenizeMocks = vi.hoisted(() => ({
+  openai: vi.fn(async () => 42 as number),
+  ollama: vi.fn(async () => 7 as number),
+  openaiCtorArgs: [] as { baseURL?: string; apiKey?: string }[],
+  ollamaCtorArgs: [] as { baseURL?: string; apiKey?: string }[],
+}))
+
+vi.mock('../../llm/http-client.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../llm/http-client.js')>()
+  return {
+    ...original,
+    OpenAIHttpClient: class MockOpenAIHttpClient {
+      options: { baseURL?: string; apiKey?: string }
+      tokenize = tokenizeMocks.openai
+      constructor(options: { baseURL?: string; apiKey?: string }) {
+        this.options = options
+        tokenizeMocks.openaiCtorArgs.push(options)
+      }
+    },
+  }
+})
+
+vi.mock('../../llm/ollama-native.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../llm/ollama-native.js')>()
+  return {
+    ...original,
+    OllamaHttpClient: class MockOllamaHttpClient {
+      options: { baseURL?: string; apiKey?: string }
+      tokenize = tokenizeMocks.ollama
+      constructor(options: { baseURL?: string; apiKey?: string }) {
+        this.options = options
+        tokenizeMocks.ollamaCtorArgs.push(options)
+      }
+    },
+  }
+})
 
 const transport: ProviderTransportAdapter = {
   id: 'test',
@@ -482,5 +519,61 @@ describe('createTransportLLMClient', () => {
     }
     const client = createTransportLLMClient(provider, 'gpt-5', transport)
     expect(client.getReasoningEffort?.()).toBeUndefined()
+  })
+
+  describe('tokenize', () => {
+    beforeEach(() => {
+      tokenizeMocks.openai.mockReset()
+      tokenizeMocks.ollama.mockReset()
+      tokenizeMocks.openaiCtorArgs.length = 0
+      tokenizeMocks.ollamaCtorArgs.length = 0
+    })
+
+    it('builds the tokenizer from the provider URL for non-ollama backends', async () => {
+      const provider: Provider = {
+        id: 'openai',
+        name: 'External Provider',
+        url: 'https://provider.example/v1',
+        backend: 'openai',
+        models: [{ id: 'gpt-5', contextWindow: 1_050_000, source: 'backend' }],
+        isActive: true,
+        createdAt: new Date().toISOString(),
+      }
+      const client = createTransportLLMClient(provider, 'gpt-5', transport)
+      expect(typeof client.tokenize).toBe('function')
+
+      await client.tokenize?.('hello world')
+
+      expect(tokenizeMocks.openai).toHaveBeenCalledWith('hello world')
+      expect(tokenizeMocks.ollama).not.toHaveBeenCalled()
+      expect(tokenizeMocks.openaiCtorArgs[0]).toEqual({
+        baseURL: 'https://provider.example/v1',
+        apiKey: 'not-needed',
+      })
+    })
+
+    it('builds the tokenizer on the Ollama native endpoint for ollama backends', async () => {
+      const provider: Provider = {
+        id: 'ollama',
+        name: 'Ollama',
+        url: 'http://localhost:11434/v1',
+        backend: 'ollama',
+        apiKey: 'secret',
+        models: [{ id: 'qwen2.5', contextWindow: 32_768, source: 'backend' }],
+        isActive: true,
+        createdAt: new Date().toISOString(),
+      }
+      const client = createTransportLLMClient(provider, 'qwen2.5', transport)
+      expect(typeof client.tokenize).toBe('function')
+
+      await client.tokenize?.('hello world', 'qwen2.5')
+
+      expect(tokenizeMocks.ollama).toHaveBeenCalledWith('hello world', 'qwen2.5')
+      expect(tokenizeMocks.openai).not.toHaveBeenCalled()
+      expect(tokenizeMocks.ollamaCtorArgs[0]).toEqual({
+        baseURL: 'http://localhost:11434',
+        apiKey: 'secret',
+      })
+    })
   })
 })

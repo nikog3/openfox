@@ -770,6 +770,8 @@ describe('agentLoop integration', () => {
       ),
     )
 
+    const tokenizeMock = vi.fn(async (content: string) => Math.ceil(content.length / 2))
+
     ;(consumeStreamGenerator as any)
       .mockResolvedValueOnce(makeStreamResult({ toolCalls, finishReason: 'tool_calls' }))
       .mockResolvedValueOnce(makeStreamResult({ content: 'Done', finishReason: 'stop' }))
@@ -814,13 +816,15 @@ describe('agentLoop integration', () => {
         getConversationMessages: getConversationMessagesMock,
         llmClient: {
           getModel: vi.fn().mockReturnValue('test-model'),
-          tokenize: vi.fn(async (content: string) => Math.ceil(content.length / 2)),
+          tokenize: tokenizeMock,
         } as any,
       }),
       turnMetrics,
     )
 
     expect(consumeStreamGenerator).toHaveBeenCalledTimes(2)
+    // The measured backstop hit the client tokenizer, not the dense estimate
+    expect(tokenizeMock).toHaveBeenCalled()
 
     const secondCallArgs = assembleRequestMock.mock.calls[1]![0] as { messages: any[] }
     const toolMsgs = secondCallArgs.messages.filter((m: any) => m.role === 'tool')

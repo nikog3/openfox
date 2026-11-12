@@ -6,6 +6,9 @@ import type { ProviderTransportAdapter } from '../../../provider/index.js'
 import { resolveAttachmentsInMessages } from '../../llm/client-pure.js'
 import { sanitizeToolSchema } from '../../llm/schema-sanitizer.js'
 import { resolveEffortForModel, resolveModeModelId } from '../../../shared/reasoning-effort.js'
+import { OpenAIHttpClient } from '../../llm/http-client.js'
+import { OllamaHttpClient } from '../../llm/ollama-native.js'
+import { ensureVersionPrefix, stripVersionPrefix } from '../../llm/url-utils.js'
 
 export function createTransportLLMClient(
   provider: Provider,
@@ -98,6 +101,30 @@ export function createTransportLLMClient(
     }
   }
 
+  // Backend tokenizer: the /tokenize route is protocol-independent, so build a
+  // dedicated native client from the provider URL (Ollama /api/tokenize vs
+  // OpenAI-compatible /tokenize) and reuse it across calls to keep the
+  // endpoint cache. Null when the backend has no tokenizer endpoint.
+  const isOllama = provider.backend === 'ollama'
+  const ollamaTokenize = isOllama
+    ? new OllamaHttpClient({
+        baseURL: stripVersionPrefix(provider.url),
+        ...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
+      })
+    : null
+  const openaiTokenize = isOllama
+    ? null
+    : new OpenAIHttpClient({
+        baseURL: ensureVersionPrefix(provider.url),
+        apiKey: provider.apiKey ?? 'not-needed',
+      })
+  const tokenize = (content: string, model?: string): Promise<number | null> =>
+    ollamaTokenize
+      ? ollamaTokenize.tokenize(content, model)
+      : openaiTokenize
+        ? openaiTokenize.tokenize(content)
+        : Promise.resolve(null)
+
   return {
     getModel: () => model,
     setModel(next) {
@@ -111,6 +138,7 @@ export function createTransportLLMClient(
       backend = next
     },
     getReasoningEffort: () => resolveEffort({}),
+    tokenize,
     complete: async (request) => {
       const resolved = await resolveRequest(request)
       return transport.complete(resolved.request, context(resolved.effort))

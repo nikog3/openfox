@@ -193,6 +193,13 @@ export function createLLMClient(
 
     getReasoningEffort: () => reasoningEffort,
 
+    // The /tokenize route is protocol-independent (OpenAI-compatible /tokenize
+    // and Ollama /api/tokenize), so it bypasses httpFor and delegates straight
+    // to the native client for the current backend. Null when the backend has
+    // no tokenizer endpoint, so the caller falls back to the dense estimate.
+    tokenize: (content: string, model?: string) =>
+      backend === 'ollama' ? ollamaHttpClient.tokenize(content, model) : httpClient.tokenize(content),
+
     async complete(request: LLMCompletionRequest): Promise<LLMCompletionResponse> {
       logger.debug('LLM complete request', {
         messageCount: request.messages.length,

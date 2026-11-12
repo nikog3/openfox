@@ -4,12 +4,16 @@ const {
   httpClientCreateMock,
   httpClientCreateStreamMock,
   httpClientCtorArgs,
+  httpClientTokenizeMock,
+  ollamaTokenizeMock,
   responsesCreateMock,
   responsesStreamMock,
 } = vi.hoisted(() => ({
   httpClientCreateMock: vi.fn(),
   httpClientCreateStreamMock: vi.fn(),
   httpClientCtorArgs: [] as Array<Record<string, unknown>>,
+  httpClientTokenizeMock: vi.fn(),
+  ollamaTokenizeMock: vi.fn(),
   responsesCreateMock: vi.fn(),
   responsesStreamMock: vi.fn(),
 }))
@@ -18,6 +22,7 @@ vi.mock('./http-client.js', () => ({
   OpenAIHttpClient: class MockOpenAIHttpClient {
     createChatCompletion = httpClientCreateMock
     createChatCompletionStream = httpClientCreateStreamMock
+    tokenize = httpClientTokenizeMock
 
     constructor(args: Record<string, unknown>) {
       httpClientCtorArgs.push(args)
@@ -29,6 +34,16 @@ vi.mock('./responses-native.js', () => ({
   OpenAIResponsesHttpClient: class MockOpenAIResponsesHttpClient {
     createChatCompletion = responsesCreateMock
     createChatCompletionStream = responsesStreamMock
+  },
+}))
+
+vi.mock('./ollama-native.js', () => ({
+  OllamaHttpClient: class MockOllamaHttpClient {
+    createChatCompletion = vi.fn()
+    createChatCompletionStream = vi.fn()
+    tokenize = ollamaTokenizeMock
+
+    constructor(_args: Record<string, unknown>) {}
   },
 }))
 
@@ -59,6 +74,8 @@ describe('llm client', () => {
     httpClientCtorArgs.length = 0
     httpClientCreateMock.mockReset()
     httpClientCreateStreamMock.mockReset()
+    httpClientTokenizeMock.mockReset()
+    ollamaTokenizeMock.mockReset()
     responsesCreateMock.mockReset()
     responsesStreamMock.mockReset()
   })
@@ -66,6 +83,39 @@ describe('llm client', () => {
   it('defaults the backend from config.llm.backend when no initial backend is given', () => {
     const client = createLLMClient(createConfig({ backend: 'ollama' }))
     expect(client.getBackend()).toBe('ollama')
+  })
+
+  describe('tokenize', () => {
+    it('delegates to the OpenAI-compatible client for non-ollama backends', async () => {
+      httpClientTokenizeMock.mockResolvedValue(42)
+      const client = createLLMClient(createConfig({ backend: 'vllm' }))
+      await expect(client.tokenize!('hello')).resolves.toBe(42)
+      expect(httpClientTokenizeMock).toHaveBeenCalledWith('hello')
+      expect(ollamaTokenizeMock).not.toHaveBeenCalled()
+    })
+
+    it('delegates to the Ollama client with the model for the ollama backend', async () => {
+      ollamaTokenizeMock.mockResolvedValue(7)
+      const client = createLLMClient(createConfig({ backend: 'ollama' }), 'ollama')
+      await expect(client.tokenize!('hello', 'qwen3-32b')).resolves.toBe(7)
+      expect(ollamaTokenizeMock).toHaveBeenCalledWith('hello', 'qwen3-32b')
+      expect(httpClientTokenizeMock).not.toHaveBeenCalled()
+    })
+
+    it('re-resolves the backend when setBackend switches to ollama', async () => {
+      ollamaTokenizeMock.mockResolvedValue(3)
+      const client = createLLMClient(createConfig({ backend: 'vllm' }), 'vllm')
+      client.setBackend('ollama')
+      await expect(client.tokenize!('hi', 'qwen3-32b')).resolves.toBe(3)
+      expect(ollamaTokenizeMock).toHaveBeenCalledWith('hi', 'qwen3-32b')
+      expect(httpClientTokenizeMock).not.toHaveBeenCalled()
+    })
+
+    it('propagates null when the backend tokenizer returns null', async () => {
+      httpClientTokenizeMock.mockResolvedValue(null)
+      const client = createLLMClient(createConfig({ backend: 'vllm' }))
+      await expect(client.tokenize!('hello')).resolves.toBeNull()
+    })
   })
 
   it('falls back to unknown backend when config has none', () => {
