@@ -535,6 +535,7 @@ export interface Message {
     branchName?: string
     workspaceName?: string
     foldSteps?: number
+    foldStep?: { step: number; totalSteps: number }
   } // For auto-prompt messages
 }
 

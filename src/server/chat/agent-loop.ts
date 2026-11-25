@@ -71,7 +71,7 @@ import {
   messageWireSize,
   summaryBudgetTokens,
 } from '../context/compactor.js'
-import { runSequentialFold, type FoldFailureReason } from '../context/fold-compactor.js'
+import { runSequentialFold, type FoldFailureReason, type SequentialFoldResult } from '../context/fold-compactor.js'
 import { DENSE_CHARS_PER_TOKEN } from '../tools/output-cap.js'
 import { logger } from '../utils/logger.js'
 import { emitPluginHook } from '../plugins/hook-emitter.js'
@@ -217,6 +217,9 @@ export interface TopLevelLoopConfig {
   rebuildCachedContext?: (() => Promise<void> | void) | undefined
   /** When set, assistant messages are tagged with sub-agent metadata for scope isolation. */
   subAgentMetadata?: { subAgentId: string; subAgentType: string; subAgentName?: string }
+  /** When set, the turn's assistant message.start carries this metadata
+   *  (e.g. { type: 'session-summary' } for workflow summarize steps). */
+  assistantMessageMetadata?: { type: string; name: string; color: string }
   /** When set and return_value tool is called, emit done events and break immediately. */
   breakOnReturnValue?: boolean
   /** When set, if the loop would normally break without return_value being called,
@@ -690,6 +693,7 @@ export async function runTopLevelAgentLoop(
           createMessageStartEvent(assistantMsgId, 'assistant', undefined, {
             ...(currentWindowMessageOptions ?? {}),
             ...subAgentTags(),
+            ...(config.assistantMessageMetadata ? { metadata: config.assistantMessageMetadata } : {}),
           }),
         )
       }
@@ -788,16 +792,50 @@ export async function runTopLevelAgentLoop(
         const originalWire = transformResult.messages.reduce((sum, message) => sum + messageWireSize(message), 0)
         const fittedWire = fittedMessages.reduce((sum, message) => sum + messageWireSize(message), 0)
         if (originalWire > 0 && (originalWire - fittedWire) * 2 > originalWire) {
-          const fold = await runSequentialFold({
-            client: attemptClient,
-            systemPrompt: transformResult.systemPrompt,
-            messages: transformResult.messages,
-            contextWindow,
-            ...(signal ? { signal } : {}),
-            onStep: (step, totalSteps) => {
-              onMessage?.(createCompactionProgressMessage({ step, totalSteps }))
-            },
-          })
+          // Each fold step gets its own assistant message: the summary text is
+          // streamed into it live (the fold runs many sequential LLM calls, so
+          // one message per step is the only shape that never interleaves).
+          const foldSummaryMsgIds: string[] = []
+          let fold: SequentialFoldResult
+          try {
+            fold = await runSequentialFold({
+              client: attemptClient,
+              systemPrompt: transformResult.systemPrompt,
+              messages: transformResult.messages,
+              contextWindow,
+              ...(signal ? { signal } : {}),
+              onStep: (step, totalSteps) => {
+                onMessage?.(createCompactionProgressMessage({ step, totalSteps }))
+                const foldMsgId = crypto.randomUUID()
+                foldSummaryMsgIds.push(foldMsgId)
+                append(
+                  createMessageStartEvent(foldMsgId, 'assistant', '', {
+                    ...(currentWindowMessageOptions ?? {}),
+                    isSystemGenerated: true,
+                    metadata: {
+                      type: 'compaction',
+                      name: 'Compaction',
+                      color: '#64748b',
+                      foldStep: { step, totalSteps },
+                    },
+                    ...subAgentTags(),
+                  }),
+                )
+              },
+              onDelta: (delta) => {
+                const foldMsgId = foldSummaryMsgIds[foldSummaryMsgIds.length - 1]
+                if (foldMsgId) append({ type: 'message.delta', data: { messageId: foldMsgId, content: delta } })
+              },
+              onStepDone: (step) => {
+                const foldMsgId = foldSummaryMsgIds[step - 1]
+                if (foldMsgId)
+                  append(createMessageDoneEvent(foldMsgId, { stats: turnMetrics.buildStats(statsIdentity, mode) }))
+              },
+            })
+          } catch (error) {
+            tombstoneMessageEvents(sessionId, foldSummaryMsgIds)
+            throw error
+          }
           if (fold.summary !== undefined) {
             compactionFoldSteps = fold.steps
             foldedAttemptResult = {
@@ -831,7 +869,7 @@ export async function runTopLevelAgentLoop(
               step: fold.steps,
               totalSteps: fold.totalSteps,
             })
-            tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? ''])
+            tombstoneMessageEvents(sessionId, [compactionPromptMsgId ?? '', ...foldSummaryMsgIds])
             if (compactionAttempts >= MAX_COMPACTION_ATTEMPTS) compactionBlocked = true
             compacting = false
             backstopTrimIfOverfull()

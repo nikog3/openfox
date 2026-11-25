@@ -2513,8 +2513,8 @@ describe('compaction under context overflow', () => {
         { role: 'user' as const, content: 'compaction prompt text' },
       ],
     })
-    const completeMock = vi.fn().mockRejectedValue(new Error('boom'))
-    mockLLMClient = { ...mockLLMClient, complete: completeMock }
+    const streamMock = vi.fn(() => (async function* () {})())
+    mockLLMClient = { ...mockLLMClient, stream: streamMock }
     ;(consumeStreamGenerator as any).mockResolvedValue({
       content: 'final answer after fold failure',
       toolCalls: [],
@@ -2530,7 +2530,7 @@ describe('compaction under context overflow', () => {
     const config = makeConfig({ onMessage })
     await runTopLevelAgentLoop(config, mockTurnMetrics).catch(() => {})
 
-    expect(completeMock).toHaveBeenCalledTimes(6)
+    expect(streamMock).toHaveBeenCalledTimes(6)
     expect(streamLLMPure).toHaveBeenCalledTimes(1)
     const events = emittedEvents(config)
     expect(events.some((e) => e?.type === 'context.compacted')).toBe(false)

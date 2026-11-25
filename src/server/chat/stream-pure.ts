@@ -946,7 +946,13 @@ export function createMessageStartEvent(
       | 'task-completed'
       | 'workflow-started'
       | 'command'
-    metadata?: { type: string; name: string; color: string }
+    metadata?: {
+      type: string
+      name: string
+      color: string
+      foldSteps?: number
+      foldStep?: { step: number; totalSteps: number }
+    }
   },
 ): TurnEvent {
   return {

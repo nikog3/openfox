@@ -3,6 +3,7 @@ import { OUTPUT_RESERVE_TOKENS } from '../chat/measured-backstop.js'
 import { DENSE_CHARS_PER_TOKEN } from '../tools/output-cap.js'
 import { MIN_COMPACTION_SUMMARY_LENGTH, messageWireSize, summaryBudgetTokens } from './compactor.js'
 import type { LLMClientWithModel } from '../llm/client.js'
+import type { LLMCompletionResponse } from '../llm/types.js'
 import type { ContextMessage } from '../events/fold-types.js'
 import { logger } from '../utils/logger.js'
 
@@ -18,6 +19,17 @@ export interface SequentialFoldOptions {
    * progress indicator while the fold runs.
    */
   onStep?: (step: number, totalSteps: number) => void
+  /**
+   * Live text hook, called for every streamed summary chunk of the current
+   * step. Lets the UI show the summary being written instead of a bare
+   * progress indicator.
+   */
+  onDelta?: (delta: string) => void
+  /**
+   * Live completion hook, called when a summary step finishes successfully
+   * (after its retries/fallback), with its 1-based step number.
+   */
+  onStepDone?: (step: number, totalSteps: number) => void
 }
 
 export type FoldFailureReason = 'truncated' | 'too-short' | 'llm-error'
@@ -64,7 +76,7 @@ const MAX_FOLD_DEPTH = 8
  * rethrows 'Aborted'.
  */
 export async function runSequentialFold(options: SequentialFoldOptions): Promise<SequentialFoldResult> {
-  const { client, systemPrompt, contextWindow, signal, onStep } = options
+  const { client, systemPrompt, contextWindow, signal, onStep, onDelta, onStepDone } = options
   const last = options.messages[options.messages.length - 1]
   const messages =
     last !== undefined && last.content === COMPACTION_PROMPT ? options.messages.slice(0, -1) : options.messages
@@ -87,15 +99,26 @@ export async function runSequentialFold(options: SequentialFoldOptions): Promise
   }
 
   const summarizeOnce = async (candidate: ContextMessage[]): Promise<string> => {
-    const response = await client.complete({
+    let summary = ''
+    let response: LLMCompletionResponse | undefined
+    for await (const event of client.stream({
       messages: [...candidate, { role: 'user', content: COMPACTION_PROMPT }],
       maxTokens: summaryBudget,
       reasoningEffort: 'none',
       ...(signal ? { signal } : {}),
-    })
+    })) {
+      if (event.type === 'text_delta') {
+        summary += event.content
+        onDelta?.(event.content)
+      } else if (event.type === 'done') {
+        response = event.response
+      } else if (event.type === 'error') {
+        throw new Error(event.error)
+      }
+    }
+    if (!response) throw new Error('LLM stream ended without a done event')
     usage.promptTokens = response.usage.promptTokens
     usage.completionTokens = response.usage.completionTokens
-    const summary = response.content || ''
     if (response.finishReason === 'length') throw new FoldStepError('truncated')
     if (summary.length < MIN_COMPACTION_SUMMARY_LENGTH) throw new FoldStepError('too-short')
     return summary
@@ -126,7 +149,9 @@ export async function runSequentialFold(options: SequentialFoldOptions): Promise
   const summarize = async (candidate: ContextMessage[]): Promise<string> => {
     steps += 1
     onStep?.(steps, totalSteps)
-    return summarizeResilient(candidate)
+    const result = await summarizeResilient(candidate)
+    onStepDone?.(steps, totalSteps)
+    return result
   }
 
   const fold = async (candidate: ContextMessage[], depth: number): Promise<string> => {

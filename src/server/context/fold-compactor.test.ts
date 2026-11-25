@@ -18,19 +18,29 @@ interface CallSpec {
 function makeClient(specs: CallSpec[]) {
   const calls: LLMCompletionRequest[] = []
   let next = 0
+  const response = (spec: CallSpec, n: number): LLMCompletionResponse => ({
+    id: `resp-${n}`,
+    content: spec.content,
+    finishReason: spec.finishReason ?? 'stop',
+    usage: spec.usage ?? { promptTokens: 1_000 + n, completionTokens: 100 + n, totalTokens: 1_100 + n },
+  })
   const client = {
     complete: async (request: LLMCompletionRequest) => {
       calls.push(request)
       const spec = specs[Math.min(next, specs.length - 1)]!
       next += 1
-      return {
-        id: `resp-${next}`,
-        content: spec.content,
-        finishReason: spec.finishReason ?? 'stop',
-        usage: spec.usage ?? { promptTokens: 1_000 + next, completionTokens: 100 + next, totalTokens: 1_100 + next },
-      }
+      return response(spec, next)
     },
-    stream: async function* () {},
+    stream: async function* (request: LLMCompletionRequest) {
+      calls.push(request)
+      const spec = specs[Math.min(next, specs.length - 1)]!
+      next += 1
+      const content = spec.content
+      for (let i = 0; i < content.length; i += 32) {
+        yield { type: 'text_delta' as const, content: content.slice(i, i + 32) }
+      }
+      yield { type: 'done' as const, response: response(spec, next) }
+    },
     getModel: () => 'test-model',
   } as unknown as LLMClientWithModel
   return { client, calls }
@@ -316,6 +326,43 @@ describe('runSequentialFold', () => {
     expect(onStep).toHaveBeenCalledTimes(2)
     expect(onStep).toHaveBeenNthCalledWith(1, 1, 2)
     expect(onStep).toHaveBeenNthCalledWith(2, 2, 2)
+  })
+
+  it('streams summary text via onDelta and fires onStepDone for each successful step', async () => {
+    const { client } = makeClient([{ content: SUMMARY_1 }, { content: SUMMARY_2 }])
+    const deltas: string[] = []
+    const stepDones: Array<[number, number]> = []
+    const m1 = msg('user', 20_000)
+    const m2 = msg('assistant', 20_000)
+    // 20k window → two leaves → two steps out of two
+    const result = await runSequentialFold({
+      client,
+      systemPrompt: 'sys',
+      messages: [m1, m2],
+      contextWindow: 20_000,
+      onDelta: (delta) => deltas.push(delta),
+      onStepDone: (step, totalSteps) => stepDones.push([step, totalSteps]),
+    })
+    expect(result.summary).toBe(SUMMARY_2)
+    expect(deltas.join('')).toBe(SUMMARY_1 + SUMMARY_2)
+    expect(stepDones).toEqual([
+      [1, 2],
+      [2, 2],
+    ])
+  })
+
+  it('does not fire onStepDone when a step fails', async () => {
+    const { client } = makeClient([{ content: SUMMARY_1, finishReason: 'length' }])
+    const onStepDone = vi.fn()
+    const result = await runSequentialFold({
+      client,
+      systemPrompt: 'sys',
+      messages: [msg('user', 1_000)],
+      contextWindow: 200_000,
+      onStepDone,
+    })
+    expect(result.summary).toBeUndefined()
+    expect(onStepDone).not.toHaveBeenCalled()
   })
 
   it('rethrows Aborted when the signal is aborted', async () => {

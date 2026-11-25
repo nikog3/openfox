@@ -275,13 +275,29 @@ describe('agentLoop compaction loop', () => {
     const append = makeAppend()
     const foldSummaryRaw = 'Folded summary of the conversation so far. '.repeat(3)
     const foldSummary = foldSummaryRaw.trim()
-    const complete = vi.fn(async () => ({
-      id: 'fold-resp',
-      content: foldSummaryRaw,
-      finishReason: 'stop',
-      usage: { promptTokens: 100_000, completionTokens: 200, totalTokens: 100_200 },
-    }))
-    const llmClient = { getModel: vi.fn().mockReturnValue('test-model'), complete }
+    const firstSummary = 'First-half summary of the conversation. '.repeat(3)
+    let streamCall = 0
+    const stream = vi.fn(() => {
+      streamCall += 1
+      const content = streamCall === 1 ? firstSummary : foldSummaryRaw
+      return (async function* () {
+        for (let i = 0; i < content.length; i += 64) yield { type: 'text_delta', content: content.slice(i, i + 64) }
+        yield {
+          type: 'done',
+          response: {
+            id: `fold-resp-${streamCall}`,
+            content,
+            finishReason: 'stop',
+            usage: {
+              promptTokens: 100_000 + streamCall,
+              completionTokens: 200 + streamCall,
+              totalTokens: 100_200 + streamCall,
+            },
+          },
+        }
+      })()
+    })
+    const llmClient = { getModel: vi.fn().mockReturnValue('test-model'), stream }
 
     ;(consumeStreamGenerator as any)
       .mockResolvedValueOnce(makeStreamResult({ content: 'Normal response', finishReason: 'stop' }))
@@ -305,11 +321,31 @@ describe('agentLoop compaction loop', () => {
 
     // The 650k-char conversation exceeds the summary budget (~465k chars), so
     // it is folded: the first half is summarized, then folded into the second.
-    expect(complete).toHaveBeenCalledTimes(2)
+    expect(stream).toHaveBeenCalledTimes(2)
 
     const compacted = eventsOf(append).filter((e) => e.type === 'context.compacted')
     expect(compacted.length).toBe(1)
     expect(compacted[0]!.data.summary).toBe(foldSummary)
+
+    // Each fold step streamed its own assistant message (metadata.foldStep),
+    // distinct from the final summary (metadata.foldSteps).
+    const foldStarts = eventsOf(append).filter(
+      (e) => e.type === 'message.start' && e.data?.metadata?.type === 'compaction' && e.data?.metadata?.foldStep,
+    )
+    expect(foldStarts.length).toBe(2)
+    expect(foldStarts[0]!.data.metadata.foldStep).toEqual({ step: 1, totalSteps: 2 })
+    expect(foldStarts[1]!.data.metadata.foldStep).toEqual({ step: 2, totalSteps: 2 })
+    for (const start of foldStarts) {
+      expect(start.data.isSystemGenerated).toBe(true)
+      const deltas = eventsOf(append)
+        .filter((e) => e.type === 'message.delta' && e.data?.messageId === start.data.messageId)
+        .map((e) => e.data.content as string)
+        .join('')
+      expect(deltas).not.toBe('')
+      const done = eventsOf(append).find((e) => e.type === 'message.done' && e.data?.messageId === start.data.messageId)
+      expect(done).toBeDefined()
+    }
+    expect(foldStarts[0]!.data.messageId).not.toBe(foldStarts[1]!.data.messageId)
 
     const summaryStart = eventsOf(append).find(
       (e) => e.type === 'message.start' && e.data?.role === 'assistant' && e.data?.content === foldSummary,
@@ -321,6 +357,73 @@ describe('agentLoop compaction loop', () => {
       color: '#64748b',
       foldSteps: 2,
     })
+  })
+
+  it('tombstones the fold step messages when the fold fails', async () => {
+    const append = makeAppend()
+    let streamCall = 0
+    const stream = vi.fn(() => {
+      streamCall += 1
+      return (async function* () {
+        yield { type: 'text_delta', content: 'partial summary text' }
+        yield {
+          type: 'done',
+          response: {
+            id: `fold-resp-${streamCall}`,
+            content: 'partial summary text',
+            finishReason: 'length',
+            usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+          },
+        }
+      })()
+    })
+    const llmClient = { getModel: vi.fn().mockReturnValue('test-model'), stream }
+
+    ;(consumeStreamGenerator as any)
+      .mockResolvedValueOnce(makeStreamResult({ content: 'Normal response', finishReason: 'stop' }))
+      .mockResolvedValueOnce(makeStreamResult({ content: 'Final', finishReason: 'stop' }))
+    ;(shouldCompact as any).mockReturnValueOnce(true)
+
+    await runTopLevelAgentLoop(
+      makeConfig({
+        append,
+        llmClient: llmClient as any,
+        assembleRequest: vi.fn().mockReturnValue({
+          systemPrompt: 'test-prompt',
+          messages: [
+            { role: 'user', content: 'x'.repeat(350_000) },
+            { role: 'assistant', content: 'x'.repeat(300_000) },
+          ],
+        }),
+      }),
+      turnMetrics,
+    )
+
+    // Every fold attempt was truncated (2 retries + lossy fallback on the
+    // first step), so the fold failed and the turn continues with the full
+    // context.
+    expect(stream).toHaveBeenCalledTimes(3)
+    const errors = eventsOf(append).filter((e) => e.type === 'chat.error')
+    expect(errors.length).toBe(1)
+    expect(errors[0]!.data.recoverable).toBe(true)
+    const compacted = eventsOf(append).filter((e) => e.type === 'context.compacted')
+    expect(compacted.length).toBe(0)
+
+    // The compaction prompt and every fold step message are tombstoned so the
+    // partial summaries cannot pollute the next prompt.
+    const events = eventsOf(append)
+    const promptStartIdx = events.findIndex((e) => e.type === 'message.start' && e.data?.messageId === 'compact-prompt')
+    expect(promptStartIdx).toBeGreaterThanOrEqual(0)
+    expect(tombstonedSeqs()).toContain(promptStartIdx)
+    // The fold failed on its first step, so exactly one fold step message
+    // was opened (and never completed).
+    const foldStarts = events.filter((e) => e.type === 'message.start' && e.data?.metadata?.foldStep)
+    expect(foldStarts.length).toBe(1)
+    expect(foldStarts[0]!.data.metadata.foldStep).toEqual({ step: 1, totalSteps: 2 })
+    for (const start of foldStarts) {
+      const startSeq = events.findIndex((e) => e.type === 'message.start' && e.data?.messageId === start.data.messageId)
+      expect(tombstonedSeqs()).toContain(startSeq)
+    }
   })
 
   it('rejects a too-short summary with a tool call (min-length guard)', async () => {
