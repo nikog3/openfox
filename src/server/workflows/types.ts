@@ -68,6 +68,13 @@ export interface AgentStep extends StepBase {
   type: 'agent'
   /** Agent definition ID (defaults to 'planner' at runtime) */
   agentId?: string
+  /**
+   * Marks a dedicated-purpose step. 'summarize': the step's assistant message
+   * is tagged with metadata { type: 'session-summary' } so clients can render
+   * it as a dedicated summary card, and its content feeds the
+   * task.completed summary.
+   */
+  kind?: 'summarize'
   /** Injected as user message on first entry. Supports template variables. */
   prompt?: string
   /**

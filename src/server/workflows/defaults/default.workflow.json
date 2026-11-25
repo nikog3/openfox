@@ -127,8 +127,9 @@
       "type": "agent",
       "phase": "verification",
       "agentId": "builder",
+      "kind": "summarize",
       "subGroup": "summarize",
-      "prompt": "Produce a concise summary of what was accomplished in this session. Write the summary in {{language}}. Include:\n- What was implemented or fixed\n- Key files modified\n- Any notable decisions or tradeoffs\n- **What to test** — a short, actionable mini-tutorial from the user's perspective:\n  - Concrete UI flows or interactions to try, with the expected outcome\n  - Edge cases worth poking at\n  - One action per line, numbered, so the user can follow along without extra context\n\nCall step_done() when done.",
+      "prompt": "Produce a concise summary of what was accomplished in this session. Write the summary in {{language}}. Do not add a title or heading. Include:\n- What was implemented or fixed\n- Key files modified\n- Any notable decisions or tradeoffs\n- **What to test** — a short, actionable mini-tutorial from the user's perspective:\n  - Concrete UI flows or interactions to try, with the expected outcome\n  - Edge cases worth poking at\n  - One action per line, numbered, so the user can follow along without extra context\n\nCall step_done() when done.",
       "transitions": [{ "when": { "type": "always" }, "goto": "$done" }]
     }
   ],

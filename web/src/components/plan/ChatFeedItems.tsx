@@ -3,6 +3,7 @@ import type { OverlayScrollbarsComponentRef } from 'overlayscrollbars-react'
 import type { DisplayItem } from './groupMessages.js'
 import { ChatMessage } from './ChatMessage'
 import { AssistantMessage } from './AssistantMessage'
+import { SessionSummaryCard } from './SessionSummaryCard'
 import { SubAgentContainer } from './SubAgentContainer'
 import { FeedDivider } from './FeedDivider'
 import { FEED_REVEAL_EVENT } from './feed-window'
@@ -264,6 +265,18 @@ export const ChatFeedItems = memo(function ChatFeedItems({
 
         const message = item.message
         if (message.role === 'assistant') {
+          if (message.metadata?.type === 'session-summary') {
+            return (
+              <div
+                key={itemKey(item)}
+                data-item-index={displayIndex}
+                className="px-2 @md:px-4"
+                style={itemContainmentStyle}
+              >
+                <SessionSummaryCard message={message} />
+              </div>
+            )
+          }
           return (
             <div
               key={itemKey(item)}

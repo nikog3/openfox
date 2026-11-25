@@ -579,3 +579,53 @@ describe('ChatFeedItems progressive rendering', () => {
     expect(container.querySelector('[data-placeholder]')).toBeNull()
   })
 })
+
+describe('ChatFeedItems session summary', () => {
+  it('renders a session-summary assistant message as a dedicated card', () => {
+    const summaryItem: DisplayItem = {
+      type: 'message',
+      message: {
+        id: 's1',
+        role: 'assistant',
+        content: '# Session summary\nAll done.',
+        timestamp: new Date().toISOString(),
+        isStreaming: false,
+        metadata: { type: 'session-summary', name: 'Summary', color: '#8b5cf6' },
+      },
+    }
+    const items = [msg('a', 'user', 'Alpha'), summaryItem]
+
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    flushSync(() => root.render(<ChatFeedItems displayItems={items} />))
+
+    const card = container.querySelector('[data-testid="session-summary-card"]')
+    expect(card).toBeTruthy()
+    expect(card?.textContent).toContain('Session summary')
+    expect(container.querySelector('[data-message-id="a"]')).toBeTruthy()
+  })
+
+  it('shows a spinner on the summary card while streaming', () => {
+    const summaryItem: DisplayItem = {
+      type: 'message',
+      message: {
+        id: 's1',
+        role: 'assistant',
+        content: 'Summarizing…',
+        timestamp: new Date().toISOString(),
+        isStreaming: true,
+        metadata: { type: 'session-summary', name: 'Summary', color: '#8b5cf6' },
+      },
+    }
+
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    flushSync(() => root.render(<ChatFeedItems displayItems={[summaryItem]} />))
+
+    const card = container.querySelector('[data-testid="session-summary-card"]')
+    expect(card).toBeTruthy()
+    expect(card?.querySelector('.animate-spin')).toBeTruthy()
+  })
+})

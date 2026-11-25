@@ -680,6 +680,9 @@ export async function executeWorkflow(
               ...(onMessage ? { onMessage } : {}),
               ...(options.llmRetryPolicy ? { llmRetryPolicy: options.llmRetryPolicy } : {}),
               ...(isResumingCurrentStep ? { skipAgentReminder: true } : {}),
+              ...(agentStep.kind === 'summarize'
+                ? { assistantMessageMetadata: { type: 'session-summary', name: 'Summary', color: '#8b5cf6' } }
+                : {}),
             },
             turnMetrics,
             stepAgentId,
@@ -902,8 +905,13 @@ export async function executeWorkflow(
       const workflowMessages = completedSession.messages.slice(messagesBeforeWorkflow)
       const workflowStats = computeSessionStats(workflowMessages)
       const totalToolCalls = workflowMessages.reduce((sum, m) => sum + (m.toolCalls?.length ?? 0), 0)
+      // The summarize step (kind: 'summarize') tags its assistant message —
+      // surface its content as the completion summary.
+      const summaryMessage = [...workflowMessages]
+        .reverse()
+        .find((m) => m.role === 'assistant' && m.metadata?.type === 'session-summary')
       const taskCompletedData = {
-        summary: null,
+        summary: summaryMessage?.content ?? null,
         iterations,
         totalTimeSeconds,
         totalToolCalls,

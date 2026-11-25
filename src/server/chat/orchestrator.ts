@@ -143,6 +143,9 @@ export interface OrchestratorOptions {
   /** When true, the agent-definition reminder is not re-injected at turn start
    *  (already present in history — used for workflow retries/resumes). */
   skipAgentReminder?: boolean
+  /** Metadata attached to the turn's assistant message at message.start
+   *  (e.g. { type: 'session-summary' } for workflow summarize steps). */
+  assistantMessageMetadata?: { type: string; name: string; color: string }
 }
 
 function resolveStatsIdentity(options: OrchestratorOptions): StatsIdentity {
@@ -575,6 +578,7 @@ export async function runAgentTurn(
       ...(callbacks?.onToolExecuted ? { onToolExecuted: callbacks.onToolExecuted } : {}),
       ...(options.llmRetryPolicy ? { llmRetryPolicy: options.llmRetryPolicy } : {}),
       ...(options.warmup ? { warmup: true } : {}),
+      ...(options.assistantMessageMetadata ? { assistantMessageMetadata: options.assistantMessageMetadata } : {}),
     },
     turnMetrics,
   )
