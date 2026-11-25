@@ -634,6 +634,18 @@ describe('path-security', () => {
         expect(paths).toContain('/etc/passwd')
         expect(paths).not.toContain('/add')
       })
+
+      it('excludes a bare / separator in a git commit message', () => {
+        const paths = extractAbsolutePathsFromCommand('git commit -m "fix a / b"')
+        expect(paths).not.toContain('/')
+      })
+
+      it('excludes bare / separators in a commit message with embedded quotes', () => {
+        const paths = extractAbsolutePathsFromCommand(
+          `git commit -m "Designer: propagation of the resize linked via the fields + config.json persisted only on position save - propagateLinkedResize() called explicitly in setDesignerBounds: setBounds() programmatically does not emit the 'resized' event under Electron 43, propagation to split mode happens through the numeric fields so it was inert. - state.committedModes: only the positions "Save" are committed; saveConfig() persists committedModes instead of state.slotConfig.modes, ending the unsaved values written on quit (saveWindowPosition -> saveConfig()). - set-slot-info: 'original' = committed value (fields in play if modified, save button active) with fallback to the live value. - splitResizeLink/splitStack persisted via ipc set-split-resize-link / set-split-stack."`,
+        )
+        expect(paths).not.toContain('/')
+      })
     })
 
     describe('sandbox escape paths', () => {
@@ -650,6 +662,15 @@ describe('path-security', () => {
       it('flags a root followed by a numeric redirect like find / 2>/dev/null', () => {
         const paths = extractAbsolutePathsFromCommand('find / 2>/dev/null')
         expect(paths).toContain('/')
+      })
+
+      it('flags a bare root followed by an option like ls / -la', () => {
+        const paths = extractAbsolutePathsFromCommand('ls / -la')
+        expect(paths).toContain('/')
+      })
+
+      it('does not flag a prose "a / b" separator as the root path', () => {
+        expect(extractAbsolutePathsFromCommand('echo a / b')).not.toContain('/')
       })
 
       it('flags cd / pivots', () => {

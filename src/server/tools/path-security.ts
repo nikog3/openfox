@@ -852,11 +852,12 @@ function maskHeredocs(command: string): string {
 }
 
 /**
- * Mask the quoted message bodies of every `git commit` in the command: all
- * `-m`/`-am`/`--message` arguments, not just the first one. A segment runs
- * from `git commit` to the next unquoted shell operator (or newline), so file
- * operands of chained commands (`git commit -m "a" && cat /etc/passwd`) stay
- * visible to path extraction.
+ * Blank out every slash in each `git commit` span so message prose (API
+ * routes, `a / b` separators, text after embedded quotes) never reaches the
+ * path scanner. A span runs from `git commit` to the next unquoted shell
+ * operator (or newline), so file operands of chained commands
+ * (`git commit -m "a" && cat /etc/passwd`) stay visible to path extraction.
+ * `--file=/path` is a real operand and keeps its slash extractable.
  */
 function maskGitCommitMessages(command: string): string {
   const spans: Array<[number, number]> = []
@@ -893,15 +894,7 @@ function maskGitCommitMessages(command: string): string {
 
   let out = command
   for (const [start, end] of spans.sort((a, b) => b[0] - a[0])) {
-    const masked = command
-      .slice(start, end)
-      .replace(
-        /(^|\s)(-[a-zA-Z]*m|--message)(\s+)(["'])(?:(?!\4)[\s\S])*\4/g,
-        (full, pre: string, flag: string, space: string, quote: string) => {
-          const body = full.slice(pre.length + flag.length + space.length + 1, full.length - 1)
-          return `${pre}${flag}${space}${quote}${body.replace(/\/[^\s"'|&;<>`()]+/g, ' __COMMIT_MSG__ ')}${quote}`
-        },
-      )
+    const masked = command.slice(start, end).replace(/(?<!--file=)[/]/g, ' __COMMIT_MSG__ ')
     out = out.slice(0, start) + masked + out.slice(end)
   }
   return out
@@ -1053,12 +1046,16 @@ export function extractAbsolutePathsFromCommand(command: string): string[] {
     // A space-surrounded `/` whose next operand is numeric is the division
     // operator (`length / 4`, `100 / 4`), not a path — but a numeric redirect
     // right after the root (`find / 2>/dev/null`) is still a real root.
+    // A word after the space is prose (`a / b` = "a or b"), never a root.
     const rootPattern = /(?:^|[\s=(])\/(?=$|[\s'"`|&;,<()])/g
     let isRoot = false
     for (const match of scanCommand.matchAll(rootPattern)) {
       const rest = scanCommand.slice(match.index! + match[0].length)
       if (/^\s+[0-9]/.test(rest) && !/^\s+[0-9]+[>]/.test(rest)) {
         continue // division expression, e.g. "length / 4"
+      }
+      if (/^\s+[A-Za-z_]/.test(rest)) {
+        continue // prose separator, e.g. "a / b"
       }
       isRoot = true
       break
