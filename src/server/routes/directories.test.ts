@@ -72,4 +72,28 @@ describe('GET /api/directories', () => {
       expect(names).not.toContain('broken')
     })
   })
+
+  describe.skipIf(process.platform !== 'win32')('drives level', () => {
+    it('lists drive roots at the synthetic drives level', async () => {
+      const res = await fetch(`${baseUrl}/api/directories?path=${encodeURIComponent('drives:')}`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {
+        current: string
+        parent: string | null
+        directories: Array<{ name: string; path: string }>
+      }
+      expect(body.current).toBe('drives:')
+      expect(body.parent).toBeNull()
+      const c = body.directories.find((d) => d.path === 'C:\\')
+      expect(c).toBeDefined()
+      expect(c!.name).toBe('C:')
+    })
+
+    it('points a drive root parent to the drives level', async () => {
+      const res = await fetch(`${baseUrl}/api/directories?path=${encodeURIComponent('C:\\')}`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { parent: string | null }
+      expect(body.parent).toBe('drives:')
+    })
+  })
 })

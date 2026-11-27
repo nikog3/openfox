@@ -1,8 +1,32 @@
 import { Router } from 'express'
-import { readdir } from 'node:fs/promises'
+import { readdir, stat } from 'node:fs/promises'
 import { resolve, join, dirname, basename } from 'node:path'
 import { isDirectoryEntry } from '../utils/fs.js'
 import { serverT } from '../i18n.js'
+
+const DRIVES_LEVEL = 'drives:'
+const DRIVE_ROOT_RE = /^[a-zA-Z]:[\\/]?$/
+
+function isDriveRoot(p: string): boolean {
+  return process.platform === 'win32' && DRIVE_ROOT_RE.test(p)
+}
+
+async function listDriveRoots(): Promise<Array<{ name: string; path: string }>> {
+  if (process.platform !== 'win32') return []
+  const letters = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i))
+  const roots = await Promise.all(
+    letters.map(async (letter) => {
+      const path = `${letter}:\\`
+      try {
+        await stat(path)
+        return { name: `${letter}:`, path }
+      } catch {
+        return null
+      }
+    }),
+  )
+  return roots.filter((r): r is { name: string; path: string } => r !== null)
+}
 
 export function createDirectoryRoutes(): Router {
   const router = Router()
@@ -13,6 +37,16 @@ export function createDirectoryRoutes(): Router {
     const path = (req.query['path'] as string) || DEFAULT_BASE_PATH
 
     try {
+      if (path === DRIVES_LEVEL && process.platform === 'win32') {
+        res.json({
+          current: DRIVES_LEVEL,
+          parent: null,
+          directories: await listDriveRoots(),
+          basename: '',
+        })
+        return
+      }
+
       const resolvedPath = resolve(path)
       const entries = await readdir(resolvedPath, { withFileTypes: true })
       const dirs = await Promise.all(
@@ -31,7 +65,7 @@ export function createDirectoryRoutes(): Router {
 
       res.json({
         current: resolvedPath,
-        parent: hasParent ? parent : null,
+        parent: isDriveRoot(resolvedPath) ? DRIVES_LEVEL : hasParent ? parent : null,
         directories,
         basename: basename(resolvedPath),
       })

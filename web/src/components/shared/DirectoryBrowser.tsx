@@ -27,6 +27,8 @@ interface DirectoryBrowserProps {
   initialPath?: string
 }
 
+const DRIVES_LEVEL = 'drives:'
+
 export function DirectoryBrowser({ onSelect, onClose, initialPath }: DirectoryBrowserProps) {
   const t = useT()
   const [listing, setListing] = useState<DirectoryListing | null>(null)
@@ -57,7 +59,15 @@ export function DirectoryBrowser({ onSelect, onClose, initialPath }: DirectoryBr
     fetchDir(initialPath)
   }, [initialPath, fetchDir])
 
-  const crumbs = pathBreadcrumbs(listing?.current ?? '')
+  const current = listing?.current ?? ''
+  const thisPcLabel = t({ en: 'This PC', fr: 'Ce PC' })
+  const isDrivesLevel = current === DRIVES_LEVEL
+  const isDrivePath = /^[a-zA-Z]:[\\/]/.test(current)
+  const crumbs = isDrivesLevel
+    ? []
+    : isDrivePath
+      ? [{ name: thisPcLabel, path: DRIVES_LEVEL }, ...pathBreadcrumbs(current)]
+      : pathBreadcrumbs(current)
 
   const filteredDirs =
     listing?.directories.filter(
@@ -91,10 +101,11 @@ export function DirectoryBrowser({ onSelect, onClose, initialPath }: DirectoryBr
       if (focusedIndex < 0 || !visibleItems[focusedIndex]) return
       if (e.target instanceof HTMLElement && e.target.dataset.select === 'true') return
       e.preventDefault()
-      if (e.shiftKey) {
-        fetchDir(visibleItems[focusedIndex].path)
+      const item = visibleItems[focusedIndex]
+      if (e.shiftKey || (item.type === 'parent' && item.path === DRIVES_LEVEL)) {
+        fetchDir(item.path)
       } else {
-        onSelect(visibleItems[focusedIndex].path)
+        onSelect(item.path)
       }
     } else if (e.key === 'Escape') {
       setSearchQuery('')
@@ -125,24 +136,30 @@ export function DirectoryBrowser({ onSelect, onClose, initialPath }: DirectoryBr
             <div className="px-3 pt-3 pb-1">
               <div className="flex items-center gap-2 text-sm">
                 <div className="flex items-center flex-wrap min-w-0">
-                  {crumbs.map((crumb, index) => (
-                    <span key={crumb.path} className="flex items-center shrink-0">
-                      <span className="text-text-muted">/</span>
-                      <button
-                        onClick={() => fetchDir(crumb.path)}
-                        className={`px-1 ${index === crumbs.length - 1 ? 'text-accent-primary font-medium' : 'text-text-secondary hover:text-accent-primary'}`}
-                      >
-                        {crumb.name}
-                      </button>
-                    </span>
-                  ))}
-                  {crumbs.length === 0 && (
-                    <button onClick={() => fetchDir('/')} className="text-text-muted hover:text-accent-primary">
-                      /
-                    </button>
+                  {isDrivesLevel ? (
+                    <span className="text-text-secondary font-medium">{thisPcLabel}</span>
+                  ) : (
+                    <>
+                      {crumbs.map((crumb, index) => (
+                        <span key={crumb.path} className="flex items-center shrink-0">
+                          <span className="text-text-muted">/</span>
+                          <button
+                            onClick={() => fetchDir(crumb.path)}
+                            className={`px-1 ${index === crumbs.length - 1 ? 'text-accent-primary font-medium' : 'text-text-secondary hover:text-accent-primary'}`}
+                          >
+                            {crumb.name}
+                          </button>
+                        </span>
+                      ))}
+                      {crumbs.length === 0 && (
+                        <button onClick={() => fetchDir('/')} className="text-text-muted hover:text-accent-primary">
+                          /
+                        </button>
+                      )}
+                    </>
                   )}
                 </div>
-                {listing?.current && (
+                {current && !isDrivesLevel && (
                   <button
                     onClick={() => onSelect(listing.current)}
                     className="ml-auto shrink-0 px-4 py-2 text-sm font-medium rounded-lg bg-accent-primary text-text-primary hover:bg-accent-primary/90"
